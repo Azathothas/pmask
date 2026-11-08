@@ -1,0 +1,109 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-09",
+  "repos": [
+    {
+      "repo": "pathtofile/commandline_cloaking",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:injector/README.md",
+        "contents:tetragon/README.md"
+      ],
+      "observed": "A collection of independent cloaking variants: in-process prctl(PR_SET_NAME) plus argv pointer overwrite plus double-fork; a standalone memfd ELF loader; an ELF parasite that prepends shellcode to rewrite argv before the entry point and runs it from a memfd; an LD_PRELOAD __libc_start_main hook; and a chroot path mask. It also ships Sysmon-for-Linux and Tetragon tracing policies written to observe each variant, and the injector README quotes the resulting Sysmon events: creation telemetry records argv AAAA while echo executes with BBBB, with Image /memfd:.",
+      "pmask_delta": "pmask has the entry swap but no external eBPF or audit observer test; this repo supplies ready Tetragon policies (bin-overwrite, chroot) and a Sysmon config that exercise the exec-record versus /proc split pmask's audit claim rests on. The injector is also a non-ptrace ordering (post-exec, pre-main) that produces the same /memfd: image pmask --rexec produces.",
+      "reason": "It is the only row here that pairs argv cloaking with a kernel-side observer that can validate or refute pmask's kernel-consistency claim."
+    },
+    {
+      "repo": "dedene/claw-wrap",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "A Go daemon runs outside the sandbox; a symlink replaces the CLI, the client sends the command over a Unix socket signed with an HMAC, and the daemon checks it against blocked patterns, fetches the credential from a backend, spawns the real binary with the secret in its environment and streams stdio back. The README states the token never enters the sandbox and that the client holds only the HMAC secret.",
+      "pmask_delta": "pmaskd already has the daemon split and SO_PEERCRED checks, but no per-command allow/deny policy and no credential-backend abstraction. claw-wrap's stronger boundary is that the secret-bearing process runs in the trusted domain and never shares the client's procfs, at the cost of only proxying commands the daemon chooses to run.",
+      "reason": "A real credential-proxy deployment that shows a policy gate and a trust-domain split pmaskd does not implement."
+    },
+    {
+      "repo": "bryanbhd/check-argv-secrets",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:rules/argv-secrets.yaml",
+        "contents:tests/fixtures/bad/curl-header.sh",
+        "contents:tests/expected.txt"
+      ],
+      "observed": "A bash scanner and six semgrep rules flag secrets in curl headers and bodies, bash -c strings, sshpass/mysql password flags, Azure DevOps macros and GitHub Actions expressions, with comment and env-mapping exclusions. tests/fixtures/bad and good hold runnable one-line commands and tests/expected.txt pins every finding; tests/run.sh runs both implementations and requires the good fixtures to be clean.",
+      "pmask_delta": "The tool is static source analysis and cannot observe a running process. Its value is the versioned bad/good fixture pair across six real argv-secret shapes, which pmask could run under the mask and assert absent from cmdline and environ, beyond the generic canary strings its suites use now.",
+      "reason": "The fixture corpus is a concrete external test input, though the scanner itself only greps source text."
+    },
+    {
+      "repo": "S4L1Mabd/Process_ARG_Spoofing",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "activex37b/LOLsp00f",
+      "evidence": [
+        "readme",
+        "contents:Process_argument_spoofing/func.c",
+        "contents:Process_argument_spoofing/main.c"
+      ],
+      "observed": "main.c hardcodes powershell.exe, the fake arguments 'am fake lol' and the real arguments '-c calc.exe'. func.c creates the process suspended, reads the PEB and RTL_USER_PROCESS_PARAMETERS, writes the real string into CommandLine.Buffer and resumes; there is no input path and no general tool. The README is an unedited template ('specify which if applicable') that claims cross-platform support the code does not have.",
+      "pmask_delta": "Nothing beyond the PEB CommandLine overwrite already shown by LOLsp00f, which does the same with a user-supplied command line, an equal-length spoof and a residue analysis.",
+      "reason": "A two-string demo of the same PEB write, with less detail than the row it duplicates."
+    },
+    {
+      "repo": "activex37b/LOLsp00f",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:LOLsp00f.nim"
+      ],
+      "observed": "A Nim shell builds a spoofed command line of the same length (binary plus spaces), starts the LOLBin suspended, walks PEB to RTL_USER_PROCESS_PARAMETERS to CommandLine.Buffer with ReadProcessMemory, writes the real arguments over the fake ones and resumes. The README lists the residue: a suspended process, trailing spaces and a WriteProcessMemory call.",
+      "pmask_delta": "pmask makes the creation-time record and the process's later view agree; this is the inverse ordering on Windows, where creation telemetry keeps the benign string and only a later PEB read sees the real one. It names the exact creation-record versus later-read gap pmask claims to close, and the residue list is a detector checklist for the same class.",
+      "reason": "Shows the creation-record versus later-read split and its detection residue, the property pmask's kernel-consistency claim depends on."
+    },
+    {
+      "repo": "waldh4ri/zygarde",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:cells/process/process.go",
+        "contents:cells/process/masquerade.go"
+      ],
+      "observed": "A Go/eBPF CO-RE detector: cells/process compares a BPF task iterator with readdir('/proc') taken before and after, and masquerade.go flags a process whose comm matches a kernel-thread prefix (kworker/, ksoftirqd/, ...) or whose cmdline is bracketed without PF_KTHREAD, an exe under /memfd:, /dev/shm, /tmp, a hidden directory or deleted, and a cmdline with a 32-byte-or-longer run of spaces or NULs after trailing NULs are trimmed. Trailing NULs alone are explicitly excluded as setproctitle residue.",
+      "pmask_delta": "pmask does not hide the pid, so the hidden_process cell stays clean, and its one-NUL exact window does not trip the padding rule. But --label 'kworker/0:1' is accepted (src/mask.rs rejects only NUL, LF and CR) and would be reported as a process posing as a kernel thread, and --rexec yields exe=/memfd:<label> (deleted), which this cell classifies as a memory-backed executable; both are label-choice consequences the docs do not name.",
+      "reason": "Source-level detector that names two concrete pmask configurations it would flag, and confirms the exact window is not flagged."
+    },
+    {
+      "repo": "Idov31/Silverseal",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:silverseal-rootkit/silverseal_rootkit.rs",
+        "contents:silverseal-rootkit/src/lib.rs"
+      ],
+      "observed": "The repository is a UEFI bootkit that swaps grubx64.efi and hooks the kernel boot path to insmod a module; the 'Rust kernel rootkit' it loads is silverseal_rootkit.rs, whose init only calls pr_info!(\"hello world\") and whose src/lib.rs is an empty rust-analyzer stub. The README's 'stealthy kernel rootkit' is not implemented, and the repo also ships a YARA rule for its own bootkit.",
+      "pmask_delta": "No process-metadata mechanism: the module hides nothing and there is no argv, environ or comm code. The only novel property, pre-OS persistence, is outside pmask's stated trust boundary, where root on the host already sees everything.",
+      "reason": "The claimed rootkit is a hello-world stub, and a bootkit adds no lesson for an unprivileged metadata redactor."
+    },
+    {
+      "repo": "OWLZOPS/owlzops-mapper",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/scanners/ghost_pid.rs",
+        "contents:src/scanners/dlp.rs"
+      ],
+      "observed": "A static Rust scanner. ghost_pid.rs diffs readdir('/proc'), stat('/proc/<pid>') and kill(pid,0) across three probe cycles with a hidepid=2 guard; dlp.rs (SEC-014) reads /proc/<pid>/environ and /proc/<pid>/cmdline and flags secret-shaped keys, --password=/--token= flags and mysql -p inline passwords at the byte level.",
+      "pmask_delta": "A ready-made external negative control: run it against a masked command with a token in argv and require no SEC-014 finding, then against the unwrapped command and require one. Its ghost-pid check also confirms that pmask leaving the pid listed causes no false positive, and its hidepid guard is the same interaction pmask's private procfs creates.",
+      "reason": "A real, source-verified scanner that reads exactly the two files pmask rewrites and can serve as an external before/after test."
+    }
+  ],
+  "notes": "All 8 metadata, README and tree fetches succeeded through the pkgforge proxy; no retries or failed requests. CSV basis upgrades: activex37b/LOLsp00f, waldh4ri/zygarde, OWLZOPS/owlzops-mapper and dedene/claw-wrap were listed as description-only but READMEs and, for the first three, source were readable; all four now have readme/source evidence. Contradiction worth carrying: Idov31/Silverseal's README claims a stealthy Rust LKM rootkit but silverseal-rootkit/silverseal_rootkit.rs is a pr_info!(\"hello world\") module. S4L1Mabd/Process_ARG_Spoofing's README claims cross-platform support while the code is a hardcoded Windows demo. check-argv-secrets' 'test corpus' claim is verified only as a static bad/good fixture set; it never observes a running process, so it must be repurposed as payload input, not run as a detector. pathtofile/commandline_cloaking is pre-2025 but absent from pmask's comparison table and is the only row supplying Sysmon/Tetragon observers."
+}

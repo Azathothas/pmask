@@ -1,0 +1,110 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-10",
+  "repos": [
+    {
+      "repo": "maxvarm/memfd-process-hide",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/hide.c",
+        "contents:auditd/local.txt",
+        "contents:auditd/audit.conf"
+      ],
+      "observed": "src/hide.c reads a local file or a TCP stream into a memfd (name \"initd\"), forks, and calls fexecve(fd, argv, environ) with argv[0] set to /usr/bin/grep; the user's arguments are passed through untouched. auditd/local.txt shows the resulting kernel record: syscall=execveat, exe=/memfd:initd (deleted), comm=3, but EXECVE argc=4 a0=/usr/bin/grep a1=-n a2=2 a3=/etc/passwd, plus a separate memfd_create line under the same audit key with ppid carrying the launcher's pid. The audit.conf rule is `-S execve -S execveat -S fork -S memfd_create -F uid=demo`, so the trick is caught by a memfd_create rule even though the binary path is hidden.",
+      "pmask_delta": "pmask --rexec produces the same exe=/memfd:<label> (deleted), but its README lists only map_files and vm.memfd_noexec as the costs. This repo's measured audit log shows the other two: memfd_create is an auditable syscall, and auditd still records argv at exec time, so the memfd trick redacts only the binary path. The launcher process stays visible with its own argv and the ppid links it to the payload, which does not apply to pmask because the supervisor execs the payload rather than forking it.",
+      "reason": "It is the measured auditd record for the exact memfd-exe surface --rexec claims, and it shows which parts of the command line survive it."
+    },
+    {
+      "repo": "ags-slc/s2",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/commands/exec.rs",
+        "contents:src/mask.rs"
+      ],
+      "observed": "src/commands/exec.rs loads the secret files, overlays the decrypted values onto a Vec<(String, String)> environment, and calls nix::unistd::execve with that vector as envp; secrets are read from stdin, so they never enter argv. src/mask.rs is only terminal-display masking for scan/migrate output. The exec'd child therefore holds the values in /proc/<pid>/environ for its lifetime, readable by any same-uid process, which is the opposite of what the README's \"never appear in env/printenv\" implies.",
+      "pmask_delta": "s2 is the naive form of pmaskd: the secret stays out of the parent shell and shell history, but it lands in the child's environment window. pmask's envp swap plus PR_SET_MM_MAP env_start/env_end relocation is exactly the missing half, and s2 has no label, no tree policy and no per-variable keep/redact choice.",
+      "reason": "A source-verified environment-injection tool whose residue is the precise surface pmask's environ relocation removes."
+    },
+    {
+      "repo": "kurowashi/pi-placeholder",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/substitute.ts",
+        "contents:src/index.ts"
+      ],
+      "observed": "src/substitute.ts is a pure string substituter: redact() replaces secret matches in tool results with placeholders, restore() replaces placeholders with the literal secret in tool arguments, and index.ts applies restore() to every tool_call input (including bash) just before the tool runs. No file in the repository reads or writes /proc, argv, environ or comm; the config, the ADRs and the README are all about the model transcript.",
+      "pmask_delta": "It protects the model context, not process metadata, and its restore step deliberately re-expands the secret into the tool's arguments before execution, so an agent using it still hands the real value to the child's argv. There is no surface here that pmask does not already handle, and nothing specific said about argv or environment exposure.",
+      "reason": "A transcript-only placeholder plugin with no process surface; it teaches nothing about /proc and re-exposes the value to tool arguments by design."
+    },
+    {
+      "repo": "threatexpert/atrk-linux",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/atrk.c",
+        "contents:src/sh-atrk.sh"
+      ],
+      "observed": "src/atrk.c implements the detector's helper applets: epoll-based non-blocking connect over a port range, O_CREAT|O_EXCL and access() over a numeric range, and kill(pid, 0) over a PID range. src/sh-atrk.sh runs each method over a PID range, diffs the brute-force result against the /proc listing from get_ptids(), and for the suspects only prints /proc/<pid>/comm and /proc/<pid>/cmdline. There is no comparison of that content against anything, and no read of environ or arg_start/arg_end; the tree vendors e2fsprogs for offline directory parsing.",
+      "pmask_delta": "It detects PID, file and port hiding by probing paths a readdir hook cannot filter, then displays the hidden process's comm and cmdline. pmask hides neither the PID nor its existence (its own limit list says root sees that a pid exists), so this tool finds a masked process immediately and prints the label it already exposes; it never checks whether cmdline agrees with the kernel's windows, so it exercises none of the claims under test.",
+      "reason": "A detector for the PID-enumeration surface pmask explicitly does not defend, with no content-level check to reuse."
+    },
+    {
+      "repo": "cc-Infiltration/SysHideTools",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:main1.cpp"
+      ],
+      "observed": "main1.cpp is a 905-line Win32 dialog whose only hiding primitive is SetFileAttributes(path, ... | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN) on one file chosen through a file picker, plus AES encryption of its own history file. There is no process, window, driver, NtQuerySystemInformation or kernel code anywhere in it. The README claims process, window and file hiding and 'kernel-level' operation, and its own roadmap still lists '实现真正的系统级隐藏' (implement real system-level hiding) as future work.",
+      "pmask_delta": "A Windows file-attribute toggle. It touches no process metadata, has no equivalent on the Linux /proc surface, and the README contradicts the only code in the repository.",
+      "reason": "A demo GUI that sets one file attribute; there is no process mechanism to learn from or verify."
+    },
+    {
+      "repo": "0xKirisame/SPiCa",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:spica-detect/src/lib.rs"
+      ],
+      "observed": "The 51 KB README specifies a three-view differential: a scheduler ledger L written by eBPF sched_switch/fork/exit tracepoints with a hash chain and NMI notary, raw getdents64 R, and libc readdir C, with a truth table that classifies DKOM, LD_PRELOAD hooking, ghost entries and injected entries. spica-detect/src/lib.rs contains no reference to cmdline, environ, arg_start, arg_end or auxv; it compares TGID existence across the three channels, records the kernel-supplied start_time for a reserved TGID-impersonation check, and never reads what a process's metadata says.",
+      "pmask_delta": "It is the strongest cross-view detector in the set and it is existence-only, so a default pmask process (same PID, same scheduler record, same listing) is clean to it: the engine cannot distinguish a masked cmdline from a real one. That makes it a usable external negative control for pmask's 'we do not hide the PID, we change the text' boundary, and a concrete statement that this detector class does not test redaction quality. It does not supply a content-level oracle, and its own limitation table concedes that same-privilege ptrace/mem reads are out of scope, which matches pmask's limit row.",
+      "reason": "A real kernel-anchored cross-view engine, source-verified to compare existence rather than metadata, usable as the external test pmask's detection doc lacks."
+    },
+    {
+      "repo": "cagansv/process-ghost",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:main.py",
+        "contents:utils.py",
+        "contents:gui.py"
+      ],
+      "observed": "utils.py hides a PID by running `mount --bind /tmp/.ghost_<pid> /proc/<pid>` and reveals it with `umount`; main.py parses -p/-n/--reveal and checks euid 0, and gui.py is a CustomTkinter front end that calls the same find/hide/reveal functions. There is no unshare, setns or namespace flag in any of the four files, so the CSV's 'mount namespace manipulation' is wrong: the bind mount is host-wide, needs root, and empties the target's own /proc/self view. The hiding logic is two subprocess calls and the remaining code is argument parsing and the dialog.",
+      "pmask_delta": "pmask --unshare already gives the payload a private procfs without root and without touching the host's mount namespace. This variant hides a PID from every reader including the process itself, and is root-only, so it is strictly worse on both axes that matter to pmask.",
+      "reason": "Forty lines around mount --bind with no namespace, root-only and globally destructive, and it teaches nothing pmask's existing --unshare does not already do better."
+    },
+    {
+      "repo": "sylirre/fake-chroot-ng",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/monitor/procfs.c"
+      ],
+      "observed": "src/monitor/procfs.c builds a userspace /proc for the guest and, in point_kernel_record(), probes PR_SET_MM_MAP with PR_SET_MM_MAP_SIZE, fills start_code/end_code/start_stack/start_data/end_data/start_brk/brk from /proc/self/stat and brk(0), sets arg_start/arg_end/env_start/env_end to the loader-built stack, and leaves exe_fd=-1 and auxv_size=0 with the comment that those two are 'what keeps the call unprivileged'. A comment records that Android 5.15 kernels built without CONFIG_CHECKPOINT_RESTORE answer EPERM, and that the fallback emulates cmdline and environ at read time following the kernel's get_mm_cmdline rules (one page, never past env_end, overflow only into an environment that starts where argv ends). The README states the whole guest path is ptrace-free: seccomp RET_TRAP to SIGSYS plus an in-process userland ELF loader, so no real execve happens.",
+      "pmask_delta": "An independent, non-ptrace implementation of pmask's central relocation, reached from an Android/AArch64 loader. It corroborates the unprivileged condition pmask relies on (leave exe_fd and auxv alone), gives a measured kernel/Android case where the map is refused, and shows a fallback pmask does not have: a userspace procfs that renders cmdline from live memory with the kernel's own rules. Its interception mechanism (seccomp RET_TRAP plus an in-process loader) is also a route for the post-exec and script windows where pmask's exec-entry swap cannot reach.",
+      "reason": "It independently verifies the PR_SET_MM_MAP mechanism and its unprivileged precondition, and supplies a fallback for the CONFIG_CHECKPOINT_RESTORE-refused host pmask documents but does not handle."
+    }
+  ],
+  "notes": "No fetch failed: all eight metadata, README, tree and contents requests returned 200; no backoff was triggered. Source reads beyond the README: maxvarm src/hide.c + auditd/local.txt + auditd/audit.conf, s2 src/commands/exec.rs + src/mask.rs, pi-placeholder src/substitute.ts + src/index.ts, atrk src/atrk.c + src/sh-atrk.sh, SysHideTools main1.cpp (905 lines, read fully), SPiCa spica-detect/src/lib.rs (59 KB, grepped for the metadata surfaces), process-ghost main.py + utils.py + gui.py, fake-chroot-ng src/monitor/procfs.c (104 KB, grepped and read around the PR_SET_MM_MAP and get_mm_cmdline sections). No whole tree was read; atrk's 2,736-entry tree was listed only and its vendored e2fsprogs was not opened. CSV contradictions and basis upgrades: (1) cagansv/process-ghost is described as mount-namespace manipulation but the code calls mount --bind in the current namespace; there is no unshare/setns anywhere and the README does not claim one either. (2) cc-Infiltration/SysHideTools is described as a system-level process/window/file hider; the only hiding primitive in main1.cpp is FILE_ATTRIBUTE_SYSTEM|HIDDEN on a single file, and its own roadmap says real system-level hiding is still future work. (3) threatexpert/atrk-linux is a genuine brute-force detector, but it compares PID/file/port existence and only prints the suspect's comm and cmdline; it never checks cmdline content against the kernel's windows or reads environ. (4) kurowashi/pi-placeholder's description is accurate; the source confirms it is transcript-only and restores the literal secret into tool arguments. (5) 0xKirisame/SPiCa's basis moves from description to source-read, and the source confirms the engine has zero references to cmdline, environ, arg_start/arg_end or auxv. (6) maxvarm/memfd-process-hide's basis moves from README to source plus its own audit log. (7) ags-slc/s2 moves from description to source: secrets go into the child envp via execve and are therefore in /proc/<pid>/environ. (8) sylirre/fake-chroot-ng moves from README to source: PR_SET_MM_MAP with arg/env ranges is confirmed in procfs.c. Merge-relevant findings: (a) the 2025-2026 cross-view detector class represented by SPiCa compares process existence, not metadata content; none of the detectors in this slice reads arg_start/arg_end, so pmask's kernel-consistency claim is not tested by any of them, and the only content-level checks remain pmask's own compare.sh/conformance.sh. (b) The memfd audit log shows the kernel records argv in the EXECVE record even when exe=/memfd:initd (deleted), and memfd_create is separately auditable; pmask's --rexec limits paragraph and audit.sh story should cite both. (c) fake-chroot-ng's point_kernel_record() comment states the exact unprivileged precondition (exe_fd=-1, auxv_size=0) and a measured refusal on Android 5.15 without CONFIG_CHECKPOINT_RESTORE; pmask's probe table can cite that as the second data point alongside gershnik/processtitle. Verdicts I am least sure of: cagansv/process-ghost (it is a distinct mechanism, bind-mount over /proc/<pid>, but a forty-line demo whose only lesson is that the root-only global variant breaks the target's self-view, which --unshare already answers) and threatexpert/atrk-linux (a real detector, dropped only because its surface is PID existence, which pmask does not defend)."
+}

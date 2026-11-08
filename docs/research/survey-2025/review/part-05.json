@@ -1,0 +1,112 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-05",
+  "repos": [
+    {
+      "repo": "sitano/ghidearg",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "erikdubbelboer/gspt",
+      "evidence": [
+        "readme",
+        "contents:hide.go",
+        "contents:hide_linux.go",
+        "contents:hide_other.go"
+      ],
+      "observed": "A 2015 Go package: a C .init_array constructor captures argc/argv, and HideArg finds a named flag's value in os.Args and overwrites those bytes in place with a caller-supplied fill character. It does not relocate anything, does not touch comm, and covers one process, not a tree; the string keeps its original length.",
+      "pmask_delta": "This is the same in-process, per-program argv overwrite as the gspt and setproctitle rows, and the .init_array capture only exists because a Go library cannot ptrace itself. pmask's exec-entry swap plus PR_SET_MM_MAP window move strictly dominates it, and the fixed-length fill is the residue pmask's exact mode removes.",
+      "reason": "A thin Go in-place argv-value overwrite with the same lesson as the gspt row and no environ, comm or tree surface."
+    },
+    {
+      "repo": "b1ackow1/FakeProcessNameDemo",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/main.rs"
+      ],
+      "observed": "A CTF teaching demo: reads /proc/self/maps for [stack], scans the last 1 MB for argv[0] followed by a NUL, then computes the presentation extent from /proc/self/cmdline plus /proc/self/environ and zeros the whole extent before writing the new name at argv[0]; prctl(PR_SET_NAME) sets comm, truncated to 15 bytes. It never touches arg_start/arg_end, so cmdline keeps the original span full of NULs, and the wipe also destroys the environ strings, which is more than the row's 'overwrite argv[0]' claim. The source says it was written for an AWD CTF teaching environment.",
+      "pmask_delta": "It is the source-verified ceiling of the in-process approach and a ready negative control for the exact window: the stat span stays at the original length, the NUL run is long, and environ is zeroed, which is exactly what pmask's swap plus relocation avoids. Its [stack] scan also fails against a pmask payload, whose real argv strings live in an injected anonymous mapping rather than the original stack block.",
+      "reason": "A 2025+ unprivileged direct tool with readable source that demonstrates the residue pmask's exact mode is built to remove."
+    },
+    {
+      "repo": "aliyun/credagent",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:internal/cmdline/auditd_linux.go",
+        "contents:internal/cmdline/manager_linux.go",
+        "contents:internal/osutil/process_impl_linux.go",
+        "contents:internal/osutil/process_risk.go",
+        "contents:system_test/cmdline_tamper_test.sh"
+      ],
+      "observed": "A FUSE credential broker that releases plaintext only after caller checks. The Linux runtime check in process_impl_linux.go returns Untrusted on TracerPid != 0 or Seccomp mode 2, and process_risk.go runs that check on every CheckRisk call and returns on the first Untrusted result; auditd_linux.go adds execve rules on interpreter paths and caches the kernel's EXECVE argv per pid. The shipped system_test/cmdline_tamper_test.sh reads /proc/self/stat fields 48/49 and memmoves a fake cmdline over argv to impersonate an authorized script, expecting the default /proc-only mode to be bypassed and the auditd/eBPF 'trusted cmdline' modes to block it.",
+      "pmask_delta": "A real 2026 deployment that treats cmdline as an identity signal, and a test of exactly the surface pmask rewrites. The test's own model is that the policy engine extracts the script path from the cmdline and hashes it; pmask swaps at exec entry, so the auditd EXECVE record and /proc both carry the label, and a label naming an authorized script would satisfy that model while a different script runs. The TracerPid != 0 runtime check is one gate that exposes a supervised process; --detach clears that one, and the ancestor-chain and exe-allowlist checks are the remaining gates. If the deployment lists the agent harness in TrustedHarness, CheckRisk's FreeCheck path skips every check for its descendants, which is where an agent-launched pmask sits. The tamper test is a ready-made external control, and the TracerPid check is a deployment incompatibility pmask must document.",
+      "reason": "A real cmdline-attestation deployment plus a shipped tamper test that directly exercises pmask's surface and the TracerPid check that catches it."
+    },
+    {
+      "repo": "0xlane/cmd-spoofing",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:cmd-spoofing.cpp"
+      ],
+      "observed": "Windows: CreateProcessA starts the process with argv[1] suspended, then reads the PEB via NtQueryInformationProcess and overwrites RTL_USER_PROCESS_PARAMETERS.CommandLine.Buffer with argv[2] in place, padding argv[1] with newlines when it must be longer and updating Length before ResumeThread. The creation event therefore keeps argv[1] while PEB readers see argv[2]; the README calls the former forged and the latter actual.",
+      "pmask_delta": "Windows-only, pre-2025, with no equivalent on the Linux /proc surface; the creation-telemetry-versus-runtime-view split is already carried by the newer PEB rows and by pmask's own detection document, and the newline padding is the Windows form of the argv padding the setproctitle rows already show.",
+      "reason": "A 2023 Windows PEB tool whose only nuance, ETW-versus-PEB divergence, is context with no transferable Linux mechanism."
+    },
+    {
+      "repo": "K0rnhulio/ksu_hideproc",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "description",
+        "tree:409-empty"
+      ],
+      "observed": "The repository is empty: metadata reports size 0 and the same created and pushed second, the README endpoint returns 404 and the tree endpoint 409; the description promises user-space scripts and a future kernel module. There is no code, no README and no commit.",
+      "pmask_delta": "There is no artefact to verify and no mechanism to learn; Android package-name process hiding is already represented by source-bearing rows such as NuoNb/LDKit and Wcccc06/adf, so this adds a name and a plan only.",
+      "reason": "Empty repository with no readable files, so it cannot teach a mechanism or serve as threat evidence."
+    },
+    {
+      "repo": "rtvkiz/process-hider",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "NuoNb/LDKit",
+      "evidence": [
+        "readme",
+        "contents:process.c"
+      ],
+      "observed": "A 2.4 KB readdir hook: when the DIR* fd resolves to exactly /proc, it parses /proc/<pid>/stat with a comm regex and skips the entry whose comm equals evil_script.py, calling original_readdir once more; it prints a debug line on every call and has no configuration. The README says it is a modified version of a sysdig blog example.",
+      "pmask_delta": "The same readdir-filter lesson as LDKit with fewer surfaces and two defects (the comm regex breaks on a ')' inside comm, and the single re-read skips only one entry); pmask never enumerates /proc to present itself, and LDKit already supplies the source-verified readdir row.",
+      "reason": "A blog-derived teaching snippet that duplicates the LDKit readdir row and adds no surface."
+    },
+    {
+      "repo": "NuoNb/LDKit",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:ldkit.c",
+        "contents:config.h"
+      ],
+      "observed": "Android ARM64 LD_PRELOAD rootkit: readdir/readdir64 skip /proc PID entries whose /proc/<pid>/cmdline contains a configured keyword (read with raw open/read to dodge its own hooks); fopen/fgets drop /proc/net/tcp lines for configured local ports; getenv returns NULL for LD_PRELOAD; fopen also marks /etc/ld.so.preload for filtering. Two README claims do not survive the code: the /etc/ld.so.preload filter cannot fire because fgets only drops lines whose parsed local port matches, and the getenv hook leaves LD_PRELOAD visible through environ and /proc/<pid>/environ.",
+      "pmask_delta": "A source-verified example of libc-level env and listing concealment and its ceiling: hiding LD_PRELOAD from getenv() does not hide it from the kernel's environ window, which is the surface pmask moves. Its cmdline-keyword targeting is defeated by a label that does not contain the keyword, and its own should_hide_pid reads /proc/<pid>/cmdline with raw open/read, the bypass that defeats this whole readdir class.",
+      "reason": "The one source-verified row showing the getenv-versus-/proc/environ split, with a README that overclaims what the code hides."
+    },
+    {
+      "repo": "finogeeks/finsafe",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree",
+        "contents:docs/finsafe-linux-macos-overview-zh.md",
+        "contents:examples/wrapper-policies/README.md"
+      ],
+      "observed": "The repository holds installers (install.sh, install.ps1, fleet and MDM scripts), launchd/systemd units, dozens of example policy YAMLs, agent skills and Chinese product docs; there is no sandbox implementation. The policies name Seatbelt on macOS, AppContainer/RestrictedToken on Windows and finsafe run/self-confine on Linux, and constrain files and network, not process metadata.",
+      "pmask_delta": "A product whose sandbox implementation is not in this repository, with no code to read and no cmdline, environ, comm or /proc mechanism; the install and fleet pattern is deployment information for a different product, not a lesson for pmask.",
+      "reason": "Installer, packaging, policy examples and docs only, with no mechanism to verify."
+    }
+  ],
+  "notes": "All fetches returned 200 except K0rnhulio/ksu_hideproc (README 404, tree 409, size 0). No retry or backoff was triggered. K0rnhulio/ksu_hideproc is dropped rather than keep-caveat because there is no artefact at all, not merely an unread one; if the merge wants Android context, it is description-only. CSV contradictions found: (1) b1ackow1/FakeProcessNameDemo does not just overwrite argv[0]; src/main.rs zeroes /proc/self/cmdline-length plus /proc/self/environ-length bytes from argv[0], so it wipes environ too and leaves the original arg_start/arg_end span. (2) Its note 'only 2025+ direct in-process tool found' conflicts with gershnik/processtitle (part-06, 2026-03-08, in-process and source-read); the lane doc already lists both. (3) NuoNb/LDKit's README/config claim LD_PRELOAD is hidden from env/printenv and /etc/ld.so.preload contents are hidden, but ldkit.c only hooks getenv and its fgets filter cannot match a path line; code wins. (4) aliyun/credagent's basis was 'description'; it is now source-read, and the row's 'treats cmdline as an identity signal' is confirmed. (5) sitano/ghidearg's basis 'README, mechanism inferred' is now source-confirmed (init_array capture, in-place fill); if gspt is dropped elsewhere, ghidearg should still not be resurrected on its own, since the lesson is the setproctitle class. Highest-value finding for the merge: credagent's TracerPid != 0 and Seccomp=2 check would classify a default pmask tracee as Untrusted, and its tamper test's model implies that an exec-entry swap defeats the auditd 'trusted cmdline' comparison that catches a post-exec rewrite; this belongs in pmask's compatibility and detection-residue notes. The TracerPid gate is not the only one: the same CheckRisk also walks the ancestor chain and checks the exe allowlist, and its FreeCheck path trusts any descendant of a configured trusted harness, so the gate is conditional on the harness not being whitelisted. credagent needed five source files, one over the per-repo budget, because the risk check's call path lives in process_risk.go rather than process_impl_linux.go."
+}

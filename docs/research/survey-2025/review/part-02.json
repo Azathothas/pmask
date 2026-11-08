@@ -1,0 +1,115 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-02",
+  "repos": [
+    {
+      "repo": "erikdubbelboer/gspt",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "dvarrazzo/py-setproctitle",
+      "evidence": [
+        "readme",
+        "contents:gspt.go",
+        "contents:setproctitle.h"
+      ],
+      "observed": "gspt.go captures environ[0] at init, copies os.Args and os.Environ through cgo so Go owns the bytes, then spt_init2 in setproctitle.h walks back from env0 to recover the argv pointer array, computes the argv+environ span, memsets it, and writes the title with space padding up to the original NUL. The environment survives only because Go re-sets every variable via os.Setenv into new storage outside the zeroed span; the title is still capped by the original span.",
+      "pmask_delta": "None for a supervisor: pmask never relies on argv/environ adjacency, and its core.sh already covers a payload that rewrites its own argv. The Go-runtime workaround (capture environ[0] before the runtime replaces the environment, then rebuild argv from it) is a library constraint, not a new /proc surface.",
+      "reason": "Same in-process argv rewrite and same title-length-versus-environment tradeoff as dvarrazzo/py-setproctitle, with no mechanism a ptrace supervisor can use."
+    },
+    {
+      "repo": "scriptzteam/Hidden",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "hackerschoice/zapper",
+      "evidence": [
+        "readme",
+        "contents:hidden.c"
+      ],
+      "observed": "hidden.c attaches with PTRACE_O_TRACEEXEC, waits for the exec to complete (ptrace_until_execve returns SYS_execve), then reads the new stack, moves it down by a gap, fixes the argv/envp pointer arrays and the auxv AT_EXECFN/AT_RANDOM/AT_PLATFORM entries, and zeroes the argv and env string spans; the -a name is written into argv[0] and never into comm. Its own header comment admits the name and options are visible 'for a few milliseconds' before the tracer runs, and names a trampoline that passes options via the environment and reconstructs argv at exec entry as the only fix.",
+      "pmask_delta": "The exec-exit stop is precisely the failure mode pmask avoids with its syscall-entry swap, and that window is already recorded in pmask's README comparison table and its limits list. The source adds an author estimate of a few milliseconds, not a measurement, and pmask's script path still leaves that window unmeasured. The -n PID-iteration gimmick and the argv[0]-only rename are surfaces pmask does not cover.",
+      "reason": "A zapper derivative with the same ptrace stack and auxv rewrite; its one difference, the post-exec window, is already documented by pmask."
+    },
+    {
+      "repo": "royashbrook/hush",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:hush"
+      ],
+      "observed": "The hush shell script is a real secret store with no get verb: `hush run NAME=secret -- cmd` and `hush exec --file` fetch each value into a shell variable, `export` it as an environment variable, and `exec` the command. The source comment states 'environment (NOT argv) ... environ is owner-only', so the value is deliberately kept out of argv and placed in the child's environment.",
+      "pmask_delta": "This is the assumption pmask exists to correct: a 2026 no-get store still delivers the value through the child's environment, and /proc/<pid>/environ is readable by any same-uid process, as pmask's own limit table says. pmask's daemon/agent already implements the no-get lease model and additionally moves the environment window, so hush contributes no mechanism; it is evidence that the ecosystem treats environ as safe.",
+      "reason": "Threat evidence only: a verified no-get store whose env-var injection leaves the secret in /proc/<pid>/environ for same-uid readers."
+    },
+    {
+      "repo": "momenbasel/quiet-operator",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:docs/linux/02-process-stealth-and-masquerading.md"
+      ],
+      "observed": "The Linux process-stealth chapter separates comm from cmdline, shows the in-place argv-span overwrite and its trailing NULs, and gives detection recipes: a comm basename that disagrees with exe, a bracketed comm whose PPID is not 2 or whose cmdline/maps is non-empty, a memfd exe ending in ' (deleted)', and raw getdents64 enumeration that bypasses libc. It ships prose and shell snippets, no tool.",
+      "pmask_delta": "Its bracketed-comm/PPID-2 and comm-versus-exe-basename checks are external controls pmask does not assert: pmask accepts '[kworker/1:2]' as a label (only NUL, LF and CR are rejected) and uses one as a test fixture, but never checks the kthread invariants. The NUL-padding and memfd tells it names are already covered by pmask's compare.sh and its --rexec limits.",
+      "reason": "Docs-only field manual, useful only as threat evidence and as a source of external detection invariants for label validation."
+    },
+    {
+      "repo": "thalium/rkchk",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "rkchk is a Rust kernel module that must be built against the project's patched Rust-enabled kernel fork; its checks hash commonly hooked kernel functions, scan the syscall table, inspect CR0/CR4 and MSR LSTAR, watch the eBPF verifier, and compare the /proc listing with the task_struct list. None of the checks reads cmdline, environ or comm.",
+      "pmask_delta": "It detects LKM hooking and PID hiding, which pmask does not do; its task_struct-versus-/proc check does not apply to a process that stays visible with a rewritten cmdline. Running it against pmask would require a custom kernel build and would observe nothing about the mask.",
+      "reason": "Root-only LKM detector on a surface pmask does not occupy, with no check or test that can observe a masked process."
+    },
+    {
+      "repo": "Winkmoon/Linux_rootkit",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The README is a Chinese tutorial on LKM rootkits: it explains hooking the syscall table and ftrace to replace getdents64, then walks through module, privilege, file, process and port hiding. The repository is a course-style upload with a PPT.pdf and five demo videos, and the code is a teaching implementation of the same getdents64 hook used across the rootkit cluster.",
+      "pmask_delta": "Root-only directory-entry hiding; it never touches argv, environ or comm and is defeated by reading /proc/<pid> directly. It shares the rootkit cluster's lesson with no unique technique or deployment pattern.",
+      "reason": "Tutorial/demo LKM rootkit with no distinguishing mechanism and no bearing on unprivileged metadata redaction."
+    },
+    {
+      "repo": "safe1024/apollolnk",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The repository contains only a README: metadata reports no language and a 2 KB tree, and the tree shows no source file. The text describes a Windows GUI generator for LNK shortcuts with icon spoofing, decoy directory nesting, `attrib +S +H`, and an optional argument-hiding mode.",
+      "pmask_delta": "A Windows shortcut-file surface with no Linux /proc mechanism and no published code to inspect. Hiding launch arguments in a .lnk does not transfer to argv, environ or comm.",
+      "reason": "README-only Windows shortcut generator; there is no code and no Linux process-metadata mechanism to learn from."
+    },
+    {
+      "repo": "manuelpenazuniga/ClawCrate",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:crates/clawcrate-sandbox/src/env_scrub.rs"
+      ],
+      "observed": "ClawCrate is a Rust sandbox that applies Landlock plus seccomp on Linux, a Seatbelt profile on macOS, and a wildcard env scrub/passthrough list before exec (env_scrub.rs removes matching variables from the child and records the removed names). It also writes a hash-chained audit ledger. Neither the README nor env_scrub.rs addresses argv, cmdline, comm or /proc metadata.",
+      "pmask_delta": "pmask's isolate.rs already applies Landlock, seccomp and namespace isolation, and its environment policy is stronger for this purpose (a default-empty environ with an explicit --keep-env allowlist). The audit ledger records executions rather than concealing them, so it adds nothing to the metadata surface.",
+      "reason": "Kernel-sandbox primitives pmask already implements, with no process-metadata surface and no mechanism it lacks."
+    },
+    {
+      "repo": "monocursive/ukai",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:crates/ukai-jail/src/platform/linux/tracer/mod.rs",
+        "contents:crates/ukai-jail/src/platform/linux/tracer/session/args.rs",
+        "contents:crates/ukai-ledger/src/runner/argv_capture.rs"
+      ],
+      "observed": "ukai-jail is a bubblewrap-backed agent sandbox with its own ptrace tracer; the tracer's event model confirms exec transitions, snapshots the entry pathname, then re-reads the kernel's own /proc/<tid>/cmdline and /proc/<tid>/exe at the stopped-exec stop because a sibling thread can rewrite the tracee's memory between the entry read and the kernel's copy (an explicit A-B-A race). It emits Gap events carrying a reason, the affected operations, start and end timestamps and an optional count when coverage is lost, and the ledger captures raw argv to an argv.bin artifact. The tracer reads cmdline for rule enforcement; it does not rewrite argv, environ or comm.",
+      "pmask_delta": "Two reusable ideas: (1) a runtime read of the kernel's own cmdline at the exec stop to detect an A-B-A rewrite between the entry swap and the kernel's copy, which pmask does not check at runtime, and (2) an explicit coverage-gap ledger that bounds unknown-size holes; pmask's summary counts degraded execs and leaves the script window duration unmeasured. Its raw argv receipt is also the opposite policy, showing where a masking layer must sit when evidence is required.",
+      "reason": "A source-verified ptrace supervisor whose stopped-exec re-read, race model and gap accounting are directly reusable, even though it redacts no metadata."
+    }
+  ],
+  "notes": "No fetch failures: metadata and README returned 200 for all nine repos, and every contents call returned 200 on the first attempt. CSV corrections: Hidden's exec-exit stop is confirmed by source (fix_stack runs after PTRACE_O_TRACEEXEC, header comment admits the window); gspt's 'rewriting the argv block' is incomplete, since it zeroes argv+environ and relies on os.Setenv to rebuild the environment; hush, ClawCrate, rkchk and ukai had basis=description and are now source/README-verified. ukai's note 'no metadata redaction' holds for argv/environ/comm, but it does read /proc/<pid>/cmdline for rule re-checks, which is the useful part. gspt duplicates dvarrazzo/py-setproctitle (part-01) and Hidden duplicates hackerschoice/zapper (part-01); if the merge keeps a prose citation to Hidden for the post-exec window, the row can stay out of the table. quiet-operator was read at docs/linux/02-process-stealth-and-masquerading.md; its detection recipes are prose and shell, not a runnable suite, hence keep-caveat."
+}

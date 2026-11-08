@@ -1,0 +1,141 @@
+reproducible: yes (sh docs/research/MICROVM-probes/run.sh)
+
+=== host conditions
+date=2026-11-03T12:18:33Z
+Linux errand-6ikd73jk7opg 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+uid=1000 gid=1000 caps=0000000000000000
+seccomp=2
+1
+yama.ptrace_scope=0
+vm.memfd_noexec=0
+qemu=/usr/bin/qemu-system-x86_64 QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)
+kvm=usable
+
+=== interface probe (uid 1000, no capabilities)
+== caller's own access to kernel objects and sockets
+  kernel file /dev/kvm               stat ok, read refused mode 666 EINVAL (22)
+  kernel file /dev/mem               refused              ENOENT (2)
+  kernel file /dev/kcore             refused              ENOENT (2)
+  kernel file /proc/kcore            stat ok, read refused mode 400 EACCES (13)
+  kernel file /proc/net/tcp          readable             mode 444, 1950 bytes
+  kernel file /proc/net/unix         readable             mode 444, 5598 bytes
+  kernel file /sys/kernel/mm/transparent_hugepage stat ok, read refused mode 755 EISDIR (21)
+  netlink NETLINK_CONNECTOR socket   ok                   created
+  perf_event_open                    refused              EACCES (13)
+  userfaultfd                        refused              EPERM (1)
+  inotify_init                       ok                   fd 3
+  SO_PEERCRED                        ok                   peer pid 784167 uid 1000 gid 1000
+  SO_PEERPIDFD                       ok                   fd 5
+
+--- plain sibling, same uid, dumpable (pid 784168)
+TracerPid=784167 cmdline=b'/bin/sleep\x0030\x00'
+  proc file cmdline                  readable             14 bytes
+  proc file environ                  readable             2313 bytes
+  proc file comm                     readable             6 bytes
+  proc file stat                     readable             312 bytes
+  proc file status                   readable             1503 bytes
+  proc file maps                     readable             3636 bytes
+  proc file smaps                    readable             29287 bytes
+  proc file fd                       refused              EISDIR (21)
+  proc file fdinfo                   refused              EISDIR (21)
+  proc file exe                      readable             43432 bytes
+  proc file cwd                      refused              EISDIR (21)
+  proc file root                     refused              EISDIR (21)
+  proc file ns                       refused              EISDIR (21)
+  proc file cgroup                   readable             9 bytes
+  proc file auxv                     readable             368 bytes
+  proc file syscall                  readable             80 bytes
+  proc file stack                    refused              EACCES (13)
+  proc file wchan                    readable             17 bytes
+  proc file io                       readable             94 bytes
+  proc file limits                   readable             1323 bytes
+  proc file loginuid                 readable             10 bytes
+  proc file sessionid                readable             10 bytes
+  proc file mountinfo                readable             5879 bytes
+  proc file mem                      refused              EIO (5)
+  proc dir listing                   readable             56 entries
+  pidfd_open                         ok                   fd 3
+  pidfd_getfd                        ok                   fd 4
+  process_vm_readv                   ok                   8 bytes from 0x563dd0446000
+  process_vm_writev                  ok                   8 bytes to 0x563dd0451000
+  PTRACE_ATTACH                      ok                   attached and detached
+  PTRACE_SEIZE                       ok                   seized and detached
+  kcmp                               ok                   rc 0
+
+--- pmask masked sibling: --detach --no-dumpable (pid 784169)
+TracerPid=784167 cmdline=b'microvm-probe\x00'
+--- payload of the session (pid 784171)
+TracerPid=0 cmdline=b'microvm-probe\x00'
+  proc file cmdline                  readable             14 bytes
+  proc file environ                  refused              EACCES (13)
+  proc file comm                     readable             14 bytes
+  proc file stat                     readable             185 bytes
+  proc file status                   readable             1512 bytes
+  proc file maps                     refused              EACCES (13)
+  proc file smaps                    refused              EACCES (13)
+  proc file fd                       refused              EACCES (13)
+  proc file fdinfo                   refused              EACCES (13)
+  proc file exe                      refused              EACCES (13)
+  proc file cwd                      refused              EACCES (13)
+  proc file root                     refused              EACCES (13)
+  proc file ns                       refused              EACCES (13)
+  proc file cgroup                   readable             9 bytes
+  proc file auxv                     refused              EACCES (13)
+  proc file syscall                  refused              EACCES (13)
+  proc file stack                    refused              EACCES (13)
+  proc file wchan                    readable             1 bytes
+  proc file io                       refused              EACCES (13)
+  proc file limits                   readable             1323 bytes
+  proc file loginuid                 readable             10 bytes
+  proc file sessionid                readable             10 bytes
+  proc file mountinfo                readable             5879 bytes
+  proc file mem                      refused              EACCES (13)
+  proc dir listing                   readable             56 entries
+  pidfd_open                         ok                   fd 3
+  pidfd_getfd                        refused              EPERM (1)
+  process_vm_readv                   not attempted        no readable mapping
+  process_vm_writev                  not attempted        no writable mapping
+  PTRACE_ATTACH                      refused              EPERM (1)
+  PTRACE_SEIZE                       refused              EPERM (1)
+  kcmp                               refused              EPERM (1)
+  proc file cmdline                  readable             14 bytes
+  proc file environ                  readable             0 bytes
+  proc file comm                     readable             14 bytes
+  proc file stat                     readable             329 bytes
+  proc file status                   readable             1511 bytes
+  proc file maps                     readable             3185 bytes
+  proc file smaps                    readable             28899 bytes
+  proc file fd                       refused              EISDIR (21)
+  proc file fdinfo                   refused              EISDIR (21)
+  proc file exe                      readable             921832 bytes
+  proc file cwd                      refused              EISDIR (21)
+  proc file root                     refused              EISDIR (21)
+  proc file ns                       refused              EISDIR (21)
+  proc file cgroup                   readable             9 bytes
+  proc file auxv                     readable             368 bytes
+  proc file syscall                  readable             88 bytes
+  proc file stack                    refused              EACCES (13)
+  proc file wchan                    readable             16 bytes
+  proc file io                       readable             95 bytes
+  proc file limits                   readable             1323 bytes
+  proc file loginuid                 readable             10 bytes
+  proc file sessionid                readable             10 bytes
+  proc file mountinfo                readable             5879 bytes
+  proc file mem                      refused              EIO (5)
+  proc dir listing                   readable             56 entries
+  pidfd_open                         ok                   fd 3
+  pidfd_getfd                        ok                   fd 4
+  process_vm_readv                   ok                   8 bytes from 0x560a131cb000
+  process_vm_writev                  ok                   8 bytes to 0x560a132ad000
+  PTRACE_ATTACH                      ok                   attached and detached
+  PTRACE_SEIZE                       ok                   seized and detached
+  kcmp                               ok                   rc 0
+
+=== micro-VM boot to a shell
+initramfs=639406 bytes, kernel=11838464 bytes
+boot accel=kvm run=1 rc=0 ms=1049 marker=1
+boot accel=kvm run=2 rc=0 ms=1075 marker=1
+boot accel=tcg run=1 rc=0 ms=3694 marker=1
+boot accel=tcg run=2 rc=0 ms=3560 marker=1
+
+=== done

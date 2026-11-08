@@ -1,0 +1,36 @@
+name: fuzz
+
+# The store parser is the one place the crate reads bytes an attacker
+# chose. Nightly only, because cargo-fuzz is a nightly tool. Weekly, and
+# by hand, so a push does not pay for two minutes of fuzzing.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  store-header:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: nightly
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: fuzz the header parser for two minutes
+        run: cd fuzz && cargo fuzz run store_header -- -max_total_time=120 -rss_limit_mb=2048
+      - name: keep the artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

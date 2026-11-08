@@ -1,0 +1,59 @@
+[Unit]
+Description=pmaskd job supervisor for %i
+Documentation=man:pmaskd(8)
+
+[Service]
+# Type=simple, not notify: pmaskd does not call sd_notify, so a
+# Type=notify unit would wait for a READY=1 that never comes.
+Type=simple
+ExecStart=/usr/bin/pmaskd --socket %t/pmask/pmask.sock
+
+# The socket lives in a runtime directory this unit owns, which is what
+# pmaskd's own ownership check requires before it will bind.  The
+# directory is created here, not by a socket unit: pmaskd does not
+# adopt a socket passed by systemd (it never reads LISTEN_FDS), and a
+# socket unit's DirectoryMode would create the directory as root, which
+# DynamicUser cannot then own.
+RuntimeDirectory=pmask
+RuntimeDirectoryMode=0700
+
+# No privilege beyond an ordinary account, and nothing this unit does can
+# gain any: a set-uid binary under pmaskd would elevate the job.
+DynamicUser=yes
+NoNewPrivileges=yes
+
+# These are the levers that make "two jobs on one host cannot read each
+# other's environment" true from the service side, and they are worth more
+# than anything pmask does from inside a process.
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+
+# A Unix socket and nothing else.
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# @system-service excludes ptrace, and the daemon traces each job from
+# inside this unit: Mask::spawn seizes the child with PTRACE_SEIZE.  The
+# one syscall is named on the allow line.
+SystemCallFilter=@system-service ptrace
+SystemCallArchitectures=native
+
+# A passphrase, when the unit is given one, arrives as a credential rather
+# than an environment variable or a path every account can read.  Enable
+# these two lines together with a matching ExecStart --passphrase-file.
+#LoadCredential=passphrase:/etc/pmask/passphrase
+#ExecStart=/usr/bin/pmaskd --socket %t/pmask/pmask.sock --store %S/pmask/store.enc
+
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

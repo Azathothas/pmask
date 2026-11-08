@@ -1,0 +1,116 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-01",
+  "repos": [
+    {
+      "repo": "dvarrazzo/py-setproctitle",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "smaugx/setproctitle",
+      "evidence": [
+        "readme",
+        "contents:src/spt_status.c",
+        "contents:tools/prctl_demo.c"
+      ],
+      "observed": "src/spt_status.c measures the contiguous argv+environ block, mallocs and strdups environ out of the way, then overwrites argv[0] in place; SPT_NOENV instead caps the title at the argv length so /proc/PID/environ survives. There is no PR_SET_MM call anywhere in the tree, and tools/prctl_demo.c is only a PR_SET_NAME demo, so the CSV's PR #110 claim cannot be checked from the repository.",
+      "pmask_delta": "None: pmask's comparison already states this exact trade ('must trade title length against environment integrity') and --keep-env is the per-variable version of SPT_NOENV. The library has no answer for the kernel's arg_start/arg_end window, which is the part pmask adds.",
+      "reason": "Same in-process setproctitle mechanism and same environ trade as the named smaugx/setproctitle row, and the only extra evidence claimed for it (PR #110) is not in the tree."
+    },
+    {
+      "repo": "hackerschoice/zapper",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:zapper.c"
+      ],
+      "observed": "zapper.c traps the exec syscall exit (PTRACE_GET_SYSCALL_INFO, SYSCALL_EXIT), copies the new stack, inserts a gap, repairs AT_RANDOM/AT_EXECFN/AT_PLATFORM/AT_BASE_PLATFORM and the argv/env pointers, then memsets the argv and (unless -E) env strings in place and writes the -a name into argv[0]. It never calls PR_SET_NAME and never moves mm->arg_start/arg_end, and its own header says the name and options 'may show for a few milliseconds before the Kernel schedules zapper to zap them'.",
+      "pmask_delta": "It is the one measured same-surface competitor, and its source names the exposure window that pmask's entry swap removes. The auxv repair and the pre-exec argv[0] padding (spaces reserved so a longer -a name fits at the exit stop) are the costs of rewriting at exec exit; pmask already wins comm, exact cmdline, the environ window and the tree label.",
+      "reason": "The only direct competitor with a measured comparison, and the code corrects the CSV's 'exec entry' mechanism in a way that sharpens pmask's ordering argument."
+    },
+    {
+      "repo": "lthoangg/secretsh",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:docs/threat-model.md"
+      ],
+      "observed": "The threat model lists 'Secret in child argv (/proc/<pid>/cmdline)' as out of scope and the comparison table answers 'Secret in ps aux: Yes (child argv)'; values are substituted into the command line by design and only stdout/stderr are redacted. It also documents a redaction side-channel oracle (echo {{KEY}}==guess leaks one bit) and closes the shell oracles only with --no-shell.",
+      "pmask_delta": "It is the documented opposite trade and a control for pmask: it proves the exact exposure pmask removes while the child still receives the real value. Its oracle analysis sharpens pmaskd's warning into a rule: a client that may name the command can read the daemon's secret even with output redaction, so --run-as-uid rather than redaction is the boundary.",
+      "reason": "It states the argv exposure precisely and quantifies the trust assumption pmask's daemon makes about the client's command."
+    },
+    {
+      "repo": "sleepunit-agents/loom-secrets",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/cli.mjs"
+      ],
+      "observed": "src/cli.mjs takes `add <name>` with no value argument, reads the value from stdin or a no-echo prompt, and hands plaintext to sops on stdin; the README's contract names ac-sec-no-argv and a write-only page that cannot read a value. Its 'Not yet' section refuses exec-style environment injection on purpose, saying 'env is where the first tank turn leaked a token'.",
+      "pmask_delta": "A real deployment pattern for the layer above pmask: a host-side store injects at process start, the agent never reads the store, and the environment is treated as a leak channel rather than a delivery channel. pmask is the missing exec path that lets such a store deliver without putting the value in argv or environ, and the gated audited read path is a model for pmask's store.",
+      "reason": "It enforces a specific no-argv contract and deliberately declines env injection after a real leak, which is the case pmask exists to make unnecessary."
+    },
+    {
+      "repo": "reecdeep/hollowise",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:hollowize.cpp"
+      ],
+      "observed": "hollowize.cpp opens explorer.exe as PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, creates the legitimate target suspended, unmaps it with NtUnmapViewOfSection, then reads the remote PEB and writes the same new path over params.CommandLine.Buffer and params.ImagePathName.Buffer. Only wcslen+1 bytes are written, so the old tail of each buffer stays.",
+      "pmask_delta": "A Windows mirror of the single-view failure: editing the PEB copy leaves the kernel's copy and the old buffer tail, which is what pmask avoids by moving mm->arg_start/end and zeroing the old region. It adds PPID spoofing as a separate identity surface pmask leaves truthful; the kernel-side disagreement is inferred, not shown in this code.",
+      "reason": "Relevant only as the Windows analogue of the cross-view residue pmask must avoid, and the kernel-side claim is inference from a PEB-only edit."
+    },
+    {
+      "repo": "mephistolist/Mao",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree"
+      ],
+      "observed": "The README claims hiding from readelf, unhide, sockstat, ss and tab completion, and the tree ships patched binaries in tools/ (unhide, ss, sockstat, readelf, rkhunter, apt-mark) plus a patched references/unhide-linux.c. The mechanism is replacing the detector binaries, not hooking the kernel.",
+      "pmask_delta": "Nothing on the redaction surface; the lesson is negative and real: a detector run from a PATH the attacker can write is not evidence. pmask's external checks must use an operator-controlled binary and read /proc directly, which its suites already do.",
+      "reason": "Adversary context with a concrete technique, patched detector binaries, that bounds what any PATH-resolved check can prove."
+    },
+    {
+      "repo": "varungor365/phantom-lkm",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:phantom.c"
+      ],
+      "observed": "phantom.c is a 259-line teaching module that overwrites sys_call_table[__NR_getdents64] with a getdents64 filter over a PID array fed through /proc/phantom, plus a kill(-64) cred edit; it does not unlink itself from the module list or remove /sys/module entries, which the README claims. It also calls kallsyms_lookup_name and write_cr0, both unavailable on current kernels.",
+      "pmask_delta": "The same root-only getdents64 hiding as the rest of the hide group, on no surface pmask touches; the README's distinctive stealth claims are absent from the only source file.",
+      "reason": "Educational stub whose README overclaims what the code does and whose mechanism adds nothing to the hide group."
+    },
+    {
+      "repo": "joydle/agentjail",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:crates/agentjail/src/exec.rs"
+      ],
+      "observed": "exec.rs runs every jail step post-fork/pre-exec and blocks the child on a socketpair until the parent has written uid_map and assigned the veth, then sweeps close_range(3, ~0, CLOEXEC) before execve. The README adds phantom credentials: the sandbox gets a phm_ token plus a *_BASE_URL pointing at a proxy that swaps in the real key, so the real secret never enters the jail.",
+      "pmask_delta": "Two things pmask lacks: a pre-exec sync point that closes the setup window, and a delivery pattern where the process never holds the real secret, which is stronger than pmask's --secret descriptor that every descendant inherits and a same-uid peer can open via /proc/<child>/fd. The CLOEXEC sweep is exactly the policy --secret deliberately breaks.",
+      "reason": "It shows the ordering and credential-proxy patterns that answer two limits pmask documents."
+    },
+    {
+      "repo": "basil9099/kdetect",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/kdetect/analysis/scoring.py"
+      ],
+      "observed": "scoring.py counts distinct channels per suspect (1 LOW, 2 MEDIUM, 3+ HIGH) and every Finding carries the channels that saw it plus the dissent channel that denied it; the process channels are readdir, a kill(pid,0) sweep, a direct /proc/<tid>/status read and socket owners. The README records that hidden_process has never fired live: Diamorphine's process hiding did not engage on 6.1, so only module hiding was demonstrated.",
+      "pmask_delta": "The method transfers, the surfaces do not: kdetect's process channels test existence, and pmask leaves the PID visible, so kdetect would not catch a bad pmask redaction. A pmask-shaped detector would need cmdline versus stat span versus auxv versus the arg_start mapping as its independent channels, with the same confidence-by-corroboration and named-dissent reporting.",
+      "reason": "A concrete cross-view detector design whose scoring and evidence discipline pmask can reuse, with the caveat that its own channels cannot see a redacted command line."
+    }
+  ],
+  "notes": "All 9 metadata and README fetches succeeded; every created_at matches the assignments file. No description-only rows: each repo had a readable README. CSV contradictions: (1) hackerschoice/zapper is recorded as 'ptrace at exec entry ... relocate argv and env', but zapper.c acts at the exec syscall EXIT and zeroes the argv/env strings in place; it only relocates the copied stack and repairs auxv pointers. pmask's README and tests/vs-zapper.sh already say 'exec stop', so the source agrees with pmask, not the CSV. (2) py-setproctitle's 'PR #110 reports PR_SET_MM_MAP without CAP_SYS_RESOURCE' cannot be checked: the tree has no PR_SET_MM call and tools/prctl_demo.c demonstrates PR_SET_NAME only. If the merge keeps one setproctitle row, py-setproctitle is the stronger candidate than smaugx/setproctitle (upstream of PostgreSQL's ps_status, ships SPT_NOENV), though I marked it a duplicate because pmask's comparison already states the trade. (3) kdetect's 'caught Diamorphine' is module hiding only; its README says hidden_process has never fired live and is synthetic-only. (4) phantom-lkm's README claims lsmod and /sys/module hiding that phantom.c does not implement. Verdict line: I used keep for rows that would change what pmask builds or tests, keep-caveat for rows whose only value is adversary/context evidence (Mao, hollowise), and drop for rows whose mechanism or evidence does not survive the read."
+}

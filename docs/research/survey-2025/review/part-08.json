@@ -1,0 +1,111 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-08",
+  "repos": [
+    {
+      "repo": "smaugx/setproctitle",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "dvarrazzo/py-setproctitle",
+      "evidence": [
+        "readme",
+        "contents:setproctitle.cc",
+        "contents:hidden_process/hidden_main.cc",
+        "contents:hidden_process/prctl_main.cc"
+      ],
+      "observed": "setproctitle.cc is the nginx recipe: init mallocs one block, strncpy()s every environ string into it and repoints environ[i], then setproctitle() strncpy()s the title over argv[0] with a length reaching the last environment byte, NUL-padding the whole argv+environ extent; there is no prctl and no relocation of the kernel's windows. hidden_process/hidden_main.cc only calls prctl(PR_SET_NAME, \"\") and prctl_main.cc calls PR_SET_NAME on its own, while its README is a single blog link. The README's ps output shows the title in ps -ef and nothing about the environ window or the stat span.",
+      "pmask_delta": "Nothing pmask lacks. pmask's comparison already states the nginx/ps_status trade ('must trade title length against environment integrity') and implements the per-variable form as --keep-env; this code leaves the environ window at its old length full of NULs and leaves arg_start/arg_end unchanged, which is the zapper-style residue tests/compare.sh measures. The PR_SET_NAME stub is the same call pmask injects into every tracee.",
+      "reason": "Same nginx-style environ relocation and same residue as dvarrazzo/py-setproctitle, plus an unrelated PR_SET_NAME demo; it adds no surface or mechanism pmask does not already implement."
+    },
+    {
+      "repo": "phonginreallife/kernelseal",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:bpf/lsm_file_protect.bpf.c",
+        "contents:bpf/exec_monitor.bpf.c",
+        "contents:cmd/kernelseal-exec/main.go",
+        "contents:internal/server/server.go"
+      ],
+      "observed": "bpf/lsm_file_protect.bpf.c attaches lsm/file_open and lsm/ptrace_access_check: it classifies a dentry as environ, mem or maps, extracts the target pid from the parent dentry's strictly numeric name, and returns -EPERM when that pid is in protected_pids, with separate block_environ/block_mem/block_maps/block_ptrace switches, allow_self_read, and disabled/audit/enforce modes. internal/server/server.go takes the SO_PEERCRED pid, re-reads the process start time before and after, calls ProtectPID(pid) before releasing any value, rolls back on a recycled pid, and withholds secrets when RequireProtection is set and protection failed; the shim merges the values into its environment and execve()s the target, leaving argv untouched. The source has one gap: get_proc_dir_pid() looks only at the immediate parent dentry, so /proc/<pid>/task/<tid>/environ is compared as tid against a map keyed by the tgid SO_PEERCRED reports, while /proc/self and /proc/thread-self are dropped as non-numeric.",
+      "pmask_delta": "The strongest environ backend in the survey and the one pmask cannot reach at rung 0: an LSM refusal of environ, mem, maps and ptrace that applies to root too, installed before the secret is released, failing closed. pmask's --no-dumpable only refuses same-uid reads and only while no CAP_SYS_PTRACE debugger attaches; KernelSeal is the model for an optional privileged backend, and its task/<tid> gap is a test that backend would have to pass. It does not touch argv (the shim's own command line carries the real command), which is exactly pmask's half of the problem.",
+      "reason": "Verified BPF-LSM mechanism with the protect-before-release ordering and fail-closed mode the pmask doc already names as the environ upper bound, plus a concrete path the implementation misses."
+    },
+    {
+      "repo": "iret77/givepw",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:givepw"
+      ],
+      "observed": "givepw is a 14 KB bash script: it refuses extra arguments, reads the value from a masked terminal prompt, stdin or zenity, then writes it to a mode-600 file, an existing .env key, or the keychain through `security -i` / `secret-tool store` on stdin; --to HOST pipes it over ssh stdin. The value never enters its own argv, and the bats suite includes the argv-refusal case. It exposes no process metadata and installs no supervisor.",
+      "pmask_delta": "No process-metadata surface. It is a password prompt plus a 0600 file, the pattern pmask's --env-file and sealed memfd already cover, and its only statement about argv is the premise pmask exists for (a secret after --password is visible in ps). The ssh-stdin path is a delivery convenience, not a hiding mechanism.",
+      "reason": "A shell password prompt/storer with no argv, environ or comm mechanism; the argv exposure it avoids is already covered by stronger rows such as secretsh, argv-guard and cli-spy."
+    },
+    {
+      "repo": "oh-az/NoArgs",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The README documents a Windows DLL that Detours-hooks CreateProcessW inside an injected cmd.exe, creates the child, then rewrites its PEB ProcessParameters->CommandLine; the obfuscated release embeds the hook as PIC in cmd. The demonstration hides Mimikatz arguments from Process Hacker and Procmon. There is no Linux path, no environ or comm handling, and no supervisor over a tree.",
+      "pmask_delta": "It is the Windows counterpart of what pmask already does from the parent at exec entry, with less: a command line rewritten after creation (so the kernel's creation record still holds the real one), no environment policy, no label, no children. Nothing in it changes how pmask swaps at the exec stop or moves the windows.",
+      "reason": "A 2024 Windows PEB/CreateProcessW demo with no Linux surface and no mechanism pmask's entry swap does not already do better."
+    },
+    {
+      "repo": "vvswift/blackbox-ave",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree",
+        "contents:src/main.c"
+      ],
+      "observed": "src/main.c hooks filldir/filldir64 so fs_search_name() drops hidden names from listings, hooks account_process_tick and account_system_time to report zero CPU for hidden tasks, and overrides audit_log_start to return NULL when the current credential is all-root, dropping audit records generated by root; m_kill treats SIGCONT to pid 31337/666/171 as the /proc interface toggle, a commit_creds() root grant, and a one-shot hide. The module's hidden-task list, ptrace blocking, traffic encryption, ELF persistence and backdoors are the rest of the README.",
+      "pmask_delta": "Root-only hiding of PIDs that stay visible in every other interface; nothing an unprivileged redactor can use. The one detail worth carrying into the threat model is the audit-log suppression: a rootkit can silence the same kernel record pmask's audit.sh shows carrying the label, so the kernel-consistent claim is only as good as the host being root-clean. pmask concedes root, and this is the concrete shape of that concession.",
+      "reason": "The canonical LKM-hiding row, already the duplicate target for two other parts, kept only as threat context: it shows root-level PID hiding plus the audit and accounting suppression that pmask's root limit implies, and teaches no redaction mechanism."
+    },
+    {
+      "repo": "Swayampadhy/TLS-ProcArgs-Spoofing",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree",
+        "contents:Proof%20Of%20Concept/poc.c"
+      ],
+      "observed": "poc.c registers a callback in .CRT$XLB; on DLL_PROCESS_ATTACH it walks GS:[0x60] to the PEB, takes FastPebLock, overwrites PEB->ProcessParameters->CommandLine (Length and Buffer) with a compiled-in malicious command line, NUL-pads the rest of the old buffer, and RestoreOriginalArguments() writes the benign line back before main() returns. It is Windows-only, with no supervisor, no tree, no environ and no Linux code path.",
+      "pmask_delta": "The only transferable idea is the ordering: the kernel/EDR records the command line at creation, and a userland hook that runs before main() cannot change that record, only the process's self-report; that is the same window pmask closes by swapping at the exec-entry syscall stop and the one its README admits for the post-exec script path. pmask already states and tests that (audit.sh, the script window), so the PoC adds a Windows illustration and no mechanism.",
+      "reason": "A single-file Windows PoC whose late userland PEB write is the failure mode pmask's exec-entry ordering already avoids."
+    },
+    {
+      "repo": "sysprog21/kbox",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree"
+      ],
+      "observed": "kbox links LKL, a real Linux kernel, into its own process and routes intercepted syscalls to it through one of three tiers (seccomp-unotify, SIGSYS trap, binary rewrite); the guest gets an in-process ext4 and procfs, and the host sees only the kbox process. The tree is a full C implementation, but it contains no cmdline, environ or comm handling and no ptrace or metadata redaction. Its README frames it as a rootless chroot/proot alternative and an execution substrate for agent tool calls.",
+      "pmask_delta": "It fabricates a /proc for the guest, which is the wrong direction: pmask's observers read the host's /proc for the payload's pid, and kbox does nothing to that view. Its rootless isolation could substitute for --unshare on hosts without user namespaces, but that changes the payload's filesystem view, not its metadata, and pmask's --unshare is already opportunistic.",
+      "reason": "An isolation substrate with no host-visible argv, environ or comm surface; a guest-side /proc does not redact the host's /proc."
+    },
+    {
+      "repo": "aimardcr/akane-injector",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree",
+        "contents:module/akane_maps.c",
+        "contents:module/akane_hide.c"
+      ],
+      "observed": "module/akane_maps.c registers a kretprobe on show_map_vma that clears VM_READ|VM_WRITE|VM_EXEC for the duration of the callback and restores it in the return handler, so a hidden VMA prints as ---p without touching page-table protection. module/akane_hide.c adds kretprobes on access_remote_vm (returns 0), process_vm_readv/writev (-EFAULT), show_smap, pagemap_read (0), mincore (-ENOMEM), getdents64, m_show and the tcp/udp seq_show functions, and every hook returns unfiltered when akane_is_root(), so root sees the truth. The README's hide list is therefore implemented per reader, not by changing kernel state.",
+      "pmask_delta": "The exact memory-introspection surface a reader uses to recover a masked process's real argv and environ: /proc/<pid>/mem, smaps, pagemap, process_vm_readv/writev and mincore. pmask's --no-dumpable closes those for the same uid through the kernel's own ptrace check while root still wins; akane shows the root-installed version and its limit: a per-reader kretprobe is root-transparent and leaves the real page tables, so any unfiltered reader sees the mapping. It redacts nothing of the target's own argv and needs an Android GKI kernel module.",
+      "reason": "Root-only Android injector kept as the concrete per-reader-filter anti-pattern and memory-surface checklist, not as a mechanism pmask can adopt."
+    }
+  ],
+  "notes": "All 16 metadata and README fetches succeeded, and every tree fetch succeeded; one file fetch (Swayampadhy poc.c) failed with status=None because the path contains a space and succeeded as 'Proof%20Of%20Concept/poc.c', which is the path recorded in evidence. Duplicate cycle the merge must break: part-01 marked dvarrazzo/py-setproctitle as drop-duplicate of smaugx/setproctitle, while this part marks smaugx as duplicate of dvarrazzo/py-setproctitle; both cannot be dropped. Part-01's own note says py-setproctitle is the stronger candidate (upstream of PostgreSQL ps_status, ships SPT_NOENV), so keep py-setproctitle and drop smaugx. CSV contradiction: smaugx's row says 'C setproctitle in the nginx style; relocates environ before overwriting argv', which setproctitle.cc confirms, but the repo also ships an unrelated hidden_process/ PR_SET_NAME demo the row does not mention. Finding for the KernelSeal citation: bpf/lsm_file_protect.bpf.c resolves the target pid from the immediate parent dentry name, so /proc/<pid>/task/<tid>/environ is looked up as a tid against a map keyed by the SO_PEERCRED tgid and misses for non-leader threads; this was read from source (/proc/self/task/<tid>/environ exists on the review host, Linux 6.12.113) but not run against a loaded LSM. akane-injector's README claim about /proc/<pid>/{mem,smaps,pagemap} and process_vm_* is implemented in module/akane_hide.c, while the ---p maps column is in module/akane_maps.c; both were read. blackbox-ave's audit suppression, CPU-accounting zeroing and commit_creds root path are from src/main.c, which was read in part; its SELinux/AppArmor and encryption claims were not verified. kbox and givepw verdicts rest on README/tree and README/script respectively; no source beyond that was needed because the drop turns on the absent surface."
+}

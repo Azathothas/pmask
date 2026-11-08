@@ -1,0 +1,107 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-06",
+  "repos": [
+    {
+      "repo": "Tumlinh/cli-interposer",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "afek854/argv_hider",
+      "evidence": [
+        "readme",
+        "contents:main.c"
+      ],
+      "observed": "main.c overrides __libc_start_main through LD_PRELOAD, copies each argv[i] into malloc'd memory, zeroes the original block, and hardcodes argv[0] to \"øøø\". The README's diversion mode (real arguments on stdin, dummy arguments in argv) is compiled out: ARGS_VIA_STDIN is `#define 0`, so the shipped path is copy-then-zero with a visible window.",
+      "pmask_delta": "Nothing the named row does not already carry: same preload hook, same copy-then-zero window, same blindness to static binaries, scripts and non-glibc programs. The only extra is an unverified README table of which inspection tools are fooled (its own text says top still finds the image basename through /proc/<pid>/stat); pmask sets comm and rewrites AT_EXECFN, which covers that surface.",
+      "reason": "Same LD_PRELOAD argv-erasure mechanism as afek854/argv_hider, and its one novel ordering is disabled in the source that ships."
+    },
+    {
+      "repo": "gershnik/processtitle",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/cpp/linux.cpp"
+      ],
+      "observed": "linux.cpp queries PR_SET_MM_MAP_SIZE to check the struct size, reads start_code/end_code/start_stack/start_data/end_data/start_brk/env_start/env_end out of /proc/self/stat by fixed column offsets, points arg_start/arg_end at a malloc'd copy of the title, calls PR_SET_MM_MAP, then PR_SET_NAME. It passes auxv=NULL with auxv_size=0 and exe_fd=-1, and never frees or overwrites the original argv block.",
+      "pmask_delta": "Independent public code reaching the same one-shot map pmask uses, plus two residues pmask deliberately avoids: auxv_size=0 skips the map's auxv branch (pmask's kernel-pr-set-mm-map.md Rule D), so /proc/<pid>/auxv still names the real program, and the real argv bytes stay readable in the old stack region. Its fixed-offset walk of /proc/self/stat is the fragile way to fill the other mm fields; it is also in-process, per program, with no tree and no environ policy.",
+      "reason": "Source-verified PR_SET_MM_MAP use in a library, and it shows exactly which parts of the window a library leaves behind."
+    },
+    {
+      "repo": "Elixion-ai/claudepass",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:internal/run/run.go",
+        "contents:docs/THREATS.md"
+      ],
+      "observed": "run.go strips its own key variable from the inherited environment, then appends every resolved secret to the child's environment (`setEnv` then `cmd.Env = env`) or writes it to a temp file and passes that path, and redirects stdout/stderr through a redactor. THREATS.md states the boundary plainly: it keeps a secret out of the agent's context and is \"not a defense against ... a co-resident process running as the same user\"; neither the code nor the docs mention /proc.",
+      "pmask_delta": "The same-uid co-resident reader is the observer pmask removes. The value is the deployment pattern (manifest of handles, broker resolving at spawn, a hidden-prompt add that refuses a pipe, redaction across base64/hex/percent/JSON forms) and the admission that the environment channel is left open: a value written before exec is readable at /proc/<pid>/environ by any same-uid process unless the child is non-dumpable, which this code never sets. Unverified: not built or run, and the /proc exposure is inferred from environ's access rules rather than measured here or stated by the project.",
+      "reason": "Documented, source-confirmed instance of the 2026 env-injection trade with the same-uid gap named, which makes it evidence for pmask's threat model rather than a mechanism to copy."
+    },
+    {
+      "repo": "Acceis/eBPF-hide-PID",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/bpf/getdents64.bpf.c",
+        "contents:src/bpf/main.h",
+        "contents:src/bpf/dentry.h",
+        "contents:src/main.go"
+      ],
+      "observed": "The BPF program attaches tracepoints to sys_enter/sys_exit getdents64, stores the userspace buffer pointer per pid, and at exit walks the returned linux_dirent64 records with bpf_loop and rewrites the previous record's d_reclen through bpf_probe_write_user so the matching entry is swallowed. main.go accepts a PID or any directory name, and main.h reports each success to userspace with bpf_get_current_comm, so the tool names the process that was denied the entry.",
+      "pmask_delta": "A root-only alternative to hidepid=2 that filters one entry instead of remounting /proc, and the cheapest demonstration of the limit pmask's residue doc depends on: rewriting the getdents64 buffer changes only enumeration, so name-addressed access (stat or open of a known /proc/<pid>) still finds the process. It also shows the observer being logged by the hider, an attacker-side capability pmask assumes absent at rung 0.",
+      "reason": "Minimal, source-verified getdents64 buffer-rewrite technique with the per-observer notification detail, and it marks exactly where enumeration hiding stops."
+    },
+    {
+      "repo": "mephistolist/hoxha",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "mephistolist/Mao",
+      "evidence": [
+        "readme",
+        "contents:persistance/libhide.c"
+      ],
+      "observed": "libhide.c is a preloaded library that filters getdents/getdents64 for /proc, hides a static name list (Mao, enver, hoxha, libc.so.4/5), hides PIDs by comparing /proc/<pid>/comm, and hooks readline completion. The README documents persistence through patchelf --add-needed, an SCTP knock shell, and replacing /usr/bin/ldd and rkhunter, and it states the project has been superseded by Mao.",
+      "pmask_delta": "Same author, same userland-rootkit line, same readdir surface as the successor, which the README names and which claims more evasion (readelf, unhide, sockstat, ss, tab completion). Nothing here is absent from Mao's row; the only detail of its own, reading /proc/<pid>/comm to identify its targets, is target discovery, not a concealment technique.",
+      "reason": "README and source both place it as the earlier, superseded version of mephistolist/Mao with no mechanism Mao lacks."
+    },
+    {
+      "repo": "nfsec/unhider",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:unhider.py"
+      ],
+      "observed": "unhider.py builds two lists inside one process: os.listdir('/proc') plus each /proc/<pid>/task, which a readdir/getdents hook filters, and os.path.isdir('/proc/<N>') over every N from 0 to pid_max, which is name-addressed lookup and is not filtered. The set difference is the hidden set.",
+      "pmask_delta": "A 40-line isolation of the two kernel paths every /proc hider has to cover, and the same boundary pmask states from the other side: a filtered enumeration is bypassed by direct lookup, so pmask leaves the pid directory present and redacts its contents instead of joining that arms race. It is also a usable control for pmask's own claim: run against a masked tree, the hidden set must be empty, which proves pmask removes what a pid is and not that it is.",
+      "reason": "Small but precise: it demonstrates getdents64-versus-stat on /proc/<pid> with no framework around it, and that distinction is what pmask's honest limit rests on."
+    },
+    {
+      "repo": "Junximo/Ginhook_kpm",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:main.c"
+      ],
+      "observed": "main.c is a KPM module (the KernelSU/APatch patch-module ABI) that resolves kernel symbols and struct offsets at load, hooks __NR_ioctl with fp_hook_syscalln, and on OP_CMD_PROCESS_HIDE unlinks the target through hlist_del_init on &task->pid_links[PIDTYPE_PID], computed as task + offsetof(task_struct, thread_pid) + 8; restore calls attach_pid again. It also reads another process's memory by walking its page tables to physical addresses and sets per-task hardware breakpoints.",
+      "pmask_delta": "The one hiding primitive in this slice that removes the pid directory itself rather than the entry that names it: with the pid_links node unlinked, find_task_by_vpid returns NULL, so by kernel mechanics /proc/<pid>, kill() and every name-addressed probe fail, not just readdir. That is a different class from the getdents64 filters and it bounds pmask's rung-3 sentence, because \"the pid exists\" is only true while that hash link is intact.",
+      "reason": "Distinct, source-verified DKOM primitive (pid_links unlink with an attach_pid restore) that no other row in the slice shows."
+    },
+    {
+      "repo": "Misskss/LinyuKernel",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:LingYuKernel/src/hide.c"
+      ],
+      "observed": "hide.c hides the module with list_del_init on THIS_MODULE->list plus kobject_del, hides PIDs by registering a kprobe on proc_pid_readdir that swaps dir_context->actor for a filldir wrapper dropping numeric names in the hidden set, and hides paths with a kretprobe on do_filp_open that rewrites a successful return to -ENOENT. The full module is an Android anti-cheat toolkit: cred commit to root, page-table memory access, touch and gyro injection, syscall tracing, hardware breakpoints.",
+      "pmask_delta": "Two kernel hooks pmask's residue work must assume: a listing can be filtered while /proc/<pid> still opens, and a path can be made to answer ENOENT after it was opened successfully. That is the deliberate kernel lie at the opposite end from pmask, which keeps the kernel's own view coherent; none of it maps onto an unprivileged tool, and its value is as the named root-side adversary.",
+      "reason": "Source-verified LKM with two distinct hook surfaces (proc_pid_readdir actor swap, do_filp_open kretprobe) and the module self-hide pattern, all absent from the compared rows."
+    }
+  ],
+  "notes": "No proxy failures: every metadata, readme, tree and contents request succeeded on the first try. Two 404s (gershnik/processtitle src/cpp/libraries/src/clobber.cpp, Acceis/eBPF-hide-PID src/structs.h) were wrong paths I guessed before listing the tree; the real paths are src/cpp/clobber.cpp and src/bpf/structs.h. No whole-repo clone and no kernel tree was read. CSV corrections the merge should know: (1) Tumlinh/cli-interposer's basis says README, but the README's diversion mode is `#define ARGS_VIA_STDIN 0` in main.c, so the shipped tool is the legacy copy-then-zero path only. (2) Junximo/Ginhook_kpm was listed as description-only; main.c is readable and its hiding primitive (pid_links hlist_del_init, restored with attach_pid) is more specific than the CSV mechanism text. It is a single-commit code drop (created and pushed 2026-03-07 within four minutes, 19 stars), its README is 189 bytes with a Telegram contact, the KPM SDK headers (common.h, ktypes.h, ksyms.h) are not in the tree, and a main.o and prebuilt Gin.kpm are committed, so the mechanism is verified but the module is not buildable from the repo as-is. (3) Misskss/LinyuKernel was listed as description-only; hide.c, hide_vfs.c and the rest of src/ are present, so the row should read source, not description. (4) nfsec/unhider's created_at is 2025-10-20 while unhider.py's docstring is dated 2026-04-11; pushed_at is 2026-04-11, so the code postdates the repo. (5) The duplicate judgements name rows from other parts that I did not review: afek854/argv_hider (part-03) and mephistolist/Mao (part-01). For hoxha the claim is grounded in its own README (\"superceded by Mao\"); for cli-interposer it rests on the CSV's mechanism text for argv_hider plus my read of main.c. (6) Cross-part overlap the merge may want to consolidate: Acceis/eBPF-hide-PID and haolipeng/ebpfRootkit (part-04) teach the same getdents64 filter, and this one is the source-verified minimal version; Elixion-ai/claudepass and ags-slc/s2 (part-10) teach the same env-injection lesson, and claudepass is the only one with code and a threat model; Ginhook_kpm, LinyuKernel and Wcccc06/adf (part-03) are all Android LKMs, but their hiding primitives differ (pid link unlink vs filldir actor swap vs undocumented), so they are not duplicates of each other. (7) Nothing was built or run for any repo, including pmask; every mechanism claim above is read from source or README and marked as such, and the two kernel-mechanics inferences (Ginhook find_task_by_vpid returning NULL after the unlink, claudepass environ readable by a same-uid peer) are labelled inference in their pmask_delta."
+}
