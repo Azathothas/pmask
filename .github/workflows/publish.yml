@@ -1,0 +1,96 @@
+name: publish
+
+# The publish of the crate to crates.io, apart from release.yml. crates.io
+# trusts this file name, the repository Azathothas/pmask and the
+# environment crates-io, which only a tag v* can deploy to (trusted
+# publishing). No token is stored: the job gets one for 30 minutes.
+#
+# * dry-run: `cargo publish --dry-run` packs the crate and builds the
+#   package. It reads the switch `crates-io` of [package.metadata.pmask]
+#   in Cargo.toml.
+# * publish: only on a tag vX.Y.Z[-pre] of the package version, with the
+#   switch true at the tag and the ci run of the tag green.
+#
+# The switch stays false until the crate is configured for trusted
+# publishing. The name is reserved separately.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      publish: ${{ steps.switch.outputs.publish }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: the switch and the conditions of a publish
+        id: switch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          on=$(python3 -I -c 'import tomllib
+          d = tomllib.load(open("Cargo.toml", "rb"))
+          print(str(d["package"]["metadata"]["pmask"]["crates-io"]).lower())')
+          publish=false
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$(sh scripts/version.sh)
+            test "$GITHUB_REF_NAME" = "v$version" || { echo "the tag $GITHUB_REF_NAME is not v$version"; exit 1; }
+            if [ "$on" = true ]; then
+              sha=$(git rev-parse HEAD)
+              state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&event=push" \
+                --jq '[.workflow_runs[] | select(.status == "completed")][0].conclusion // "none"')
+              echo "ci at $sha: $state"
+              [ "$state" = success ] || { echo "ci is not green at $sha"; exit 1; }
+              publish=true
+            fi
+          fi
+          echo "the switch crates-io: $on; the ref: $GITHUB_REF_TYPE $GITHUB_REF_NAME; publish: $publish"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: pack and build the crate
+        run: cargo publish --locked --dry-run
+
+  publish:
+    needs: dry-run
+    if: needs.dry-run.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        id: auth
+      - name: publish
+        run: cargo publish --locked --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

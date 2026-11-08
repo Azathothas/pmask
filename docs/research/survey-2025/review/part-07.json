@@ -1,0 +1,105 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-07",
+  "repos": [
+    {
+      "repo": "Freaky/rust-proctitle",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/lib.rs"
+      ],
+      "observed": "src/lib.rs has one Linux implementation of set_title(): libc::prctl(PR_SET_NAME, title), with a unit test asserting the 15-byte truncation; the BSD branches call setproctitle(3), and Windows sets a console title plus a named event handle. There is no argv or environ write on any path, and the README says the BSD-style environment rewrite is 'not yet supported because it's wildly unsafe'.",
+      "pmask_delta": "None. pmask already sets comm with PR_SET_NAME through a syscall injected in the tracee and documents the same 15-byte cut; this crate adds no tree, no argv and no environ policy. The CSV's 'Rust setproctitle, argv overwrite' is contradicted by the source: on Linux it is a comm-only wrapper.",
+      "reason": "A comm-only PR_SET_NAME binding, unchanged since 2019-04-28, whose claimed argv mechanism does not exist in the tree."
+    },
+    {
+      "repo": "lei33440/xboard-node-hidden-process",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:install-instance.sh"
+      ],
+      "observed": "install-instance.sh writes a wrapper that runs `exec -a ${WRAPPER_NAME} /usr/local/bin/kernel-update -c $CONFIG`, renames the downloaded binary, stores the panel token in /etc/.system-cache/<name>/config.yml with no chmod, and sets the unit Description to 'System Service'. The README's own ps output still shows `crond-worker -c /etc/.system-cache/mypanel/config.yml`: only argv[0] is laundered, while comm and exe read kernel-update and the config path stays visible.",
+      "pmask_delta": "The deployment pattern and its exact gaps. exec -a changes argv[0] only: the rest of cmdline, exe, comm, the systemd unit name and the on-disk config remain, and descendants get no label. It is also a case where the token is on the installer's own command line (`--token`) and in a root-written config file, which a process label cannot cover -- the pmaskd / --args-from-fd story is the missing half.",
+      "reason": "A real 2026 deployment that demonstrates precisely which surfaces exec -a leaves exposed, and the demand pmask answers."
+    },
+    {
+      "repo": "greenlight908/argv-guard",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/argv_guard/cli.py",
+        "contents:src/argv_guard/scanner.py"
+      ],
+      "observed": "cli.py walks the given paths and scanner.py regex-scans shell source for a credential-named variable expanded into a spawning command; it resolves local wrapper functions and judges pipeline stages separately. Nothing here runs a process or reads /proc: it is a pre-commit source linter, and its exit code 2 marks a scan that could not look rather than an empty clean result.",
+      "pmask_delta": "None for the mechanism. The lesson -- a cmdline is world-readable, so deliver the value on stdin/--config -- is already pmask's stated reason for --args-from-fd and pmaskd. Being static, it cannot serve as the external runtime check pmask needs either.",
+      "reason": "Static shell-script lint with no process or /proc surface, and its only lesson is already in pmask's README."
+    },
+    {
+      "repo": "10N351R/Phantomizer",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:Phantomizer.c"
+      ],
+      "observed": "Phantomizer.c creates the target suspended with a false command line, writes the true command over PEB->ProcessParameters->CommandLine.Buffer with WriteProcessMemory, then patches CommandLine.Length to a short display length and resumes. A reader that trusts Length sees only the executable name; the real text is still in the buffer. It calls only System32 binaries, is a 2024 Maldev Academy exercise, and its README says it is untested and has no AV/EDR evasion.",
+      "pmask_delta": "This is the Windows form of the split pmask already implements and documents: shorten the kernel-reported extent and leave the true strings in memory. pmask does it through arg_start/arg_end and names the same residue (a same-uid reader recovering the strings from /proc/<pid>/mem). No new surface, no usable test, and a different OS.",
+      "reason": "Pre-2025 Windows educational tool whose length-field trick is the mechanism pmask already has, without its guarantees."
+    },
+    {
+      "repo": "JodisKripe/MasqueradeProcessName",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:MasqueradeProcessName.c"
+      ],
+      "observed": "The only source file is a 31-line main() that queries its own PEB, points CommandLine and ImagePathName at a fixed L'C:\\\\Windows\\\\System32\\\\notepad.exe' buffer, then blocks on getch(). It never creates or supervises another process. The README is a title plus '# WIP'.",
+      "pmask_delta": "None: a self-only PEB pointer edit on Windows, smaller than Phantomizer's, with no artifact, no tree and no environ.",
+      "reason": "Two-line README and a self-PEB demo; an abandoned WIP stub."
+    },
+    {
+      "repo": "lezer0/smitty",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "rtvkiz/process-hider",
+      "evidence": [
+        "readme",
+        "contents:hooks.c",
+        "contents:hide.c"
+      ],
+      "observed": "hooks.c dlsym(RTLD_NEXT)s readdir/readdir64 and skips dirents whose names match hidden_processes/hidden_files, plus open/stat/unlink/execve hooks that deny or fake the same names; hide.c keeps fixed arrays and adds a cron @reboot LD_PRELOAD script and a port-31337 shell backdoor. It does not filter /proc/<pid> reads directly and does not remove its own LD_PRELOAD from environ.",
+      "pmask_delta": "None: this is the libprocesshider-style readdir filter already represented by rtvkiz/process-hider, and pmask is immune by design because it reads /proc/<pid> itself rather than going through libc. The extra code is persistence and a backdoor; the one interesting line, check_auto_uninstall() reading /proc/self/cmdline for ldd/strace/gdb/strings, is rootkit self-defence, not a metadata technique.",
+      "reason": "Same LD_PRELOAD readdir hook and same lesson as rtvkiz/process-hider, with nothing added on the metadata surface."
+    },
+    {
+      "repo": "DataDog/rshell",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:builtins/ps/ps.go"
+      ],
+      "observed": "builtins/ps/ps.go's package comment states 'The CMD column reports only the process comm/executable name; ps does not read or expose process argv', and its safe format field list is pid,ppid,uid,state,tty,stime,time,comm,rss,vsz,pmem,pcpu,etime -- no args. The builtin reads procinfo comm/exe and never opens /proc/<pid>/cmdline. The README documents the default-deny command, path and environment policy and the Landlock/seccomp helper; PR #269 itself is not in the tree.",
+      "pmask_delta": "A mainstream agent shell removed the surface instead of redacting it: its ps cannot show another process's arguments at all. That is the strongest precedent that reading cmdline is the hazard, it defines pmask's case (callers who cannot change the producer), and it gives a policy test: a masked process listed by rshell ps must show the label in CMD.",
+      "reason": "Source-confirmed removal of the argv surface by a DataDog agent shell, the usable precedent the lane report already flags."
+    },
+    {
+      "repo": "Arsylk/gozinject",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/soinfo.go"
+      ],
+      "observed": "soinfo.go writes `add <uid> 0x<start> 0x<end>` and `clear <uid>` to /proc/vma_hide for each payload segment, bionic guard page, .bss and the 256 KB RWX stage; its comment says the module filters only readers whose uid matches and that root always bypasses. The kernel module is not in the repo. The rest is a setArgV0 trap with a stub/stage dlopen, soinfo unlink, and madvise(MADV_DONTNEED) to drop the CoW'd libandroid_runtime pages so smaps Anonymous/Private_Dirty return to zero.",
+      "pmask_delta": "Two surfaces pmask only names. (1) A per-reader UID filter for /proc/<pid>/maps and smaps that hides VMAs from the same uid while root still sees them -- a targeted backend where pmask has only the all-or-nothing --no-dumpable. (2) Page-accounting residue: an in-memory rewrite shows as an anonymous/private-dirty page, and madvise can restore the accounting, which is the smaps analogue of pmask's 'arg_start lands in an anonymous mapping' row. Unverified: the /proc/vma_hide filter behaviour, because the module that implements it lives outside this repository.",
+      "reason": "The clearest 2026 example of per-UID maps filtering and CoW page-accounting residue on the same same-uid boundary pmask defines, with the filter implementation unverified."
+    }
+  ],
+  "notes": "All 8 repositories resolved; metadata, README and every requested tree/file returned 200, so there are no failed fetches to report. Evidence read: trees for all 8 (needed for 5), source for rust-proctitle (src/lib.rs), xboard (install-instance.sh), argv-guard (cli.py, scanner.py), Phantomizer (Phantomizer.c), MasqueradeProcessName (MasqueradeProcessName.c), smitty (hooks.c, hide.c), rshell (builtins/ps/ps.go), gozinject (src/soinfo.go). Contradictions and limits: (1) rust-proctitle's CSV mechanism 'argv overwrite' is false on Linux -- src/lib.rs only calls PR_SET_NAME; its last push is 2019-04-28. (2) rshell PR #269 could not be fetched (the proxy endpoint list exposes no pulls API); the code state is verified, the PR number is not. (3) gozinject's per-UID /proc/vma_hide module is absent from the tree; only the client writes were read. (4) smitty's metadata has pushed_at 2025-10-25 earlier than created_at 2025-11-01. (5) xboard writes the panel token into /etc/.system-cache/<name>/config.yml with no chmod and takes --token on the installer command line; both are worth citing as deployment hazards. (6) argv-guard overlaps bryanbhd/check-argv-secrets (part-09) as a static secret-in-argv linter; if that row is kept for its rule corpus, argv-guard adds nothing and should stay dropped."
+}

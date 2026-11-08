@@ -1,0 +1,212 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy,rustfmt
+          targets: x86_64-unknown-linux-musl
+      - name: unwrap audit
+        run: python3 scripts/unwrap_audit.py
+      - name: rename guard
+        run: sh scripts/check-rename.sh
+      - name: third-party notices
+        run: python3 scripts/notices.py --check
+      - name: format
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets --features testbins -- -D warnings -W clippy::incompatible_msrv
+      - name: library tests
+        run: cargo test --locked --lib
+      - name: doc tests
+        run: cargo test --locked --doc
+      - name: rustdoc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+      - name: build
+        run: |
+          cargo build --locked --release --bins --features testbins
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bins --features testbins
+          cargo build --locked --release --examples
+      - name: man pages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq groff mandoc
+          for p in man/pmask.1 man/pmaskd.8; do
+            groff -man -Tutf8 -ww -z "$p" 2> "$RUNNER_TEMP/groff.log" || true
+            test ! -s "$RUNNER_TEMP/groff.log" || { cat "$RUNNER_TEMP/groff.log"; exit 1; }
+            mandoc -T lint -W error "$p"
+          done
+      - name: binaries
+        run: |
+          ./target/release/pmask --version
+          ./target/release/pmaskd --version
+          ./target/release/pmask-testcases echoargs a b | grep -q 'a.*b'
+      - name: daemon smoke
+        run: |
+          sockdir="$RUNNER_TEMP/pm-ci"
+          rm -rf "$sockdir"
+          mkdir -p "$sockdir"
+          chmod 700 "$sockdir"
+          ./target/release/pmaskd -q -S "$sockdir/pm-ci.sock" &
+          dpid=$!
+          for i in $(seq 50); do [ -S "$sockdir/pm-ci.sock" ] && break; sleep 0.1; done
+          test -S "$sockdir/pm-ci.sock"
+          test "$(cat /proc/$dpid/comm)" = "pmask-job"
+          kill $dpid
+      - name: package
+        run: |
+          cargo package --list --locked > "$RUNNER_TEMP/pkg.txt"
+          for f in Cargo.toml Cargo.lock README.md LICENSE build.rs src/lib.rs man/pmask.1; do
+            grep -qx "$f" "$RUNNER_TEMP/pkg.txt"
+          done
+          if grep -E '^(\.cargo|\.github|docs|tests|vm|vendor|scripts|TODO|measurements|contrib)/' "$RUNNER_TEMP/pkg.txt"; then
+            echo "repository files in the package"; exit 1
+          fi
+          cargo publish --dry-run --locked
+
+  concurrency:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: build
+        run: cargo build --locked --release --bins --features testbins
+      - name: copy the binaries the suites expect
+        run: |
+          for b in pmask pmaskd pmask-testcases pmask-protocases; do
+            dst=$(echo "$b" | sed 's/^pmask-testcases$/testcases/; s/^pmask-protocases$/protocases/')
+            cp "target/release/$b" "tests/$dst"
+          done
+      - name: store, lease, secrets and regression suites
+        run: |
+          sh tests/store.sh
+          sh tests/lease.sh
+          sh tests/secrets.sh
+          sh tests/regressions.sh
+
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: read rust-version
+        id: msrv
+        run: |
+          v=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          test -n "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "MSRV is $v"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: build at the MSRV
+        run: |
+          rustc --version
+          cargo check --locked
+
+  suites-in-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-unknown-linux-musl,i686-unknown-linux-musl
+      - name: install QEMU and cpio
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 cpio
+      - name: run the full suite in the micro-VM
+        run: sh vm/run.sh
+      - name: upload the VM log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vm-output-log
+          path: vm/cache/vm-output.log
+          if-no-files-found: ignore
+
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check bans licenses sources advisories
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: trufflehog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download v3.99.8 --repo trufflesecurity/trufflehog \
+            --pattern 'trufflehog_3.99.8_linux_amd64.tar.gz' \
+            --pattern 'trufflehog_3.99.8_checksums.txt' \
+            --dir "$RUNNER_TEMP" --clobber
+          (cd "$RUNNER_TEMP" && grep 'trufflehog_3.99.8_linux_amd64.tar.gz' trufflehog_3.99.8_checksums.txt | sha256sum -c -)
+          tar -xzf "$RUNNER_TEMP/trufflehog_3.99.8_linux_amd64.tar.gz" -C "$RUNNER_TEMP" trufflehog
+          "$RUNNER_TEMP/trufflehog" git file://. --only-verified --fail
+
+  all:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [check, concurrency, msrv, suites-in-vm, deny, secrets]
+    if: always()
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: every job passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name != "all") | {name, conclusion}]' > "$RUNNER_TEMP/jobs.json"
+          cat "$RUNNER_TEMP/jobs.json"
+          jq -e 'all(.[]; .conclusion == "success")' "$RUNNER_TEMP/jobs.json" > /dev/null

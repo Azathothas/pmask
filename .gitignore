@@ -1,0 +1,16 @@
+/target
+/fuzz/target
+/fuzz/artifacts
+/tests/pmask
+/tests/pmaskd
+/tests/testcases
+/tests/testcases32
+/tests/protocases
+/tests/gospawn
+/vm/cache
+/vm/*.img
+/vm/output*.log
+/dist
+Cargo.lock.orig
+/tests/pmask-testcases
+/tests/pmask-protocases

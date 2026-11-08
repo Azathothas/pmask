@@ -1,0 +1,116 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-03",
+  "repos": [
+    {
+      "repo": "emptymonkey/mimic",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:mimic.c",
+        "contents:set_target_pid.c"
+      ],
+      "observed": "mimic.c forks a PTRACE_TRACEME child and execve()s the real binary with the *mimic* argv/envp, so the kernel itself builds cmdline and stat from the fake command line; the parent then single-steps until the libc main() entry register pattern (rdi=argc, rsi=argv, rdx=envp, rax=rip), builds a fresh argc/argv/envp block in a ptrace_do_malloc'd mapping holding the real arguments, repoints rdi/rsi/rdx at it, sets comm with an injected prctl(PR_SET_NAME), then exits or re-execs itself to wait. It never calls PR_SET_MM (the define is unused); set_target_pid.c exhausts pids with fork loops so the process lands at a chosen slot in the listing.",
+      "pmask_delta": "It inverts pmask's ordering: exec with a plausible fake command line, then hand the real argv/envp to main(), which makes arg_start/arg_end and stat agree with the fake line for free. It has no tree and no environ policy, its exe still names the real binary so cmdline and exe disagree, and its hand-off depends on recognising the libc main() register pattern, with an explicit abort ('Error: libc register setup not detected') when the pattern is not seen; the README also says a script only works when mimic is pointed at the interpreter. pmask's entry swap plus post-exec path covers the script case and does not need the heuristic.",
+      "reason": "The closest pre-2025 ptrace ancestor, and the only row that shows the inverse ordering plus the main()-entry hand-off whose heuristic can abort, which is the case pmask's post-exec fallback covers."
+    },
+    {
+      "repo": "afek854/argv_hider",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "Tumlinh/cli-interposer",
+      "evidence": [
+        "readme",
+        "contents:lib_hider.c"
+      ],
+      "observed": "lib_hider.c is 45 lines: it overrides __libc_start_main, copies argv[1..] into heap strings, memset()s the original stack bytes to NUL, then hands main() the heap copies; argv[0] is left intact, so cmdline reads as the program name followed by a long NUL run. The README records the gdb experiment showing /proc/<pid>/cmdline follows the live stack bytes rather than a snapshot taken at exec.",
+      "pmask_delta": "Nothing new. It is the same LD_PRELOAD __libc_start_main hook and the same in-place zeroing as Tumlinh/cli-interposer, with the same two limits pmask already states: dynamic ELF only, and arg_start/arg_end keep the old extent so the byte count and NUL run give it away. The heap copy is the only difference, and the concealment goal it serves is already the setproctitle rows' lesson.",
+      "reason": "A 45-line instance of the preload argv-hook already covered by Tumlinh/cli-interposer; its extra detail does not change the mechanism or the lesson."
+    },
+    {
+      "repo": "Kaidstor/sec",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "ags-slc/s2",
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The README documents a large Go local secret store (SQLite with per-value XChaCha20-Poly1305, Argon2id backups, OS keychain) whose consumption path is `sec run -- cmd`, which injects decrypted values into the child environment; `--file KEY -- cmd` materialises a file and passes its path in an env variable. It advertises that values never appear on argv, in shell history or in an agent transcript, and it does no process-metadata redaction.",
+      "pmask_delta": "It is the env-injection trade pmask's threat model already covers: the secret leaves argv but lands in the child's environ, which a same-uid observer reads, and pmask redacts that by default and offers a sealed descriptor instead. The file-materialisation path is the systemd LoadCredential pattern pmask already implements with a sealed memfd. No new surface, no supervisor, no tree.",
+      "reason": "A mature but ordinary argv-avoidance secret store; same mechanism and lesson as ags-slc/s2's subprocess environment injection."
+    },
+    {
+      "repo": "tallhatdoug/cli-spy",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:cli-spy.c",
+        "contents:Makefile"
+      ],
+      "observed": "cli-spy.c is a 1,149-line static C poller: process_pid() opens /proc/<pid>/cmdline, flattens NULs to spaces and runs g_rules[] (30 entries in source, not the 26 the README claims), with an optional same-uid /proc/<pid>/environ scan under `-e`. Rules are binary-scoped (mysql -p, curl -u, docker login, vault, sshpass), token-format (ghp_, glpat-, AKIA, sk-, JWT) and generic --password/--token, on a 10 ms default interval with a grace-window rescan for young PIDs; `-1` runs one sweep and `-t` self-tests.",
+      "pmask_delta": "It is an external, unprivileged oracle for the exact surface pmask claims. Run `cli-spy -1` against a control command carrying a ghp_ token and then against the masked one: the expected finding count is zero, and `-e` adds a same-uid environ check. Its own flattening also shows why the label wins: a masked cmdline reduces to the label and no rule can match, while an in-place redaction with padding is flattened to spaces and also fails to match.",
+      "reason": "A verified detector for /proc/<pid>/cmdline and environ secrets that pmask can use as the negative-control regression test its README calls for."
+    },
+    {
+      "repo": "flashnuke/mod-rootkit",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "vvswift/blackbox-ave",
+      "evidence": [
+        "readme",
+        "contents:src/hooks/x64_sys_getdents64.c",
+        "contents:src/utils/excludes/string_filtering.c"
+      ],
+      "observed": "The getdents64 hook drops dirents whose name matches a compiled-in, XOR-obfuscated keyword list, and for numeric entries it reads the target's cmdline from the task and hides the /proc/<pid> entry when a keyword appears in the NUL-flattened command line; the rest is file/dir hiding, net filtering, module self-hide and a reverse shell.",
+      "pmask_delta": "Root-only kernel hiding of pids that stay visible in every other interface; nothing an unprivileged redactor can use. Its one wrinkle is that the trigger is the cmdline itself, so a pmask label removes the keyword and the process stops being hidden: a side effect of relabelling, not a technique.",
+      "reason": "Same ftrace/getdents64 LKM hiding class as vvswift/blackbox-ave, with a cmdline-keyword trigger that teaches no mechanism pmask can adopt."
+    },
+    {
+      "repo": "MatheuZSecurity/Singularity",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "vvswift/blackbox-ave",
+      "evidence": [
+        "readme",
+        "tree"
+      ],
+      "observed": "The README documents an LKM for 6.x kernels using ftrace hooks for pid, file, directory, socket and conntrack hiding, module self-hide and taint reset, plus audit-netlink filtering, cgroup.procs filtering, /proc/kcore and /proc/kallsyms filtering, LiME/AVML acquisition blocking and anti-eBPF behaviour; the tree confirms about twenty modules, one per surface (modules/audit.c, modules/bpf_hook.c, modules/selfdefense.c, modules/hiding_stat.c).",
+      "pmask_delta": "Everything it adds beyond the other LKM rows is root-only evasion of detection and forensics. pmask concedes root visibility outright, and audit netlink, cgroup.procs, kcore and memory acquisition are not surfaces it redacts or claims to defend.",
+      "reason": "Same mechanism and lesson as vvswift/blackbox-ave's ftrace LKM hiding; the extra anti-forensics is root-only context the threat model already scopes out."
+    },
+    {
+      "repo": "Pizz33/Go_Processhider",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The Chinese README describes a Go program that enumerates processes with CreateToolhelp32Snapshot, injects ProcessHider.dll into every taskmgr.exe through VirtualAllocEx/WriteProcessMemory/CreateRemoteThread, and shares the target process name over a memory-mapped section so the injected DLL can filter it out of Task Manager's list.",
+      "pmask_delta": "Windows-only and observer-side: it patches Task Manager, not the process's own metadata. There is no argv, environ or comm surface and nothing applicable to a Linux ptrace supervisor.",
+      "reason": "A Windows GUI-hiding demo with no Linux process-metadata lesson."
+    },
+    {
+      "repo": "LeGambiArt/arapuca",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The README documents a Rust sandbox library and CLI: Landlock ABI v1-v5 path allowlists, seccomp-BPF with kill/EPERM/ENOSYS tiers, cgroups v2 limits, netns+userns, pidns, pidfd signalling and seccomp user-notification auditing on Linux, Seatbelt on macOS and AppContainer/Job Objects on Windows; before exec it strips LD_*, DYLD_*, ARAPUCA_* and interpreter-injection variables from the child environment.",
+      "pmask_delta": "Isolation only. Its environment filter is a safety measure against preload injection, not a visibility policy, and it has no argv, environ or comm redaction and no supervisor over a process tree's metadata. The namespace and pidfd machinery it offers is already in pmask's --unshare and --on-exit paths.",
+      "reason": "A cross-platform sandbox with no process-metadata surface; it adds nothing to the argv/environ/comm comparison."
+    },
+    {
+      "repo": "Wcccc06/adf",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "Misskss/LinyuKernel",
+      "evidence": [
+        "contents:docs/PROJECT.md",
+        "contents:docs/LAYOUT.md",
+        "tree"
+      ],
+      "observed": "docs/PROJECT.md states the project is a from-scratch reimplementation of the commercial LinYu Android driver/host pair ('对标对象：LinYu 的四个文件'), aimed at hiding process information, adbd and ADB paths from a game anti-cheat; the tree has an LKM (driver/adf_lkm.c), a KernelPatch module (kpm/adf_stealth.c), a host that probes /proc names and ADB paths, and load/launcher scripts. The docs mark the driver '源码完成，待编译' (source done, not compiled) and reference driver/adf_driver.c, which is not in the tree.",
+      "pmask_delta": "Root-only Android hiding of pids and paths from anti-cheat, the same class as Misskss/LinyuKernel, whose tool it explicitly clones. Its only distinct artefact is the userspace before/after probe (adf_host check) that reads /proc names, comm and ADB paths: a verification shape, not a redaction mechanism pmask lacks.",
+      "reason": "An unbuilt reimplementation of the LinyuKernel row with the same Android anti-cheat hiding lesson."
+    }
+  ],
+  "notes": "Fetch failures: Wcccc06/adf README returned 404 through the proxy (recorded, not guessed); its docs/PROJECT.md and docs/LAYOUT.md were read instead, and the driver file the docs name (driver/adf_driver.c) is absent from the tree, so the LKM was not verified beyond docs. Contradiction: tallhatdoug/cli-spy's README claims 26 detection rules, g_rules[] in cli-spy.c has 30 entries; code wins. Stale survey claim: process-concealment-2025.md says mimic and proc_mimicry are 'absent from the current comparison' and recommends adding them, but pmask README.md lines 453-454 already list both in the 'rest of the field' table, so the CSV note 'absent from this repo' is wrong and only the wording of the mimic row is thin (it omits the main()-entry register rewrite, the fake-argv exec, and the static-binary failure). Interaction worth one sentence in the merged report if flashnuke/mod-rootkit is dropped: a rootkit that hides a pid by matching a keyword in /proc/<pid>/cmdline stops matching once pmask replaces the command line with a label, so keyword-based hiding and keyword-based detection both lose their trigger under masking. No source was read for Kaidstor/sec, Singularity or arapuca beyond README/tree because the drop rests on the lesson, not on an unverified mechanism."
+}

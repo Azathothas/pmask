@@ -1,0 +1,896 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "total": 84,
+  "parts": [
+    {
+      "id": "part-01",
+      "repos": [
+        {
+          "repo": "dvarrazzo/py-setproctitle",
+          "group": "direct",
+          "created": "2012-02-06",
+          "mechanism": "in-process argv rewrite; moves environ to heap when the title grows",
+          "basis": "README + PR #110",
+          "note": "PR #110 (closed, 2022) independently reports PR_SET_MM_MAP works without CAP_SYS_RESOURCE",
+          "surface": "argv,environ",
+          "privilege": "none"
+        },
+        {
+          "repo": "hackerschoice/zapper",
+          "group": "direct",
+          "created": "2023-09-08",
+          "mechanism": "ptrace at exec entry; rebuild stack, relocate argv and env, adjust auxv pointers; detach",
+          "basis": "README + repo measurement",
+          "note": "measured in this repo's tests/vs-zapper.sh",
+          "surface": "argv,environ",
+          "privilege": "none"
+        },
+        {
+          "repo": "lthoangg/secretsh",
+          "group": "secret",
+          "created": "2026-04-15",
+          "mechanism": "inject .env secrets into subprocess arguments; redact output; explicitly does not hide them from the child",
+          "basis": "README",
+          "note": "the opposite trade: secret is in argv by design",
+          "surface": "argv,stdout",
+          "privilege": "none"
+        },
+        {
+          "repo": "sleepunit-agents/loom-secrets",
+          "group": "secret",
+          "created": "2026-10-24",
+          "mechanism": "sops+age secret store; values never in argv",
+          "basis": "description",
+          "note": "",
+          "surface": "argv avoidance",
+          "privilege": "none"
+        },
+        {
+          "repo": "reecdeep/hollowise",
+          "group": "mobile",
+          "created": "2025-02-20",
+          "mechanism": "Windows process hollowing plus PPID spoof; edits Remote CommandLine and ImagePathName",
+          "basis": "README",
+          "note": "2025",
+          "surface": "PEB CommandLine, image path",
+          "privilege": "user"
+        },
+        {
+          "repo": "mephistolist/Mao",
+          "group": "hide",
+          "created": "2025-08-30",
+          "mechanism": "x86-64 userland rootkit; hides from readelf, unhide, sockstat, ss, tab completion",
+          "basis": "README",
+          "note": "tested on kernel 6.16.7",
+          "surface": "files, sockets, listings",
+          "privilege": "root install"
+        },
+        {
+          "repo": "varungor365/phantom-lkm",
+          "group": "hide",
+          "created": "2026-01-06",
+          "mechanism": "LKM syscall hooking and process hiding",
+          "basis": "README",
+          "note": "educational",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "joydle/agentjail",
+          "group": "sandbox",
+          "created": "2026-04-08",
+          "mechanism": "minimal Linux sandbox for agents",
+          "basis": "description",
+          "note": "",
+          "surface": "namespaces,seccomp,cgroup,egress",
+          "privilege": "user"
+        },
+        {
+          "repo": "basil9099/kdetect",
+          "group": "detect",
+          "created": "2026-08-16",
+          "mechanism": "Python cross-view detection; caught Diamorphine on a lab VM",
+          "basis": "description",
+          "note": "2026",
+          "surface": "cross-view",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-02",
+      "repos": [
+        {
+          "repo": "erikdubbelboer/gspt",
+          "group": "direct",
+          "created": "2013-09-21",
+          "mechanism": "Go package that sets the process title by rewriting the argv block",
+          "basis": "README, mechanism inferred",
+          "note": "widely used Go setproctitle",
+          "surface": "argv,comm",
+          "privilege": "none"
+        },
+        {
+          "repo": "scriptzteam/Hidden",
+          "group": "direct",
+          "created": "2023-12-09",
+          "mechanism": "zapper derivative; acts at the exec-exit stop",
+          "basis": "README + repo doc",
+          "note": "kernel has already copied real argv into the new image",
+          "surface": "argv,environ",
+          "privilege": "none"
+        },
+        {
+          "repo": "royashbrook/hush",
+          "group": "secret",
+          "created": "2026-06-18",
+          "mechanism": "agent secret store with no get operation",
+          "basis": "description",
+          "note": "",
+          "surface": "secret store",
+          "privilege": "none"
+        },
+        {
+          "repo": "momenbasel/quiet-operator",
+          "group": "threat",
+          "created": "2026-05-31",
+          "mechanism": "purple-team field manual; Linux process stealth and masquerading chapter",
+          "basis": "README + doc read",
+          "note": "2026; documents the class, ships no tool",
+          "surface": "technique manual",
+          "privilege": "none"
+        },
+        {
+          "repo": "thalium/rkchk",
+          "group": "detect",
+          "created": "2025-03-11",
+          "mechanism": "Rust LKM rootkit detector",
+          "basis": "description",
+          "note": "2025",
+          "surface": "kernel structures",
+          "privilege": "root"
+        },
+        {
+          "repo": "Winkmoon/Linux_rootkit",
+          "group": "hide",
+          "created": "2025-09-05",
+          "mechanism": "LKM rootkit: module, privilege, file, process, port hiding",
+          "basis": "description",
+          "note": "Chinese",
+          "surface": "PID listing, files, ports",
+          "privilege": "root"
+        },
+        {
+          "repo": "safe1024/apollolnk",
+          "group": "mobile",
+          "created": "2026-01-11",
+          "mechanism": "LNK shortcut generator; hides the launch arguments in the shortcut",
+          "basis": "README",
+          "note": "2026",
+          "surface": "LNK arguments",
+          "privilege": "user"
+        },
+        {
+          "repo": "manuelpenazuniga/ClawCrate",
+          "group": "sandbox",
+          "created": "2026-04-09",
+          "mechanism": "kernel-native sandbox for agent commands and MCP",
+          "basis": "description",
+          "note": "",
+          "surface": "Landlock,seccomp",
+          "privilege": "user"
+        },
+        {
+          "repo": "monocursive/ukai",
+          "group": "sandbox",
+          "created": "2026-08-31",
+          "mechanism": "Rust Linux sandbox for AI agents; includes a ptrace tracer",
+          "basis": "description",
+          "note": "ptrace supervisor, but no metadata redaction",
+          "surface": "whole process view",
+          "privilege": "user"
+        }
+      ]
+    },
+    {
+      "id": "part-03",
+      "repos": [
+        {
+          "repo": "emptymonkey/mimic",
+          "group": "direct",
+          "created": "2014-04-24",
+          "mechanism": "ptrace stack rewrite; makes a process look like another program in /proc",
+          "basis": "README",
+          "note": "closest pre-2025 ancestor; absent from this repo",
+          "surface": "argv,comm",
+          "privilege": "none"
+        },
+        {
+          "repo": "afek854/argv_hider",
+          "group": "direct",
+          "created": "2024-01-23",
+          "mechanism": "LD_PRELOAD hook of __libc_start_main; copy argv, null the original block",
+          "basis": "README",
+          "note": "dynamic ELF only",
+          "surface": "argv",
+          "privilege": "none"
+        },
+        {
+          "repo": "Kaidstor/sec",
+          "group": "secret",
+          "created": "2026-07-08",
+          "mechanism": "local secret manager for agent workflows; values never hit argv",
+          "basis": "description",
+          "note": "",
+          "surface": "argv avoidance",
+          "privilege": "none"
+        },
+        {
+          "repo": "tallhatdoug/cli-spy",
+          "group": "threat",
+          "created": "2026-08-18",
+          "mechanism": "unprivileged passive monitor for credentials in argv; 26 rules; optional exfil",
+          "basis": "README",
+          "note": "concrete 2026 threat evidence; perfect regression test for pmask",
+          "surface": "/proc/pid/cmdline",
+          "privilege": "none"
+        },
+        {
+          "repo": "flashnuke/mod-rootkit",
+          "group": "hide",
+          "created": "2025-03-12",
+          "mechanism": "LKM kprobes/ftrace; hides processes by cmdline keyword",
+          "basis": "README",
+          "note": "",
+          "surface": "PID listing, files, sockets",
+          "privilege": "root"
+        },
+        {
+          "repo": "MatheuZSecurity/Singularity",
+          "group": "hide",
+          "created": "2025-09-23",
+          "mechanism": "LKM ftrace syscall hooking; hides processes, files, connections; anti-eBPF; log and memory-forensics evasion",
+          "basis": "README",
+          "note": "1830 stars; the largest 2025 rootkit",
+          "surface": "PID listing, files, sockets",
+          "privilege": "root"
+        },
+        {
+          "repo": "Pizz33/Go_Processhider",
+          "group": "mobile",
+          "created": "2026-01-22",
+          "mechanism": "Windows DLL injection hides a process from Task Manager",
+          "basis": "README",
+          "note": "Chinese, 2026",
+          "surface": "Task Manager listing",
+          "privilege": "user"
+        },
+        {
+          "repo": "LeGambiArt/arapuca",
+          "group": "sandbox",
+          "created": "2026-04-11",
+          "mechanism": "cross-platform Rust sandbox",
+          "basis": "description",
+          "note": "",
+          "surface": "Landlock,seccomp,cgroup,netns",
+          "privilege": "user"
+        },
+        {
+          "repo": "Wcccc06/adf",
+          "group": "mobile",
+          "created": "2026-09-21",
+          "mechanism": "Android LKM plus host; hides process info and ADB paths from anti-cheat",
+          "basis": "docs read",
+          "note": "Chinese; 2026",
+          "surface": "PID listing, ADB paths",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-04",
+      "repos": [
+        {
+          "repo": "vtsingaras/setproctitle",
+          "group": "direct",
+          "created": "2015-03-12",
+          "mechanism": "small C setproctitle, argv overwrite",
+          "basis": "README",
+          "note": "304-byte README",
+          "surface": "argv",
+          "privilege": "none"
+        },
+        {
+          "repo": "Mymaqn/proc_mimicry",
+          "group": "direct",
+          "created": "2024-01-24",
+          "mechanism": "library rewriting /proc/self entries to point at another binary",
+          "basis": "README",
+          "note": "covers the exe surface this repo only reaches with --rexec",
+          "surface": "exe,cmdline,stat,status",
+          "privilege": "root"
+        },
+        {
+          "repo": "Ozhiaki/fenn",
+          "group": "secret",
+          "created": "2026-07-21",
+          "mechanism": "JIT secrets into one command, gone on exit",
+          "basis": "description",
+          "note": "",
+          "surface": "process env",
+          "privilege": "none"
+        },
+        {
+          "repo": "JKornev/hidden",
+          "group": "hide",
+          "created": "2016-06-16",
+          "mechanism": "LKM syscall hooking, hides processes",
+          "basis": "description",
+          "note": "2016, canonical implementation",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "haolipeng/ebpfRootkit",
+          "group": "hide",
+          "created": "2025-03-13",
+          "mechanism": "eBPF hook of getdents64; hides processes and files",
+          "basis": "README",
+          "note": "Chinese",
+          "surface": "PID listing, files",
+          "privilege": "root/CAP_BPF"
+        },
+        {
+          "repo": "lbw1320028474/ProcessHiderGui",
+          "group": "mobile",
+          "created": "2025-09-23",
+          "mechanism": "unlinks EPROCESS from the kernel list via driver",
+          "basis": "README",
+          "note": "Chinese, 2025",
+          "surface": "EPROCESS listing",
+          "privilege": "root/driver"
+        },
+        {
+          "repo": "moussahl/process-hiding-rootkit",
+          "group": "hide",
+          "created": "2026-02-12",
+          "mechanism": "LKM ftrace syscall hooking; signal 64 activates hiding",
+          "basis": "README",
+          "note": "educational",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "buter-chkalova/project-rvbbit",
+          "group": "hide",
+          "created": "2026-04-11",
+          "mechanism": "LKM DKOM and syscall interception; hides a simulated process",
+          "basis": "README",
+          "note": "educational, 2026",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "Haind03/Exhume",
+          "group": "detect",
+          "created": "2026-10-11",
+          "mechanism": "YARA and Rust live Linux threat hunting for implants and rootkits",
+          "basis": "description",
+          "note": "2026",
+          "surface": "live host",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-05",
+      "repos": [
+        {
+          "repo": "sitano/ghidearg",
+          "group": "direct",
+          "created": "2015-08-20",
+          "mechanism": "Go helper that hides sensitive arguments from ps by rewriting the argv block",
+          "basis": "README, mechanism inferred",
+          "note": "thin README",
+          "surface": "argv",
+          "privilege": "none"
+        },
+        {
+          "repo": "b1ackow1/FakeProcessNameDemo",
+          "group": "direct",
+          "created": "2026-01-04",
+          "mechanism": "scan [stack] in /proc/self/maps, overwrite argv[0]; prctl(PR_SET_NAME) for comm",
+          "basis": "source read",
+          "note": "only 2025+ direct in-process tool found; demo, not supervisor",
+          "surface": "argv[0],comm",
+          "privilege": "none"
+        },
+        {
+          "repo": "aliyun/credagent",
+          "group": "secret",
+          "created": "2026-07-22",
+          "mechanism": "encrypts credentials at rest; releases plaintext after binary path, SHA256 and cmdline attestation",
+          "basis": "description",
+          "note": "treats cmdline as an identity signal, not a secret channel",
+          "surface": "cmdline attestation",
+          "privilege": "unstated"
+        },
+        {
+          "repo": "0xlane/cmd-spoofing",
+          "group": "mobile",
+          "created": "2023-02-13",
+          "mechanism": "Windows command-line spoofing",
+          "basis": "README",
+          "note": "2023",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "K0rnhulio/ksu_hideproc",
+          "group": "mobile",
+          "created": "2025-04-19",
+          "mechanism": "KernelSU module hiding processes by package name",
+          "basis": "description",
+          "note": "repository had no readable files at survey time",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "rtvkiz/process-hider",
+          "group": "hide",
+          "created": "2025-09-24",
+          "mechanism": "libprocesshider-style readdir hook",
+          "basis": "README",
+          "note": "",
+          "surface": "PID listing",
+          "privilege": "root/LD_PRELOAD"
+        },
+        {
+          "repo": "NuoNb/LDKit",
+          "group": "hide",
+          "created": "2026-02-23",
+          "mechanism": "LD_PRELOAD rootkit for Android ARM64; hides files/processes/connections and its own LD_PRELOAD",
+          "basis": "README",
+          "note": "Chinese",
+          "surface": "PID listing, files, network, environ",
+          "privilege": "root"
+        },
+        {
+          "repo": "finogeeks/finsafe",
+          "group": "sandbox",
+          "created": "2026-05-08",
+          "mechanism": "process-level sandbox for AI agents",
+          "basis": "description",
+          "note": "",
+          "surface": "process sandbox",
+          "privilege": "user"
+        }
+      ]
+    },
+    {
+      "id": "part-06",
+      "repos": [
+        {
+          "repo": "Tumlinh/cli-interposer",
+          "group": "direct",
+          "created": "2018-01-28",
+          "mechanism": "LD_PRELOAD hook of __libc_start_main; real args via stdin, original block erased",
+          "basis": "README",
+          "note": "dynamic ELF only; diversion mode",
+          "surface": "argv",
+          "privilege": "none"
+        },
+        {
+          "repo": "gershnik/processtitle",
+          "group": "direct",
+          "created": "2026-03-08",
+          "mechanism": "PR_SET_MM_MAP with arg_start/arg_end on a heap title plus PR_SET_NAME; reads /proc/self/stat for the other mm fields; leaves the original argv bytes in place",
+          "basis": "source read",
+          "note": "only 2025+ public code found using PR_SET_MM_MAP; in-process, no tree",
+          "surface": "argv,comm",
+          "privilege": "none (inferred)"
+        },
+        {
+          "repo": "Elixion-ai/claudepass",
+          "group": "secret",
+          "created": "2026-09-09",
+          "mechanism": "agent sees handles, not values",
+          "basis": "description",
+          "note": "",
+          "surface": "handles",
+          "privilege": "none"
+        },
+        {
+          "repo": "Acceis/eBPF-hide-PID",
+          "group": "hide",
+          "created": "2024-02-08",
+          "mechanism": "eBPF program hides a PID from directory enumeration",
+          "basis": "README",
+          "note": "2024, before the window",
+          "surface": "PID listing",
+          "privilege": "root/CAP_BPF"
+        },
+        {
+          "repo": "mephistolist/hoxha",
+          "group": "hide",
+          "created": "2025-05-31",
+          "mechanism": "x86-64 userland rootkit with detection evasion",
+          "basis": "README",
+          "note": "",
+          "surface": "files, sockets, listings",
+          "privilege": "root install"
+        },
+        {
+          "repo": "nfsec/unhider",
+          "group": "detect",
+          "created": "2025-10-20",
+          "mechanism": "Python revealer for libprocesshider.so",
+          "basis": "README",
+          "note": "2025",
+          "surface": "hidden PIDs",
+          "privilege": "root"
+        },
+        {
+          "repo": "Junximo/Ginhook_kpm",
+          "group": "hide",
+          "created": "2026-03-07",
+          "mechanism": "Android KPM kernel module: memory read/write, process hiding, hardware breakpoints",
+          "basis": "description",
+          "note": "Chinese",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "Misskss/LinyuKernel",
+          "group": "hide",
+          "created": "2026-05-20",
+          "mechanism": "ARM64 Android GKI LKM: process query, module/process/path hiding, syscall tracing",
+          "basis": "description",
+          "note": "Chinese",
+          "surface": "PID listing, paths",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-07",
+      "repos": [
+        {
+          "repo": "Freaky/rust-proctitle",
+          "group": "direct",
+          "created": "2019-04-25",
+          "mechanism": "Rust setproctitle, argv overwrite",
+          "basis": "description",
+          "note": "2019",
+          "surface": "argv",
+          "privilege": "none"
+        },
+        {
+          "repo": "lei33440/xboard-node-hidden-process",
+          "group": "direct",
+          "created": "2026-06-07",
+          "mechanism": "installer uses exec -a to rename the node process; renames binary; systemd description",
+          "basis": "README",
+          "note": "real-world demand; only argv[0] changes",
+          "surface": "argv[0]",
+          "privilege": "root install"
+        },
+        {
+          "repo": "greenlight908/argv-guard",
+          "group": "secret",
+          "created": "2026-09-11",
+          "mechanism": "pre-commit hook failing when a secret-shaped variable reaches argv",
+          "basis": "README",
+          "note": "use as a test corpus",
+          "surface": "detection",
+          "privilege": "none"
+        },
+        {
+          "repo": "10N351R/Phantomizer",
+          "group": "mobile",
+          "created": "2024-03-08",
+          "mechanism": "Windows PEB command-line spoof",
+          "basis": "README",
+          "note": "2024",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "JodisKripe/MasqueradeProcessName",
+          "group": "mobile",
+          "created": "2025-06-05",
+          "mechanism": "Windows C project; masquerades process name and hides process information",
+          "basis": "README (stub)",
+          "note": "WIP, two-line README",
+          "surface": "comm, process info",
+          "privilege": "user"
+        },
+        {
+          "repo": "lezer0/smitty",
+          "group": "hide",
+          "created": "2025-11-01",
+          "mechanism": "LD_PRELOAD readdir hook filtering /proc entries",
+          "basis": "README",
+          "note": "",
+          "surface": "PID listing, files",
+          "privilege": "root for global preload"
+        },
+        {
+          "repo": "DataDog/rshell",
+          "group": "sandbox",
+          "created": "2026-03-08",
+          "mechanism": "default-deny shell for AI agents; PR #269 stops ps reading /proc/pid/cmdline",
+          "basis": "README + PR #269",
+          "note": "precedent: avoid argv rather than hide it",
+          "surface": "shell interpreter",
+          "privilege": "user"
+        },
+        {
+          "repo": "Arsylk/gozinject",
+          "group": "mobile",
+          "created": "2026-05-22",
+          "mechanism": "Android arm64 injector; setArgV0 trap, stub dlopen, per-UID vma_hide for /proc/maps",
+          "basis": "README",
+          "note": "hides injection artefacts, not the service's own argv",
+          "surface": "argv[0],maps",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-08",
+      "repos": [
+        {
+          "repo": "smaugx/setproctitle",
+          "group": "direct",
+          "created": "2020-10-28",
+          "mechanism": "C setproctitle in the nginx style; relocates environ before overwriting argv",
+          "basis": "README",
+          "note": "2020",
+          "surface": "argv,environ",
+          "privilege": "none"
+        },
+        {
+          "repo": "phonginreallife/kernelseal",
+          "group": "secret",
+          "created": "2025-06-23",
+          "mechanism": "BPF-LSM: inject env at exec, then refuse reads of environ/mem/maps and block ptrace, even for root",
+          "basis": "README",
+          "note": "strongest architectural alternative; does not hide argv",
+          "surface": "environ,mem,maps,ptrace",
+          "privilege": "root/BPF-LSM"
+        },
+        {
+          "repo": "iret77/givepw",
+          "group": "secret",
+          "created": "2026-10-14",
+          "mechanism": "hand a secret to a script or agent without it touching argv or history",
+          "basis": "description",
+          "note": "",
+          "surface": "argv avoidance",
+          "privilege": "none"
+        },
+        {
+          "repo": "oh-az/NoArgs",
+          "group": "mobile",
+          "created": "2024-03-15",
+          "mechanism": "Windows API argument spoofing",
+          "basis": "description",
+          "note": "2024",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "vvswift/blackbox-ave",
+          "group": "hide",
+          "created": "2025-06-18",
+          "mechanism": "LKM 5.18+; ftrace hooks plus direct syscall-table edits; hides processes/files/sockets",
+          "basis": "README",
+          "note": "x86-64 and ARM64",
+          "surface": "PID listing, files, sockets",
+          "privilege": "root"
+        },
+        {
+          "repo": "Swayampadhy/TLS-ProcArgs-Spoofing",
+          "group": "mobile",
+          "created": "2025-11-13",
+          "mechanism": "Windows argument spoofing via TLS callbacks",
+          "basis": "README",
+          "note": "2025",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "sysprog21/kbox",
+          "group": "sandbox",
+          "created": "2026-03-17",
+          "mechanism": "in-process Linux kernel; rootless chroot/proot alternative",
+          "basis": "description",
+          "note": "",
+          "surface": "LKL,chroot",
+          "privilege": "user"
+        },
+        {
+          "repo": "aimardcr/akane-injector",
+          "group": "mobile",
+          "created": "2026-05-30",
+          "mechanism": "kernel-assisted .so injector; hides maps and /proc/pid memory files",
+          "basis": "description",
+          "note": "Android",
+          "surface": "maps,mem,smaps,pagemap",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-09",
+      "repos": [
+        {
+          "repo": "pathtofile/commandline_cloaking",
+          "group": "direct",
+          "created": "2021-11-27",
+          "mechanism": "collection: prctl comm change, argv pointer overwrite, double-fork; loader/injector/preload/chroot variants",
+          "basis": "README",
+          "note": "technique catalogue, not one tool",
+          "surface": "argv,comm",
+          "privilege": "none"
+        },
+        {
+          "repo": "dedene/claw-wrap",
+          "group": "secret",
+          "created": "2026-02-01",
+          "mechanism": "credential proxy; credentials never enter the sandbox",
+          "basis": "description",
+          "note": "",
+          "surface": "environment",
+          "privilege": "none"
+        },
+        {
+          "repo": "bryanbhd/check-argv-secrets",
+          "group": "secret",
+          "created": "2026-10-16",
+          "mechanism": "semgrep and bash rules for secrets passed as arguments (CWE-214)",
+          "basis": "README",
+          "note": "use as a test corpus",
+          "surface": "detection",
+          "privilege": "none"
+        },
+        {
+          "repo": "S4L1Mabd/Process_ARG_Spoofing",
+          "group": "mobile",
+          "created": "2024-10-30",
+          "mechanism": "Windows PEB and process-injection argument spoof",
+          "basis": "README",
+          "note": "2024",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "activex37b/LOLsp00f",
+          "group": "mobile",
+          "created": "2025-08-07",
+          "mechanism": "Nim tool spoofing LOLBin command lines",
+          "basis": "description",
+          "note": "2025",
+          "surface": "PEB CommandLine",
+          "privilege": "user"
+        },
+        {
+          "repo": "waldh4ri/zygarde",
+          "group": "detect",
+          "created": "2025-11-15",
+          "mechanism": "eBPF CO-RE detector; Cells compare kernel truth with the userspace view",
+          "basis": "description",
+          "note": "2025",
+          "surface": "kernel vs userland",
+          "privilege": "root/CAP_BPF"
+        },
+        {
+          "repo": "Idov31/Silverseal",
+          "group": "hide",
+          "created": "2026-03-20",
+          "mechanism": "UEFI bootkit plus Rust LKM rootkit framework",
+          "basis": "README",
+          "note": "persistence before the OS",
+          "surface": "PID listing",
+          "privilege": "root + UEFI"
+        },
+        {
+          "repo": "OWLZOPS/owlzops-mapper",
+          "group": "detect",
+          "created": "2026-06-21",
+          "mechanism": "Rust EDR-lite and rootkit detection",
+          "basis": "description",
+          "note": "2026",
+          "surface": "ghost PIDs",
+          "privilege": "root"
+        }
+      ]
+    },
+    {
+      "id": "part-10",
+      "repos": [
+        {
+          "repo": "maxvarm/memfd-process-hide",
+          "group": "direct",
+          "created": "2023-08-27",
+          "mechanism": "memfd + fexecve hides the executable from auditd",
+          "basis": "README",
+          "note": "README states arguments remain visible",
+          "surface": "exe",
+          "privilege": "none"
+        },
+        {
+          "repo": "ags-slc/s2",
+          "group": "secret",
+          "created": "2026-04-03",
+          "mechanism": "inject secrets into subprocess environments without ambient shell exposure",
+          "basis": "description",
+          "note": "",
+          "surface": "environ",
+          "privilege": "none"
+        },
+        {
+          "repo": "kurowashi/pi-placeholder",
+          "group": "secret",
+          "created": "2026-10-18",
+          "mechanism": "replace secret strings with placeholders in tool results; restore in tool arguments",
+          "basis": "description",
+          "note": "protects the model context, not /proc",
+          "surface": "tool arguments",
+          "privilege": "none"
+        },
+        {
+          "repo": "threatexpert/atrk-linux",
+          "group": "detect",
+          "created": "2025-01-21",
+          "mechanism": "Chinese Linux rootkit detector",
+          "basis": "description",
+          "note": "2025",
+          "surface": "hidden files, ports, processes",
+          "privilege": "root"
+        },
+        {
+          "repo": "cc-Infiltration/SysHideTools",
+          "group": "mobile",
+          "created": "2025-08-15",
+          "mechanism": "Windows system-level hiding tool",
+          "basis": "README",
+          "note": "Chinese, 2025",
+          "surface": "process, window, file",
+          "privilege": "admin (unstated)"
+        },
+        {
+          "repo": "0xKirisame/SPiCa",
+          "group": "detect",
+          "created": "2026-01-06",
+          "mechanism": "eBPF rootkit detection; multiple channels, sched_switch ledger, NMI notary",
+          "basis": "description",
+          "note": "2026",
+          "surface": "kernel vs userland",
+          "privilege": "root/CAP_BPF"
+        },
+        {
+          "repo": "cagansv/process-ghost",
+          "group": "hide",
+          "created": "2026-04-04",
+          "mechanism": "bind-mount and mount-namespace manipulation to hide processes from ps/htop/top",
+          "basis": "README",
+          "note": "",
+          "surface": "PID listing",
+          "privilege": "root"
+        },
+        {
+          "repo": "sylirre/fake-chroot-ng",
+          "group": "sandbox",
+          "created": "2026-07-24",
+          "mechanism": "ptrace-free chroot via seccomp RET_TRAP and a userland ELF loader",
+          "basis": "README",
+          "note": "AArch64 Android",
+          "surface": "seccomp,ELF loader",
+          "privilege": "user"
+        }
+      ]
+    }
+  ]
+}

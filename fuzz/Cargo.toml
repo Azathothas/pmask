@@ -1,0 +1,18 @@
+[package]
+name = "pmask-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pmask = { path = ".." }
+
+[[bin]]
+name = "store_header"
+path = "fuzz_targets/store_header.rs"
+test = false
+doc = false

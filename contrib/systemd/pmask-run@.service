@@ -1,0 +1,52 @@
+[Unit]
+Description=pmask payload %i: a job under a label with a loaded secret
+Documentation=man:pmask(1)
+
+[Service]
+# Type=oneshot: the service runs one command to completion, and the exit
+# status is the job's.
+Type=oneshot
+RemainAfterExit=no
+
+# LoadCredential puts the value in $CREDENTIALS_DIRECTORY as a 0400 file
+# in a private tmpfs, which is strictly better than an environment
+# variable and composes with --secret file:.
+LoadCredential=token:/etc/pmask/token
+ExecStart=/usr/bin/pmask \
+    --label %i \
+    --secret TOKEN=file:%d/token \
+    -- /usr/local/bin/job.sh
+
+# The payload side of the same levers.  ProtectProc=invisible gives this
+# service its own procfs instance, so other accounts' processes are not
+# visible to it at all, which is the half pmask cannot provide from
+# inside the process.
+ProtectProc=invisible
+ProcSubset=pid
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RestrictSUIDSGID=yes
+# @system-service excludes ptrace, and pmask traces the job from
+# inside this unit, so the one syscall is named on the allow line.  The
+# literal name is used rather than @debug because @debug also allows
+# process_vm_readv/writev, which the supervisor does not need (it falls
+# back to ptrace PEEK/POKE when the process_vm calls are refused).
+SystemCallFilter=@system-service ptrace
+SystemCallArchitectures=native
+
+# The user namespace is what --unshare needs, and the deny-list below
+# takes precedence over the allow-list above.  These are the directives
+# that break this workload if removed.
+SystemCallFilter=~@mount
+RestrictNamespaces=user pid net mnt ipc uts cgroup
+
+# The job keeps its own working directory and standard output; a failure
+# is a failure of the job, not of the unit manager.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

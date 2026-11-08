@@ -1,0 +1,123 @@
+{
+  "provenance": "reproducible: no (source: the review rows under docs/research/survey-2025/review/, written 2026-11-03)",
+  "part": "part-04",
+  "repos": [
+    {
+      "repo": "vtsingaras/setproctitle",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/setproctitle.c",
+        "contents:man/setproctitle.1",
+        "contents:tests/test_setproctitle.sh"
+      ],
+      "observed": "The utility is not an in-process library: it PTRACE_ATTACHes to an arbitrary running PID, reads arg_start/arg_end/env_start/env_end from fields 48-51 of /proc/PID/stat, and overwrites the argument area with PEEKDATA/POKEDATA. It refuses to run unless geteuid()==0, and its --force mode deliberately extends a long title into the environment, corrupting the target's variables. The man page and tests confirm the title is bounded by the original arg area by default and by env_end with --force.",
+      "pmask_delta": "pmask only masks processes it launches and only from exec entry; this is a per-PID retrofit that edits the kernel-reported arg window of an already-running process. It makes the title-length/environment-integrity trade explicit by bounding the write at env_end, and it contradicts the CSV: the mechanism is external ptrace, not in-process, and the privilege is root, not none.",
+      "reason": "A pre-2025 external ptrace writer absent from pmask's comparison that demonstrates the arg/env window boundary pmask relies on."
+    },
+    {
+      "repo": "Mymaqn/proc_mimicry",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:loader.c",
+        "contents:preload_hider.c",
+        "contents:template.c"
+      ],
+      "observed": "loader.c calls prctl(PR_SET_MM, PR_SET_MM_EXE_FILE) to point /proc/self/exe at a chosen real binary, then copies the original executable's file-backed mappings into anonymous memory at the same addresses and remaps them, so /proc/PID/maps no longer names the original file. It also relocates arg_start/arg_end through PR_SET_MM_MAP (filling the required fields from /proc/self/stat) and sets comm with PR_SET_NAME; the preload variant clears LD_PRELOAD and MIMICRY from its own environment.",
+      "pmask_delta": "pmask's --rexec moves exe to a memfd but leaves the real file-backed mappings in /proc/PID/maps; this is the one tool in the slice that relocates both exe and maps, at the cost of root/CAP_SYS_RESOURCE. The PR_SET_MM_EXE_FILE call and the anonymous remap are mechanisms absent from pmask's comparison row, which says only that it 'rewrites /proc/self/exe, cmdline, stat and status'.",
+      "reason": "Names two concrete kernel mechanisms for the exe and maps surfaces that pmask reaches only partially through --rexec."
+    },
+    {
+      "repo": "Ozhiaki/fenn",
+      "verdict": "keep-caveat",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/exec.rs",
+        "contents:src/secret.rs"
+      ],
+      "observed": "src/exec.rs places every resolved value into the child with Command::env and, unless --no-inherit, inherits the parent environment; src/secret.rs wraps values in Zeroizing with redacted Debug/Display. The README claims values 'never touch argv' and therefore 'can't be read from ps//proc', but the child's /proc/PID/environ contains them, which the code confirms.",
+      "pmask_delta": "A concrete 2026 case of the argv-only trade: fenn is careful about argv, zeroization and scoped injection, yet deliberately leaves the secret in the child's environ, which pmask redacts or filters with --keep-env. Its blanket '/proc' claim is false for environ and is exactly the gap pmask fills. Nothing about the code is unverified; the caveat is that the row's value is threat evidence, not a mechanism pmask lacks (pmask already has env_clear and per-variable policy).",
+      "reason": "Source-verified threat evidence that a careful 2026 secret-avoidance tool protects argv and leaves environ exposed."
+    },
+    {
+      "repo": "JKornev/hidden",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree"
+      ],
+      "observed": "The tree is a Windows kernel driver and usermode CLI: Hidden.sln, Hidden/Hidden.inf, PsMonitor.c, FsFilter.c, RegFilter.c, KernelAnalyzer.c and a bundled Zydis disassembler, installed by right-clicking the INF and started with `sc start hidden`. The README states Windows Vista and later and lists hiding of registry keys, files, directories and (experimentally) processes; there is no Linux code.",
+      "pmask_delta": "There is no Linux surface and no mechanism pmask can use; the CSV row's 'LKM syscall hooking' and its placement in the Linux hide group are contradicted by both the README and the tree.",
+      "reason": "A Windows driver misclassified as a Linux LKM; it teaches nothing about Linux process metadata."
+    },
+    {
+      "repo": "haolipeng/ebpfRootkit",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "Acceis/eBPF-hide-PID",
+      "evidence": [
+        "readme",
+        "contents:rootkit.bpf.c",
+        "contents:rootkit.c"
+      ],
+      "observed": "rootkit.bpf.c attaches to sys_enter_getdents64/sys_exit_getdents64, scans the returned dirent buffer for the target PID string, and patches the previous entry's d_reclen with bpf_probe_write_user to unlink it; tail calls resume the scan after the 200-iteration BPF loop limit. rootkit.c loads the skeleton and a ring buffer reports each process whose view was altered.",
+      "pmask_delta": "Same mechanism and lesson as Acceis/eBPF-hide-PID: a root/CAP_BPF listing lie that leaves direct /proc/PID access intact, which pmask already says it does not attempt. The tail-call chunking is a BPF loop-limit implementation detail, not a lesson for an unprivileged ptrace supervisor.",
+      "reason": "Duplicate of Acceis/eBPF-hide-PID with only implementation-level extra detail."
+    },
+    {
+      "repo": "lbw1320028474/ProcessHiderGui",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "tree"
+      ],
+      "observed": "The 285-byte README and the tree show a Windows solution: ProcessHiderCore.c is a WDM driver that removes the target EPROCESS from the kernel LIST_ENTRY, and ProcessHiderGui.c is a Win32 front end. The README says hiding is one-way because restoring needs dynamic driver memory the author did not implement; there is no Linux code.",
+      "pmask_delta": "Windows EPROCESS unlinking has no analogue in Linux /proc metadata and no technique pmask could adopt; the row's 'mobile' group is also the wrong platform, and it is a one-way demo.",
+      "reason": "Windows-only EPROCESS demo with no Linux process-metadata lesson."
+    },
+    {
+      "repo": "moussahl/process-hiding-rootkit",
+      "verdict": "drop-duplicate",
+      "duplicate_of": "flashnuke/mod-rootkit",
+      "evidence": [
+        "readme"
+      ],
+      "observed": "The README describes an LKM that ftrace-hooks __x64_sys_getdents64/getdents and filters the target PID from directory listings, activated by signal 64, with a systemd service for persistence and a kprobe lookup of kallsyms_lookup_name on kernel 5.7+. It also changes process priority and ships an installer menu.",
+      "pmask_delta": "It hides existence from directory enumeration, which pmask explicitly does not claim, using the same ftrace/getdents mechanism as flashnuke/mod-rootkit. Signal-64 activation and systemd persistence are delivery details, not lessons about argv, environ or comm.",
+      "reason": "Same ftrace getdents hiding and lesson as flashnuke/mod-rootkit, differing only in the activation trigger."
+    },
+    {
+      "repo": "buter-chkalova/project-rvbbit",
+      "verdict": "drop-slop",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:rvbbit.c"
+      ],
+      "observed": "rvbbit.c is a single educational LKM that overwrites sys_call_table entries for kill, getdents64, openat and bpf, unlinks task->tasks/sibling for DKOM, hides its own module, zeroes the kernel tainted flag and filters tcp4_seq_show. The magic signals are 64/63 and persistence is a systemd unit plus a modules-load.d entry; the README is mostly a research narrative.",
+      "pmask_delta": "Every technique is root-only existence hiding already represented by stronger rows (Singularity, flashnuke, varungor365); the anti-eBPF and taint-clearing tricks defend a kernel rootkit, not an unprivileged metadata mask, and nothing touches argv, environ or comm.",
+      "reason": "Educational single-file LKM whose techniques pmask cannot use and the survey already covers."
+    },
+    {
+      "repo": "Haind03/Exhume",
+      "verdict": "keep",
+      "duplicate_of": null,
+      "evidence": [
+        "readme",
+        "contents:src/core/procrules.rs",
+        "contents:src/linux/procs.rs",
+        "contents:src/core/injectrules.rs",
+        "contents:src/linux/rootkit.rs"
+      ],
+      "observed": "procs.rs reads stat flags (PF_KTHREAD), comm, argv from cmdline, TracerPid from status, exe and environ; procrules.rs flags an executable under /memfd: unless its name matches a benign allowlist, a bracketed argv[0], a comm/argv[0] matching kernel-thread names without PF_KTHREAD, and a daemon name on a binary outside system directories. injectrules.rs scores any non-debugger TracerPid as High and a traced process whose comm is in SECRET_HOLDERS (sshd, sudo, ssh-agent, ...) as Critical; rootkit.rs compares the /proc listing with a kill(pid,0) sweep, /proc/modules with kallsyms, and enumerates loaded eBPF programs.",
+      "pmask_delta": "A strong external test rather than a competitor: it would score --rexec as a Critical fileless memfd, every supervised process's TracerPid as High injection (Critical if the comm is a credential-holder name such as sshd or sudo), and a label or comm mimicking a kernel thread or daemon as masquerading. It has no argv/arg_start consistency check, so the exact-window relocation passes, which confirms where pmask's detection residue actually is; --no-dumpable makes exe/fd/environ unreadable and is reported as a coverage gap rather than a finding.",
+      "reason": "Source-verified cross-view detector that gives pmask a concrete external regression test and shows which of its surfaces still score."
+    }
+  ],
+  "notes": "All 9 repos fetched through the pkgforge proxy; no failed fetches. Three CSV corrections the merge must apply. (1) vtsingaras/setproctitle is not an in-process, unprivileged argv overwrite; it is a root-only PTRACE_ATTACH/POKEDATA tool that rewrites an arbitrary running process's arg window and spills into environ with --force. (2) JKornev/hidden is a Windows kernel driver (Hidden.inf, PsMonitor.c, FsFilter.c, Zydis), not an LKM; remove it from the Linux hide group. (3) lbw1320028474/ProcessHiderGui is a Windows WDM driver plus Win32 GUI, not a mobile/Android row. haolipeng/ebpfRootkit and Acceis/eBPF-hide-PID are the same eBPF getdents mechanism: keep exactly one; haolipeng has the more complete implementation (tail calls, d_reclen patch), Acceis is the canonical minimal demo. moussahl/process-hiding-rootkit duplicates flashnuke/mod-rootkit's ftrace getdents hiding. Haind03/Exhume's CSV basis 'description' understates it: README and source are present and were read. No claim in this file rests on an unread README or on metadata alone."
+}

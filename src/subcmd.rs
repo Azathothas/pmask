@@ -1,0 +1,966 @@
+//! The subcommands that are not the mask: the encrypted store, the secret
+//! agent, the child-side `read`, and the capability report.
+//!
+//! `pmask` has two faces.  The default face is the mask: `pmask
+//! --label L -- cmd` redacts `/proc` metadata.  These subcommands are the
+//! other face, the one that turns a secret into a file descriptor, and
+//! they are what still works on a host that bans `ptrace`.
+//!
+//! The dispatcher returns `None` when the argument vector is not a
+//! subcommand, so the caller falls through to the mask parser.
+
+use crate::agent;
+use crate::caps::Caps;
+use crate::isolate::Isolate;
+use crate::secret;
+use crate::store::{self, Passphrase, Store};
+use std::ffi::{OsStr, OsString};
+use std::io::{self, BufRead, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
+
+/// The subcommand names.  `run` is handled by the caller (it is the mask
+/// parser with secret options), so it is not listed here.
+pub fn is_subcommand(word: &OsStr) -> bool {
+    matches!(
+        word.as_bytes(),
+        b"store" | b"agent" | b"get" | b"read" | b"probe" | b"doctor" | b"help" | b"version"
+    )
+}
+
+/// Run a subcommand.  `argv[0]` is the program name, `argv[1]` the
+/// subcommand word.
+pub fn dispatch(argv: &[OsString], mask_help: &str) -> i32 {
+    let args = &argv[2..];
+    match argv.get(1).map(|a| a.as_bytes()) {
+        Some(b"store") => cmd_store(args),
+        Some(b"agent") => cmd_agent(args),
+        Some(b"get") => cmd_get(args),
+        Some(b"read") => cmd_read(args),
+        Some(b"probe") => cmd_probe(args),
+        Some(b"doctor") => cmd_doctor(args),
+        Some(b"help") => {
+            print!("{}", help(mask_help));
+            0
+        }
+        Some(b"version") => {
+            println!("pmask {} ({})", crate::VERSION, crate::arch_name());
+            0
+        }
+        _ => 255,
+    }
+}
+
+fn help(mask_help: &str) -> String {
+    format!(
+        "{}\n{}",
+        mask_help,
+        SUBCOMMAND_HELP.replace("{version}", crate::VERSION)
+    )
+}
+
+const SUBCOMMAND_HELP: &str = "\
+Commands (the secret side; these work even where ptrace is refused):
+  run [OPTIONS] [--] CMD  run a command; accepts every mask option, plus:
+      --secret N=SRC        deliver a secret on descriptor 3, 4, ...; SRC is
+                            file:PATH | env:VAR | agent:NAME | stdin | literal:VAL
+                            (repeatable; PMASK_SECRET_<N> names the descriptor)
+      --socket PATH         secret-agent socket for agent:NAME sources
+      --isolate[=LIST]      private namespaces: pid,net,tmp | all | none
+      --no-redact           never touch /proc metadata, even where ptrace works
+  read NAME             print a secret that `run` delivered to this process
+  store <sub>           the encrypted store:
+      init | set NAME | get NAME | list | rm NAME | path
+      --store PATH          store file (default: $XDG_DATA_HOME/pmask/store.enc)
+      --passphrase-file P   read the passphrase from P
+  agent [OPTIONS]       hold the store unlocked and serve it:
+      --store PATH, --socket PATH, --passphrase-file P, --allow EXE
+  get NAME [--socket P] ask a running agent for one secret
+  probe [--json]        what this host allows, and what that means
+  doctor [--json] [--require LIST]
+                        the store, the agent and the verdict, in one report.
+                        Exit 0 when every requested guarantee is active, 3
+                        when one is degraded, 4 when one is unavailable.
+                        LIST is any of redact, exact, isolate, secret-mem,
+                        mlock, no-new-privs, non-dumpable, landlock.
+";
+
+// ------------------------------------------------------------------ probe
+
+fn cmd_probe(args: &[OsString]) -> i32 {
+    let mut json = false;
+    for a in args {
+        match a.as_bytes() {
+            b"--json" => json = true,
+            b"-h" | b"--help" => {
+                println!("pmask probe [--json]");
+                return 0;
+            }
+            _ => {
+                eprintln!("pmask: probe: unknown option '{}'", a.to_string_lossy());
+                return 255;
+            }
+        }
+    }
+    let caps = Caps::detect();
+    if json {
+        print!("{}", caps.report_json());
+    } else {
+        print!("{}", caps.report());
+    }
+    0
+}
+
+// ----------------------------------------------------------------- doctor
+
+/// `pmask doctor [--json] [--require LIST]`
+///
+/// `--require` names guarantees the caller depends on: `redact`,
+/// `isolate`, `exact`, `secret-mem`, `mlock`, `no-new-privs`,
+/// `non-dumpable`, `landlock`.  The exit code is 0 when every requested
+/// guarantee is active, 3 when one is degraded, and 4 when one is
+/// unavailable, so a CI job asserts instead of assuming.
+fn cmd_doctor(args: &[OsString]) -> i32 {
+    let mut json = false;
+    let mut require: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_bytes() {
+            b"--json" => json = true,
+            b"-h" | b"--help" => {
+                println!(
+                    "pmask doctor [--json] [--require redact,isolate,exact,secret-mem,mlock,no-new-privs,non-dumpable,landlock]"
+                );
+                return 0;
+            }
+            b"--require" => match args.get(i + 1) {
+                Some(v) => {
+                    for name in v.to_string_lossy().split(',') {
+                        let n = name.trim();
+                        if !n.is_empty() {
+                            require.push(n.to_string());
+                        }
+                    }
+                    i += 1;
+                }
+                None => {
+                    eprintln!("pmask: doctor: --require needs a list");
+                    return 255;
+                }
+            },
+            other if other.starts_with(b"--require=") => {
+                let v = String::from_utf8_lossy(&other[b"--require=".len()..]).into_owned();
+                for name in v.split(',') {
+                    let n = name.trim();
+                    if !n.is_empty() {
+                        require.push(n.to_string());
+                    }
+                }
+            }
+            _ => {
+                eprintln!("pmask: doctor: unknown option '{}'", a.to_string_lossy());
+                return 255;
+            }
+        }
+        i += 1;
+    }
+
+    let caps = Caps::detect();
+    let verdict = verdict_of(&caps, &require);
+
+    if json {
+        print!("{}", doctor_json(&caps, &require, verdict));
+        return verdict;
+    }
+
+    print!("{}", caps.report());
+
+    println!("store:");
+    let sp = store::default_path();
+    match std::fs::metadata(&sp) {
+        Ok(md) => {
+            use std::os::unix::fs::PermissionsExt;
+            println!(
+                "  {} ({} bytes, mode {:04o})",
+                sp.display(),
+                md.len(),
+                md.permissions().mode() & 0o777
+            );
+        }
+        Err(_) => println!("  {} (not created yet)", sp.display()),
+    }
+
+    let sock = agent::default_socket();
+    println!(
+        "agent:\n  {} {}",
+        sock.display(),
+        if agent::ping(None) {
+            "(answering)"
+        } else {
+            "(not running)"
+        }
+    );
+
+    println!("\nverdict:");
+    for name in &require {
+        match guarantee(&caps, name) {
+            Some(st) => println!(
+                "  {:<14} {} ({})",
+                name,
+                st.as_word(),
+                if st.reason().is_empty() {
+                    "requested"
+                } else {
+                    st.reason()
+                }
+            ),
+            None => println!("  {:<14} unknown guarantee", name),
+        }
+    }
+    if require.is_empty() {
+        if caps.ptrace {
+            println!("  command lines can be redacted here (ptrace permitted)");
+        } else {
+            println!("  command lines CANNOT be redacted here (ptrace refused).");
+            println!("  keep secrets out of argv: use --secret with file:/agent: sources,");
+            println!("  which deliver over descriptors and work without ptrace.");
+        }
+        if caps.userns {
+            println!("  --isolate is available (unprivileged user namespaces)");
+        } else {
+            println!("  --isolate is NOT available (no unprivileged user namespaces)");
+        }
+        println!("  tier={}", caps.tier_word());
+    }
+
+    let code = if require.is_empty() { 0 } else { verdict };
+    match code {
+        0 => {}
+        3 => println!("\n  a requested guarantee is degraded here"),
+        4 => println!("\n  a requested guarantee is unavailable here"),
+        _ => {}
+    }
+    code
+}
+
+/// The state of a named guarantee, or `None` for a name this build does
+/// not know.
+fn guarantee(caps: &Caps, name: &str) -> Option<crate::caps::State> {
+    let row = |want: &str| -> Option<crate::caps::State> {
+        caps.rows()
+            .into_iter()
+            .find(|(n, _)| *n == want)
+            .map(|(_, s)| s)
+    };
+    match name {
+        "redact" => row("metadata redaction"),
+        "exact" => row("exact cmdline window"),
+        "isolate" => row("isolation"),
+        "secret-mem" => row("memfd_secret"),
+        "mlock" => row("mlock"),
+        "no-new-privs" => row("no_new_privs"),
+        "non-dumpable" => row("non-dumpable"),
+        "landlock" => row("landlock"),
+        // the report's own row names work too, so `--require` can name
+        // whatever `probe` printed
+        other => row(other),
+    }
+}
+
+/// 0 when every requested guarantee is active, 3 when one is degraded,
+/// 4 when one is unavailable, and 255 when a requested name is not one
+/// this build knows.
+fn verdict_of(caps: &Caps, require: &[String]) -> i32 {
+    let mut worst = 0;
+    for name in require {
+        match guarantee(caps, name) {
+            Some(crate::caps::State::Active) => {}
+            Some(crate::caps::State::Degraded(_)) => worst = worst.max(3),
+            Some(crate::caps::State::Unavailable(_)) => worst = worst.max(4),
+            None => worst = worst.max(255),
+        }
+    }
+    worst
+}
+
+/// The machine-readable form of `doctor`: the same rows as `probe
+/// --json`, plus the store and agent lines and the per-request verdict.
+fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
+    let sp = store::default_path();
+    let store_line = match std::fs::metadata(&sp) {
+        Ok(md) => format!(
+            "{{\"path\": \"{}\", \"bytes\": {}, \"exists\": true}}",
+            sp.display(),
+            md.len()
+        ),
+        Err(_) => format!("{{\"path\": \"{}\", \"exists\": false}}", sp.display()),
+    };
+    let sock = agent::default_socket();
+    let mut wanted = String::new();
+    for (i, name) in require.iter().enumerate() {
+        if i > 0 {
+            wanted.push(',');
+        }
+        let st = guarantee(caps, name);
+        wanted.push_str(&format!(
+            "\n    {{\"name\": \"{}\", \"state\": \"{}\"}}",
+            name,
+            st.map(|s| s.as_word()).unwrap_or("unknown")
+        ));
+    }
+    let base = caps.report_json();
+    // splice the extra keys before the closing brace of the capability
+    // report, so the two reports share one schema
+    let body = base.trim_end().trim_end_matches('}');
+    format!(
+        "{},\n  \"store\": {},\n  \"agent\": {{\"socket\": \"{}\", \"answering\": {}}},\n  \"required\": [{}],\n  \"exit\": {}\n}}\n",
+        body,
+        store_line,
+        sock.display(),
+        agent::ping(None),
+        wanted,
+        code
+    )
+}
+
+// ------------------------------------------------------------------ store
+
+fn opt_value(args: &[OsString], i: &mut usize, flag: &str) -> Option<OsString> {
+    match args.get(*i + 1) {
+        Some(v) => {
+            *i += 1;
+            Some(v.clone())
+        }
+        None => {
+            eprintln!("pmask: {} needs a value", flag);
+            None
+        }
+    }
+}
+
+fn inline_arg<'a>(s: &'a [u8], flag: &str) -> Option<&'a [u8]> {
+    let p = flag.as_bytes();
+    if s.len() > p.len() && s.starts_with(p) && s[p.len()] == b'=' {
+        Some(&s[p.len() + 1..])
+    } else {
+        None
+    }
+}
+
+fn path_from(v: &OsStr) -> PathBuf {
+    PathBuf::from(v)
+}
+
+fn cmd_store(args: &[OsString]) -> i32 {
+    let sub = match args.first() {
+        Some(s) => s.to_string_lossy().into_owned(),
+        None => {
+            eprintln!("pmask: store needs a subcommand (init|set|get|list|rm|path)");
+            return 255;
+        }
+    };
+    let mut path = store::default_path();
+    let mut pass_file: Option<PathBuf> = None;
+    let mut from_file: Option<PathBuf> = None;
+    let mut positional: Vec<OsString> = Vec::new();
+    let mut i = 1usize;
+    while i < args.len() {
+        let b = args[i].as_bytes();
+        if let Some(v) = inline_arg(b, "--store") {
+            path = path_from(OsStr::from_bytes(v));
+        } else if let Some(v) = inline_arg(b, "--passphrase-file") {
+            pass_file = Some(path_from(OsStr::from_bytes(v)));
+        } else if let Some(v) = inline_arg(b, "--from-file") {
+            from_file = Some(path_from(OsStr::from_bytes(v)));
+        } else {
+            match b {
+                b"--store" => match opt_value(args, &mut i, "--store") {
+                    Some(v) => path = path_from(&v),
+                    None => return 255,
+                },
+                b"--passphrase-file" => match opt_value(args, &mut i, "--passphrase-file") {
+                    Some(v) => pass_file = Some(path_from(&v)),
+                    None => return 255,
+                },
+                b"--from-file" => match opt_value(args, &mut i, "--from-file") {
+                    Some(v) => from_file = Some(path_from(&v)),
+                    None => return 255,
+                },
+                b"-h" | b"--help" => {
+                    println!(
+                        "pmask store init|set NAME|get NAME|list|rm NAME|path \
+                         [--store PATH] [--passphrase-file PATH]"
+                    );
+                    return 0;
+                }
+                _ => positional.push(args[i].clone()),
+            }
+        }
+        i += 1;
+    }
+
+    if sub == "path" {
+        println!("{}", path.display());
+        return 0;
+    }
+
+    let pp = match resolve_passphrase(pass_file.as_deref(), sub == "init") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pmask: {}", e);
+            return 255;
+        }
+    };
+
+    match sub.as_str() {
+        "init" => {
+            if path.exists() {
+                eprintln!("pmask: {} already exists", path.display());
+                return 255;
+            }
+            match Store::create(&path, &pp) {
+                Ok(_) => {
+                    println!("created {}", path.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    255
+                }
+            }
+        }
+        "set" => {
+            let Some(name) = positional.first() else {
+                eprintln!("pmask: store set needs a NAME");
+                return 255;
+            };
+            let name = name.to_string_lossy().into_owned();
+            let mut bytes = match &from_file {
+                Some(p) => match std::fs::read(p) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("pmask: {}: {}", p.display(), e);
+                        return 255;
+                    }
+                },
+                None => {
+                    let mut v = Vec::new();
+                    if let Err(e) = io::stdin().read_to_end(&mut v) {
+                        eprintln!("pmask: {}", e);
+                        return 255;
+                    }
+                    v
+                }
+            };
+            if bytes.last() == Some(&b'\n') {
+                bytes.pop();
+            }
+            let mut st = match open_or_create(&path, &pp) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    return 255;
+                }
+            };
+            if let Err(e) = st.set(&name, &bytes) {
+                eprintln!("pmask: {}", e);
+                return 255;
+            }
+            use zeroize::Zeroize;
+            bytes.zeroize();
+            match st.save(&pp) {
+                Ok(()) => {
+                    println!("set {}", name);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    255
+                }
+            }
+        }
+        "get" => {
+            let Some(name) = positional.first() else {
+                eprintln!("pmask: store get needs a NAME");
+                return 255;
+            };
+            let st = match Store::open(&path, &pp) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    return 255;
+                }
+            };
+            match st.get(&name.to_string_lossy()) {
+                Some(v) => {
+                    let mut out = io::stdout();
+                    let _ = out.write_all(v);
+                    let _ = out.write_all(b"\n");
+                    0
+                }
+                None => {
+                    eprintln!("pmask: no secret named '{}'", name.to_string_lossy());
+                    1
+                }
+            }
+        }
+        "list" => {
+            let st = match Store::open(&path, &pp) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    return 255;
+                }
+            };
+            for n in st.names() {
+                println!("{}", n);
+            }
+            0
+        }
+        "rm" => {
+            let Some(name) = positional.first() else {
+                eprintln!("pmask: store rm needs a NAME");
+                return 255;
+            };
+            let name = name.to_string_lossy().into_owned();
+            let mut st = match Store::open(&path, &pp) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    return 255;
+                }
+            };
+            if !st.remove(&name) {
+                eprintln!("pmask: no secret named '{}'", name);
+                return 1;
+            }
+            match st.save(&pp) {
+                Ok(()) => {
+                    println!("removed {}", name);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("pmask: {}", e);
+                    255
+                }
+            }
+        }
+        other => {
+            eprintln!("pmask: unknown store subcommand '{}'", other);
+            255
+        }
+    }
+}
+
+fn open_or_create(path: &Path, pp: &Passphrase) -> io::Result<Store> {
+    if path.exists() {
+        Store::open(path, pp)
+    } else {
+        Store::create(path, pp)
+    }
+}
+
+fn resolve_passphrase(explicit: Option<&Path>, creating: bool) -> io::Result<Passphrase> {
+    if let Some(p) = explicit {
+        return Passphrase::from_file(p);
+    }
+    if let Some(p) = std::env::var_os("PMASK_PASSPHRASE_FILE") {
+        return Passphrase::from_file(&path_from(&p));
+    }
+    if let Some(v) = std::env::var_os("PMASK_PASSPHRASE") {
+        eprintln!(
+            "pmask: warning: PMASK_PASSPHRASE is set; it is visible in this process's environ"
+        );
+        return Passphrase::new(v.as_bytes());
+    }
+    prompt_passphrase(creating)
+}
+
+/// Read a passphrase from the controlling terminal with echo off.
+fn prompt_passphrase(creating: bool) -> io::Result<Passphrase> {
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no terminal to ask for a passphrase; use --passphrase-file PATH \
+                 or PMASK_PASSPHRASE_FILE",
+            )
+        })?;
+    let fd = tty.as_raw_fd();
+    let mut term: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr/tcsetattr on the descriptor of an open tty.
+    let have_term = unsafe { libc::tcgetattr(fd, &mut term) } == 0;
+    let orig = term;
+    if have_term {
+        term.c_lflag &= !libc::ECHO;
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) };
+    }
+    let mut w = &tty;
+    let prompt = if creating {
+        "new passphrase: "
+    } else {
+        "passphrase: "
+    };
+    let _ = w.write_all(prompt.as_bytes());
+    let _ = w.flush();
+
+    let mut line = String::new();
+    let mut r = io::BufReader::new(&tty);
+    let res = r.read_line(&mut line);
+    if have_term {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &orig) };
+    }
+    let _ = w.write_all(b"\n");
+    res?;
+    if line.ends_with('\n') {
+        line.pop();
+    }
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    let pp = Passphrase::new(line.as_bytes())?;
+    use zeroize::Zeroize;
+    line.zeroize();
+    Ok(pp)
+}
+
+// ------------------------------------------------------------------ agent
+
+fn cmd_agent(args: &[OsString]) -> i32 {
+    let mut path = store::default_path();
+    let mut sock = agent::default_socket();
+    let mut pass_file: Option<PathBuf> = None;
+    let mut allow: Vec<PathBuf> = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let b = args[i].as_bytes();
+        if let Some(v) = inline_arg(b, "--store") {
+            path = path_from(OsStr::from_bytes(v));
+        } else if let Some(v) = inline_arg(b, "--socket") {
+            sock = path_from(OsStr::from_bytes(v));
+        } else if let Some(v) = inline_arg(b, "--passphrase-file") {
+            pass_file = Some(path_from(OsStr::from_bytes(v)));
+        } else if let Some(v) = inline_arg(b, "--allow") {
+            allow.push(path_from(OsStr::from_bytes(v)));
+        } else {
+            match b {
+                b"--store" => match opt_value(args, &mut i, "--store") {
+                    Some(v) => path = path_from(&v),
+                    None => return 255,
+                },
+                b"--socket" => match opt_value(args, &mut i, "--socket") {
+                    Some(v) => sock = path_from(&v),
+                    None => return 255,
+                },
+                b"--passphrase-file" => match opt_value(args, &mut i, "--passphrase-file") {
+                    Some(v) => pass_file = Some(path_from(&v)),
+                    None => return 255,
+                },
+                b"--allow" => match opt_value(args, &mut i, "--allow") {
+                    Some(v) => allow.push(path_from(&v)),
+                    None => return 255,
+                },
+                b"-h" | b"--help" => {
+                    println!(
+                        "pmask agent [--store PATH] [--socket PATH] \
+                         [--passphrase-file PATH] [--allow EXE]..."
+                    );
+                    return 0;
+                }
+                other => {
+                    eprintln!(
+                        "pmask: agent: unknown option '{}'",
+                        String::from_utf8_lossy(other)
+                    );
+                    return 255;
+                }
+            }
+        }
+        i += 1;
+    }
+    let pp = match resolve_passphrase(pass_file.as_deref(), false) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("pmask: {}", e);
+            return 255;
+        }
+    };
+    // The store is decrypted through `Daemon::open`, which hardens this
+    // process first: opening it here would leave plaintext in a dumpable
+    // process for the whole of `Store::open`.
+    let mut config = agent::AgentConfig::new(sock);
+    for entry in allow {
+        let text = entry.as_os_str().to_string_lossy().into_owned();
+        if text.contains(':') {
+            match agent::PolicyRule::parse(&text) {
+                Ok(rule) => config.policy.add_rule(rule),
+                Err(e) => {
+                    eprintln!("pmask: agent: --allow: {}", e);
+                    return 255;
+                }
+            }
+        } else {
+            config.policy.allow_exact(entry);
+        }
+    }
+    match agent::Daemon::open(&path, &pp, config).and_then(|d| d.serve()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("pmask: agent: {}", e);
+            255
+        }
+    }
+}
+
+// -------------------------------------------------------------------- get
+
+fn cmd_get(args: &[OsString]) -> i32 {
+    let mut sock: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        let b = args[i].as_bytes();
+        if let Some(v) = inline_arg(b, "--socket") {
+            sock = Some(path_from(OsStr::from_bytes(v)));
+        } else if b == b"--socket" {
+            match opt_value(args, &mut i, "--socket") {
+                Some(v) => sock = Some(path_from(&v)),
+                None => return 255,
+            }
+        } else {
+            name = Some(args[i].to_string_lossy().into_owned());
+        }
+        i += 1;
+    }
+    let Some(name) = name else {
+        eprintln!("pmask: get needs a NAME");
+        return 255;
+    };
+    match agent::fetch(sock.as_ref(), &name) {
+        Ok(v) => {
+            let mut out = io::stdout();
+            let _ = out.write_all(v.as_slice());
+            let _ = out.write_all(b"\n");
+            0
+        }
+        Err(e) => {
+            eprintln!("pmask: {}", e);
+            1
+        }
+    }
+}
+
+// ------------------------------------------------------------------- read
+
+/// Read a secret that `pmask run` delivered to this process, by name.
+/// `pmask read [--fd N] [--no-newline] [--tty] NAME`
+///
+/// Prints the value of a secret `run` delivered to this process.  The
+/// descriptor is shared with the parent, so its offset persists: the read
+/// seeks to the start first, which makes a second read in the same tree
+/// return the whole value instead of nothing.  The buffer is zeroised
+/// before return, the descriptor is closed, and a newline is added only
+/// when the value does not already end with one.
+fn cmd_read(args: &[OsString]) -> i32 {
+    let mut name: Option<String> = None;
+    let mut explicit_fd: Option<libc::c_int> = None;
+    let mut newline: Option<bool> = None;
+    let mut allow_tty = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        let b = args[i].as_bytes();
+        match b {
+            b"--no-newline" => {
+                newline = Some(false);
+            }
+            b"--newline" => {
+                newline = Some(true);
+            }
+            b"--tty" => {
+                allow_tty = true;
+            }
+            b"--fd" => match args.get(i + 1) {
+                Some(v) => match v.to_string_lossy().parse::<libc::c_int>() {
+                    Ok(n) if n >= 0 => {
+                        explicit_fd = Some(n);
+                        i += 1;
+                    }
+                    _ => {
+                        eprintln!("pmask: read: --fd needs a descriptor number");
+                        return 255;
+                    }
+                },
+                None => {
+                    eprintln!("pmask: read: --fd needs a descriptor number");
+                    return 255;
+                }
+            },
+            b"-h" | b"--help" => {
+                println!("pmask read [--fd N] [--no-newline|--newline] [--tty] NAME");
+                return 0;
+            }
+            other if other.starts_with(b"--fd=") => {
+                let v = String::from_utf8_lossy(&other[b"--fd=".len()..]);
+                match v.parse::<libc::c_int>() {
+                    Ok(n) if n >= 0 => explicit_fd = Some(n),
+                    _ => {
+                        eprintln!("pmask: read: --fd needs a descriptor number");
+                        return 255;
+                    }
+                }
+            }
+            other if other.starts_with(b"-") && other.len() > 1 => {
+                eprintln!(
+                    "pmask: read: unknown option '{}'",
+                    String::from_utf8_lossy(other)
+                );
+                return 255;
+            }
+            _ => {
+                if name.is_some() {
+                    eprintln!("pmask: read takes one NAME");
+                    return 255;
+                }
+                name = Some(args[i].to_string_lossy().into_owned());
+            }
+        }
+        i += 1;
+    }
+
+    let fd = match explicit_fd {
+        Some(n) => n,
+        None => {
+            let Some(name) = name.as_deref() else {
+                eprintln!("pmask: read needs a NAME or --fd N");
+                return 255;
+            };
+            let var = secret::env_var_for(name);
+            let fd_s = match std::env::var(&var) {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!(
+                        "pmask: no secret named '{}' in this process ({} is not set)",
+                        name, var
+                    );
+                    return 1;
+                }
+            };
+            match fd_s.parse::<libc::c_int>() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("pmask: {} holds '{}', not a descriptor", var, fd_s);
+                    return 255;
+                }
+            }
+        }
+    };
+
+    // SAFETY: fstat on a descriptor the caller was told about by `run`.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        eprintln!("pmask: read fd {}: {}", fd, io::Error::last_os_error());
+        return 1;
+    }
+    // SAFETY: isatty takes the descriptor number only.
+    let tty = unsafe { libc::isatty(fd) } == 1 || unsafe { libc::isatty(1) } == 1;
+    if tty && !allow_tty {
+        eprintln!("pmask: refusing to write a secret to a terminal; pass --tty if you are sure");
+        return 2;
+    }
+
+    // The descriptor is the same open file description the parent made, so
+    // its offset survives an exec and is shared with every other reader.
+    // Seeking first is what makes a second `pmask read` work.
+    // SAFETY: lseek on the caller's descriptor.
+    if unsafe { libc::lseek(fd, 0, libc::SEEK_SET) } < 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ESPIPE) {
+            eprintln!("pmask: read fd {}: cannot rewind: {}", fd, e);
+            return 1;
+        }
+        // A pipe cannot seek; the value is still readable once.
+    }
+
+    let mut out = io::stdout();
+    let mut buf = [0u8; 8192];
+    let mut last_byte = 0u8;
+    let mut wrote = 0usize;
+    let mut rc = 0i32;
+    loop {
+        // SAFETY: reading into a local buffer through the caller's
+        // descriptor.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n == 0 {
+            break;
+        }
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            eprintln!("pmask: read fd {}: {}", fd, e);
+            rc = 1;
+            break;
+        }
+        let chunk = &buf[..n as usize];
+        last_byte = chunk[chunk.len() - 1];
+        if out.write_all(chunk).is_err() {
+            rc = 1;
+            break;
+        }
+        wrote += chunk.len();
+    }
+    // The plaintext stays on this stack until something reuses the frame;
+    // a process whose whole job is to print a secret should not leave it.
+    buf.zeroize();
+    // SAFETY: close the caller's descriptor; nothing later reads it.
+    unsafe { libc::close(fd) };
+
+    if rc == 0 {
+        let add = match newline {
+            Some(v) => v,
+            // Default: complete the line only when the value is not
+            // already one, so `| tool` receives the bytes as written.
+            None => wrote > 0 && last_byte != b'\n',
+        };
+        if add {
+            let _ = out.write_all(b"\n");
+        }
+        let _ = out.flush();
+    }
+    rc
+}
+
+/// Parse `--isolate[=LIST]`.
+pub fn parse_isolate(v: &[u8]) -> Option<Isolate> {
+    if v == b"all" || v.is_empty() {
+        return Some(Isolate::all());
+    }
+    if v == b"none" {
+        return Some(Isolate {
+            pid: false,
+            net: false,
+            private_tmp: false,
+        });
+    }
+    let mut iso = Isolate {
+        pid: false,
+        net: false,
+        private_tmp: false,
+    };
+    for part in v.split(|&b| b == b',') {
+        match part {
+            b"pid" => iso.pid = true,
+            b"net" => iso.net = true,
+            b"tmp" => iso.private_tmp = true,
+            _ => return None,
+        }
+    }
+    Some(iso)
+}
