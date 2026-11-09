@@ -33,6 +33,18 @@ live_tree_procs() {
     done
 }
 
+# reap_pid PID: SIGKILL, with sudo only when the process is not ours.
+# A fragment run under `sudo sh tests/run.sh` leaves root-owned payloads,
+# and an unprivileged dispatcher cannot signal them; without this the next
+# run's /proc sweep counts another run's leftover as a leak.
+reap_pid() {
+    rp=$1
+    kill -9 "$rp" 2>/dev/null && return 0
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo -n kill -9 "$rp" 2>/dev/null
+    fi
+}
+
 # reap_new_since BEFORE_PIDS
 reap_new_since() {
     keep=" $1 "
@@ -44,7 +56,7 @@ reap_new_since() {
         # live one still under a fragment's shell is the fragment's to
         # reap, and killing it after the fragment returned is the same
         # cleanup the fragment owed.
-        kill -9 "$p" 2>/dev/null
+        reap_pid "$p"
     done
 }
 
