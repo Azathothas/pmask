@@ -1,0 +1,12 @@
+## issue 31: --args-from-fd 0 keeps fd 0 open
+$ printf "/bin/sh\0-c\0ls -l /proc/self/fd/0\0" | ./pmask -q --args-from-fd 0
+lr-x------ 1 agent agent 64 Nov  9 10:25 /proc/self/fd/0 -> pipe:[63462600]
+rc=0
+--- tests/qa.d/31.sh ---
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS q31a-control-args-from-fd-3-keeps-stdin
+PASS q31b-args-from-fd-0-keeps-fd-0-open
+PASS q31c-args-from-fd-0-stdin-reads-eof-not-ebadf
+PASS q31d-image-from-fd-runs-from-a-memfd (rc=0)
+################ qa31: PASS
+rc=0
