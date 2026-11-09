@@ -1,0 +1,12 @@
+FAIL qa60-both-comm-is-label (comm=[evil-name] want=[qa60both])
+PASS qa60-both-cmdline-is-label
+PASS qa60-both-payload-alive
+FAIL qa60-no-warning (the old warning-and-continue path fired: pmask: warning: pid 1297691: cannot redirect a rename to the label)
+PASS qa60-both-rename-accepted
+PASS qa60-control-plain-rename-lands
+PASS qa60-watch-comm-is-label
+PASS qa60-watch-cmdline-is-label
+PASS qa60-watch-payload-alive
+PASS qa60-unshare-comm-is-label
+PASS qa60-unshare-cmdline-is-label
+PASS qa60-unshare-payload-alive

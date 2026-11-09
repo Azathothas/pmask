@@ -1,0 +1,18 @@
+# issue 33: --comm accepts LF and CR
+
+## baseline (fa46e62)
+mode=[mask] rc=0 stderr=[]
+mode=[--isolate=all] rc=0 stderr=[pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2]
+mode=[--no-redact] rc=0 stderr=[pmask: mode=plain secrets=0 exit=0]
+
+## fixed
+mode=[mask] rc=255 stderr=[pmask: comm must not contain NUL, LF or CR bytes]
+mode=[--isolate=all] rc=255 stderr=[pmask: comm must not contain NUL, LF or CR bytes]
+mode=[--no-redact] rc=255 stderr=[pmask: comm must not contain NUL, LF or CR bytes]
+
+## fixed: CR is refused the same way
+rc=255 stderr=[pmask: comm must not contain NUL, LF or CR bytes]
+
+## control: the label rule already refused LF, and TAB stays legal in comm
+label rc=255 stderr=[pmask: /bin/true: label must not contain NUL, LF or CR bytes]
+comm TAB: [ab	cd] rc=0

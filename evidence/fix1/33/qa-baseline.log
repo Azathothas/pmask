@@ -1,0 +1,7 @@
+FAIL qa33-lf-refused (rc=0 stderr=[])
+FAIL qa33-cr-refused (rc=0 stderr=[])
+FAIL qa33-lf-isolate (rc=0 stderr=[pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2])
+FAIL qa33-lf-no-redact (rc=0 stderr=[pmask: mode=plain secrets=0 exit=0])
+PASS qa33-nul-covered-by-the-unit-test
+PASS qa33-tab-accepted
+PASS qa33-label-lf-refused-control

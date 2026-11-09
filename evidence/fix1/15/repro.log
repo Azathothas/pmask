@@ -1,0 +1,30 @@
+# issue 15: memfd_secret without MFD_CLOEXEC
+
+## baseline: grandchild under --secret-close-on-exec
+total 0
+lr-x------ 1 agent agent 64 Nov  9 08:44 0 -> /dev/null
+l-wx------ 1 agent agent 64 Nov  9 08:44 1 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+l-wx------ 1 agent agent 64 Nov  9 08:44 2 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+lr-x------ 1 agent agent 64 Nov  9 08:44 3 -> /proc/1428915/fd
+lrwx------ 1 agent agent 64 Nov  9 08:44 4 -> /secretmem (deleted)
+
+## fixed: grandchild under --secret-close-on-exec
+total 0
+lr-x------ 1 agent agent 64 Nov  9 08:44 0 -> /dev/null
+l-wx------ 1 agent agent 64 Nov  9 08:44 1 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+l-wx------ 1 agent agent 64 Nov  9 08:44 2 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+lr-x------ 1 agent agent 64 Nov  9 08:44 3 -> /proc/1428963/fd
+
+## fixed: the payload still reads the value from its descriptor
+fd=3
+bytes=7
+path=/memfd:pmask-secret (deleted)
+write-errno=1
+
+## control: a memfd_secret created with flags 0 IS inherited across exec
+total 0
+lr-x------ 1 agent agent 64 Nov  9 08:44 0 -> /dev/null
+l-wx------ 1 agent agent 64 Nov  9 08:44 1 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+l-wx------ 1 agent agent 64 Nov  9 08:44 2 -> /workspace/wt/fix1/evidence/fix1/15/repro.log
+lrwx------ 1 agent agent 64 Nov  9 08:44 3 -> /secretmem (deleted)
+lr-x------ 1 agent agent 64 Nov  9 08:44 4 -> /proc/1432449/fd

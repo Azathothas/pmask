@@ -1,0 +1,13 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa60-both-comm-is-label
+PASS qa60-both-cmdline-is-label
+PASS qa60-both-payload-alive
+PASS qa60-no-warning
+PASS qa60-both-rename-accepted
+PASS qa60-control-plain-rename-lands
+PASS qa60-watch-comm-is-label
+PASS qa60-watch-cmdline-is-label
+PASS qa60-watch-payload-alive
+PASS qa60-unshare-comm-is-label
+PASS qa60-unshare-cmdline-is-label
+PASS qa60-unshare-payload-alive

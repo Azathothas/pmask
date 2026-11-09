@@ -1,0 +1,21 @@
+PASS qa4-control-plain-cmdline-is-label
+PASS qa4-control-plain-environ-empty
+PASS qa4-control-plain-comm-is-label
+PASS qa4-control-plain-marker-not-in-cmdline
+PASS qa4-control-plain-payload-alive
+PASS qa4-negative-control-marker-visible
+PASS qa4-unshare-cmdline-is-label
+PASS qa4-unshare-environ-empty
+PASS qa4-unshare-comm-is-label
+PASS qa4-unshare-marker-not-in-cmdline
+PASS qa4-unshare-payload-alive
+PASS qa4-unshare-is-pid1
+PASS qa4-unshare-private-pidns
+PASS qa4-isolate-cmdline-is-label
+PASS qa4-isolate-environ-empty
+PASS qa4-isolate-comm-is-label
+PASS qa4-isolate-marker-not-in-cmdline
+PASS qa4-isolate-payload-alive
+PASS qa4-isolate-is-pid1
+PASS qa4-isolate-private-pidns
+FAIL qa4-handshake-is-tracer-interrupt (verbose handshake line absent)

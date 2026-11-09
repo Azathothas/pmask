@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa5-version
+PASS qa5-read
+PASS qa5-read-no-help
+PASS qa5-control-no-redact
+PASS qa5-control-fd-env
+PASS qa5-selfmask-still-on
+PASS qa5-unshare-read
