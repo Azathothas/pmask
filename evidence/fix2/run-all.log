@@ -1,20 +1,20 @@
-    Finished `release` profile [optimized] target(s) in 0.05s
+    Finished `release` profile [optimized] target(s) in 0.02s
 ################ unwrap-audit
 unwrap-audit: 3 accepted site(s), no unmarked site
 ################ validate.sh
-== pmask validation run (suffix 9eMUM3MJ, label [kworker/1:2-rcu_gp]) ==
+== pmask validation run (suffix ViFvKkv, label [kworker/1:2-rcu_gp]) ==
 -- phase 1: negative control (no pmask; markers MUST be observable)
-PASS control-MK9eMUM3MJ1A (detector works, 2 sightings)
-PASS control-MK9eMUM3MJ1D (detector works, 2 sightings)
+PASS control-MKViFvKkv1A (detector works, 2 sightings)
+PASS control-MKViFvKkv1D (detector works, 2 sightings)
 -- phase 2: battery under pmask (expect zero sightings)
-PASS MK9eMUM3MJA: no sightings
-PASS MK9eMUM3MJB: no sightings
-PASS MK9eMUM3MJC: no sightings
-PASS MK9eMUM3MJD: no sightings
-PASS MK9eMUM3MJE: no sightings
-PASS MK9eMUM3MJF: no sightings
-PASS MK9eMUM3MJG: no sightings
-PASS MK9eMUM3MJH: no sightings
+PASS MKViFvKkvA: no sightings
+PASS MKViFvKkvB: no sightings
+PASS MKViFvKkvC: no sightings
+PASS MKViFvKkvD: no sightings
+PASS MKViFvKkvE: no sightings
+PASS MKViFvKkvF: no sightings
+PASS MKViFvKkvG: no sightings
+PASS MKViFvKkvH: no sightings
 -- phase 2b: liveness proof (processes really run under the mask)
 PASS liveness: 3 process(es) running with the label, marker unseen
 -- phase 3: functional sanity under pmask
@@ -38,11 +38,11 @@ PASS t1-cmdline: no 'MK-T1' visible
 == T2: shell children (sh, &, wait) ==
 PASS t2-script-children: no 'MK-T2a' visible
 PASS t2-script-children: no 'MK-T2b' visible
-PASS t2-liveness: 27 process(es) alive with the label
+PASS t2-liveness: 6 process(es) alive with the label
 == T3: spawns from secondary threads (posix_spawn + system) ==
 PASS t3-posix-thread: no 'MK-T3-THREAD' visible
 PASS t3-system-thread: no 'MK-T3-SYSTEM' visible
-PASS t3-liveness: 37 process(es) alive with the label
+PASS t3-liveness: 10 process(es) alive with the label
 == T4: daemon double-fork (reparented to init) ==
 PASS t4-daemon: no 'MK-T4-DAEMON' visible
 == T5: nested shell depth 3 ==
@@ -56,7 +56,7 @@ PASS t7-liveness: 27 process(es) alive with the label
 PASS t7b-go: no 'MK-T7B-GO' visible
 == T8: comm redacted (the Name column of top/htop) ==
 PASS t8-cmdline: no 'MK-T8' visible
-PASS t8-comm: comm '[kworker/1:2]' present (237)
+PASS t8-comm: comm '[kworker/1:2]' present (35)
 == T9: environ redacted, process still works ==
 PASS t9-control-environ-detectable (1 environ hit(s) without pmask)
 PASS t9-liveness: 13 testcases process(es) alive with the label
@@ -72,7 +72,7 @@ PASS t12-argv: [arg0=[/workspace/wt/fix2/tests/testcases] arg1=[echoargs] arg2=[
 == VERDICT: FAIL=0 ==
 ################ stress.sh
 == S1: race-window probe: continuous spawns vs tight /proc observer ==
-pmask: observer sweeps=26 real-arg sightings=0 label-comm-alive=202
+pmask: observer sweeps=25 real-arg sightings=0 label-comm-alive=202
 PASS s1-race
 == S2: stress: 100 sequential execs, exit codes intact ==
 PASS s2-stress (100 ok)
@@ -130,14 +130,14 @@ PASS e17-no-arguments-prints-usage-and-exits-255
 PASS e17-empty-args-from-fd-is-refused
 PASS e17-empty-program-name-is-refused (rc=127)
 PASS e18-control-untraced-scores-none (TracerPid=0)
-PASS e18-default-traced-scores-high (TracerPid=3159801)
+PASS e18-default-traced-scores-high (TracerPid=3121327)
 PASS e18-detach-untraced-scores-none (TracerPid=0)
 PASS e18-secret-holder-label-scores-critical
 PASS e19-control-live-pid-present-in-every-view
 PASS e19-control-dead-pid-absent-in-every-view
 PASS e19-masked-present-in-every-view
-PASS e19-masked-start-time-stable (starttime=78190460)
-PASS e19-control-start-times-differ (tracee=78190460 shell=78188815)
+PASS e19-masked-start-time-stable (starttime=78421166)
+PASS e19-control-start-times-differ (tracee=78421166 shell=78419510)
 PASS e19-masked-comm-is-label
 PASS e19-masked-cmdline-hides-argument
 PASS e20-vfork-child-does-not-corrupt-the-parent
@@ -157,10 +157,15 @@ PASS d4-daemon-selfmask
 PASS d5-stdio-and-exit-status
 PASS d6-failed-job-keeps-daemon
 SKIP d11-run-as-uid (needs root to start the daemon and switch to uid 1000)
-daemon.sh: 307: cannot open /proc/3179236/cmdline: No such file
-daemon.sh: 307: cannot open /proc/3179239/cmdline: No such file
-daemon.sh: 307: cannot open /proc/3179240/cmdline: No such file
-daemon.sh: 307: cannot open /proc/3179241/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3141304/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142350/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142351/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142352/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142353/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142354/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142355/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142356/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142357/cmdline: No such file
 PASS d7-cli-secret-in-no-proc-entry
 PASS d7-cli-child-cmdline-is-label
 PASS d8-same-uid-can-read-fd3-documented-hazard
@@ -203,12 +208,12 @@ PASS n12-zero-fds (response code=255 signal=none msg=pmaskd: expected exactly 3 
 PASS n12-daemon-survives
 PASS n13-five-fds (response code=255 signal=none msg=pmaskd: too many file descriptors (control data truncate)
 PASS n13-daemon-survives
-PASS n14-stalled-client-dropped (2s, rc=0, elapsed_ms=2014 first_read=1
+PASS n14-stalled-client-dropped (2s, rc=0, elapsed_ms=2019 first_read=1
 response code=255 signal=none msg=pmaskd: bad request: Resou)
 PASS n14-daemon-survives
-PASS n15-symlink-refused (pmaskd: refusing to start: /tmp/pmask-neg.3185299/symlink.sock is a symbolic link)
-PASS n16-plain-file-refused (pmaskd: refusing to start: /tmp/pmask-neg.3185299/plain.sock exists and is not a socket)
-PASS n17-live-socket-not-stolen (pmaskd: refusing to start: another daemon is already listening on /tmp/pmask-neg.3185299/live.sock)
+PASS n15-symlink-refused (pmaskd: refusing to start: /tmp/pmask-neg.3150561/symlink.sock is a symbolic link)
+PASS n16-plain-file-refused (pmaskd: refusing to start: /tmp/pmask-neg.3150561/plain.sock exists and is not a socket)
+PASS n17-live-socket-not-stolen (pmaskd: refusing to start: another daemon is already listening on /tmp/pmask-neg.3150561/live.sock)
 PASS n17-daemon-survives
 PASS n18-stale-socket-replaced
 PASS n19-double-fork-job-keeps-daemon (client rc=0)
@@ -224,10 +229,10 @@ Killed
 PASS n24-job-timeout (2s, rc=137)
 PASS n24-daemon-survives
 SKIP n25-unauthorised-uid (needs root to switch to uid 1000)
-PASS n26-sigterm-stops-with-a-stalled-worker (worker 3209814, exit 0)
+PASS n26-sigterm-stops-with-a-stalled-worker (worker 3168421, exit 0)
 PASS n27-ping-answered (response code=0 signal=none msg=protocol=2 label=pmask-job uid=1000 run_as_uid=false jobs=)
 PASS n27-daemon-survives
-PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.3185299/visible is mode 0755; group or other can read and traverse i)
+PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.3150561/visible is mode 0755; group or other can read and traverse i)
 == VERDICT: FAIL=0 ==
 ################ options.sh
 PASS o1-help-names-selfmask-escape
@@ -249,16 +254,16 @@ PASS o10-control-default-redacts-path
 PASS o11-args-from-fd-secret-absent
 PASS o11-args-from-fd-program-gets-arguments
 PASS o11-control-observer-sees-plain-argv
-options.sh: 334: cannot open /proc/3279788/environ: Permission denied
+options.sh: 334: cannot open /proc/3239405/environ: Permission denied
 PASS o12-supervisor-comm-is-label
 PASS o12-supervisor-cmdline-is-label
 PASS o12-supervisor-hides-argv-and-environ
 PASS o12-control-no-selfmask-leaves-argv
 PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
-INFO self-entry-window 479ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
+INFO self-entry-window 495ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
 PASS o14-on-exit-detach-keeps-background-child
 PASS o14-on-exit-kill-terminates-background-child
-PASS o14-on-exit-wait-waits (detach=1s wait=3s)
+PASS o14-on-exit-wait-waits (detach=0s wait=3s)
 SKIP o15-no-dumpable (needs root to switch to uid 1000)
 PASS o16-no-new-privs-sets-flag
 PASS o16-watch-rename-implies-no-new-privs
@@ -270,7 +275,7 @@ PASS o17b-watch-rename-success-is-silent
 PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
 PASS o18-rexec-maps-has-no-disk-path
 PASS o18-control-exe-is-disk-path
-PASS o19-unshare-payload-sees-only-itself (inside=1 outside=54)
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=60)
 PASS o20-daemon-with-mask-options-warns
 PASS o20-quiet-suppresses-daemon-warning
 PASS o20-control-label-only-has-no-warning
@@ -334,8 +339,8 @@ PASS k5-supervisor-exits (rc=0 in 0s)
 PASS k5-detach-keeps-background-job (1 alive with the label, 0 sightings)
 PASS k5-on-exit-kill-terminates-tree (0 alive after 1 polls)
 PASS k5-on-exit-wait-waits (2s)
-PASS k6-sigstop-holds (file frozen at 3 bytes)
-PASS k6-sigcont-resumes (size 3 -> 15)
+PASS k6-sigstop-holds (file frozen at 4 bytes)
+PASS k6-sigcont-resumes (size 4 -> 17)
 PASS k8-retry-keeps-entry-swap (swaps=2 rereads=0)
 PASS k9-failed-repoint-zeroes-and-warns (0 sightings)
 PASS k9-failed-repoint-resumes-cleanly (exit 0)
@@ -352,7 +357,7 @@ PASS k15-window-kept (arg extent 16 = label + argc, environ 41 NUL bytes not emp
 PASS k15b-real-prctl-refusal-is-reported (rc=0)
 PASS k15b-real-refusal-keeps-the-window (extent 13 = label + argc)
 PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
-INFO completion-stop 5145us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
+INFO completion-stop 4986us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
 PASS k12-thread-comm-is-label (4 of 4 threads)
 PASS k12-setproctitle-rewrite-keeps-args
 PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
@@ -363,7 +368,7 @@ PASS k13-fexecve-argv-intact (entry swaps: 2)
 PASS k13b-at-execfn-diverges (payload=/workspace/wt/fix2/tests/testcases auxv=core-label-x)
 PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
 PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
-PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 3423696: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 3423922: exec not redacted: redaction block failed: no syscall instruction for mmap)
 PASS k17-empty-argv-element-is-forwarded
 PASS k14-thread-starts-settled (settled=4 slow=0)
 == VERDICT: FAIL=0 ==
@@ -382,9 +387,9 @@ PASS s4-stale-temp-not-reused (store 0600, both stale files untouched)
 PASS s4-no-temp-file-left-behind
 PASS s5-shared-directory-refused (rc=255, names the opt-in)
 PASS s5-shared-directory-accepted-with-optin (store 0600)
-PASS s6-concurrent-set-one-wins (round 1: one success, one lock refusal, store opens with [ALPHA,])
+PASS s6-concurrent-set-one-wins (round 1: one success, one lock refusal, store opens with [BETA,])
 PASS s6-concurrent-set-one-wins (round 2: one success, one lock refusal, store opens with [ALPHA,])
-PASS s6-concurrent-set-one-wins (round 3: one success, one lock refusal, store opens with [BETA,])
+PASS s6-concurrent-set-one-wins (round 3: one success, one lock refusal, store opens with [ALPHA,])
 PASS s7-crafted-m-cost-rejected (0s, m_cost 4294967295 KiB exceeds the ceiling 1048576 KiB)
 PASS s8-kdf-ceiling-overridable (default refused at [ceiling 1048576 KiB], raised run reached the tag check)
 PASS s8-malformed-ceiling-refused
@@ -423,12 +428,12 @@ PASS i1-off-switches-are-named-not-omitted
 PASS i1-none-means-no-isolation (no report, NoNewPrivs=0)
 PASS i2-no-new-privs-set-in-the-payload
 PASS i2-control-flag-clear-without-isolation
-PASS i3-payload-sees-only-itself (inside=1 host=51)
-PASS i3-control-pid-off-sees-the-host (off=56 host~51 isolated=1)
+PASS i3-payload-sees-only-itself (inside=1 host=57)
+PASS i3-control-pid-off-sees-the-host (off=60 host~57 isolated=1)
 PASS i4-neutral-hostname-inside (host=errand-pyztg9rss42g inside=pmask)
 PASS i4-control-without-isolation-sees-the-host-name
-PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533172])
-PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533246])
+PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533314])
+PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533382])
 PASS i6-cgroup-path-is-the-namespace-root
 PASS i7-private-tmp-hides-the-host's-files
 PASS i7-control-tmp-off-sees-the-host's-files
@@ -461,14 +466,14 @@ PASS i15-isolate-refuses-an-env-secret
 PASS i15-refused-env-secret-leaves-no-process
 PASS i15-isolate-refuses-a-literal-secret
 PASS i15b-isolate-delivers-a-file-secret
-isolation.sh: 843: cannot open /proc/3512922/environ: Permission denied
+isolation.sh: 843: cannot open /proc/3519293/environ: Permission denied
 PASS i15-supervisor-environ-is-masked
 PASS i15-control-payload-environ-keeps-the-value (2)
 PASS i15-value-is-gone-after-the-run
 PASS i16-no-secret-close-on-exec-is-named
-PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=64)
+PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=62)
 PASS i18-redact-and-no-redact-contradict
-PASS i19-matrix-sessions-are-live (masked=3518603 control=3519571)
+PASS i19-matrix-sessions-are-live (masked=3524548 control=3525467)
 PASS i19-cmdline-is-the-label (bytes=12)
 PASS i20-comm-is-the-label (masked=mkisomatrix control=testcases)
 PASS i21-environ-refused-with-no-dumpable
@@ -519,7 +524,7 @@ PASS c1-line-starts-with-the-version
 PASS c1-line-carries-a-unix-time
 PASS c1-line-carries-the-secret-name
 PASS c1-line-carries-the-peer-exe (/workspace/wt/fix2/tests/pmask)
-PASS c1-line-carries-a-pid (3549691)
+PASS c1-line-carries-a-pid (3557009)
 PASS c1-line-has-eight-fields
 PASS c1-line-ends-with-a-64-hex-chain
 PASS c1-line-carries-a-lease-id (32 hex characters)
@@ -535,7 +540,7 @@ PASS d5-agent-refuses-mem-maps-smaps-environ
 PASS d6-peer-identity (pidfd + identity inode)
 PASS d6-ping-names-the-limit
 PASS d6b-refused-option-prints-the-fallback-warning
-PASS d2-writable-directory-refused (pmask: agent: refusing to serve: /tmp/pmask-lease.3522112/bad/sec is mode 0777; group or other can reach it.  )
+PASS d2-writable-directory-refused (pmask: agent: refusing to serve: /tmp/pmask-lease.3528157/bad/sec is mode 0777; group or other can reach it.  )
 PASS d2-no-socket-was-bound
 PASS d3-symlinked-socket-refused (pmask: agent: warning: no executable policy; every program of uid 1000 may ask for every secret)
 PASS d3-the-symlink-was-not-removed
@@ -587,41 +592,41 @@ PASS e2-squeezed-memlock-is-reported (heap)
 == VERDICT: PASS=33 FAIL=0 SKIP=0 ==
 ################ compare.sh
 FIELDS variant pid comm exe tracer_pid cmdline_bytes stat_arg_span nul_count nul_maxrun canary_in_cmdline canary_in_environ environ_bytes auxv_execfn_contains_canary argstart_vma mem_canary_readable
-ROW control 3601916 sh /usr/bin/dash 0 35 35 4 1 1 1 2583 0 7ffc8a51e000-7ffc8a53f000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
-ROW redacted 3605080 ci-runner /usr/bin/dash 3605078 10 10 1 1 0 0 0 0 7fd2f3d9f000-7fd2f3da3000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+ROW control 3596549 sh /usr/bin/dash 0 34 34 4 1 1 1 2582 0 7ffcc0db9000-7ffcc0dda000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+ROW redacted 3599192 ci-runner /usr/bin/dash 3599191 10 10 1 1 0 0 0 0 7eff10ad3000-7eff10ad7000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
 SUPERVISOR redacted maps_bytes=REFUSED payload_maps_bytes=2146
-ROW redacted-nodumpable 3607222 ci-runner SKIP 3607219 10 0 1 1 0 SKIP SKIP SKIP SKIP SKIP
+ROW redacted-nodumpable 3601433 ci-runner SKIP 3601432 10 0 1 1 0 SKIP SKIP SKIP SKIP SKIP
 SUPERVISOR redacted-nodumpable maps_bytes=REFUSED payload_maps_bytes=REFUSED
 SUPERVISOR control maps_bytes=2146
-MAP_FILES rexec_range=55e3c1790000-55e3c17ab000 rexec_target=/memfd:ci-runner (deleted) plain_range=5626c1d62000-5626c1d7d000 plain_target=/workspace/wt/fix2/tests/testcases
-SCRIPT-WINDOW window_us=623 method=completion-stop
+MAP_FILES rexec_range=561ce4a70000-561ce4a8b000 rexec_target=/memfd:ci-runner (deleted) plain_range=55d0749bc000-55d0749d7000 plain_target=/workspace/wt/fix2/tests/testcases
+SCRIPT-WINDOW window_us=493 method=completion-stop
 DETACH-TREE labelled=1 unlabelled=2 visible_grand=1 visible_child=1 detached=1
 AUDIT audit-report
-ROW redacted-detach 3650661 ci-runner /usr/bin/dash 0 10 10 1 1 0 0 0 0 7fdfc57a9000-7fdfc57ad000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+ROW redacted-detach 3655414 ci-runner /usr/bin/dash 0 10 10 1 1 0 0 0 0 7f6aa86c0000-7f6aa86c4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
 
 human table: one row per variant, the same values as the ROW lines
 variant          pid     comm           tracer cmd_bytes arg_span nuls  nul_run canary_cmd canary_env env_bytes auxv_canary mem_canary   scanned strings_bytes
-control          3601916 sh             0      35        35       4     1       1          1          2583      0           1            2736128 0         
-redacted         3605080 ci-runner      3605078 10        10       1     1       0          0          0         0           1            2744320 0         
-redacted-nodumpable 3607222 ci-runner      3607219 10        0        1     1       0          SKIP       SKIP      SKIP        SKIP         SKIP   SKIP      
-redacted-detach  3650661 ci-runner      0      10        10       1     1       0          0          0         0           1            2744320 0         
+control          3596549 sh             0      34        34       4     1       1          1          2582      0           1            2736128 0         
+redacted         3599192 ci-runner      3599191 10        10       1     1       0          0          0         0           1            2744320 0         
+redacted-nodumpable 3601433 ci-runner      3601432 10        0        1     1       0          SKIP       SKIP      SKIP        SKIP         SKIP   SKIP      
+redacted-detach  3655414 ci-runner      0      10        10       1     1       0          0          0         0           1            2744320 0         
 
 detail: exe, the mapping that holds arg_start, and the mappings that
 detail: hold the canary in /proc/<pid>/mem, per variant
 control          exe=[/usr/bin/dash]
-                 argstart_vma=[7ffc8a51e000-7ffc8a53f000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 argstart_vma=[7ffcc0db9000-7ffcc0dda000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
                  mem_canary_in=[[stack](rw-p) ]
 redacted         exe=[/usr/bin/dash]
-                 argstart_vma=[7fd2f3d9f000-7fd2f3da3000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 argstart_vma=[7eff10ad3000-7eff10ad7000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
                  mem_canary_in=[[stack](rw-p) ]
 redacted-nodumpable exe=[SKIP]
                  argstart_vma=[SKIP]
                  mem_canary_in=[-]
 redacted-detach  exe=[/usr/bin/dash]
-                 argstart_vma=[7fdfc57a9000-7fdfc57ad000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 argstart_vma=[7f6aa86c0000-7f6aa86c4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
                  mem_canary_in=[[stack](rw-p) ]
 
-canary PMKCAN-zpeehcHi was an argv element of the job and PMK_COMPARE_CANARY held it
+canary PMKCAN-BmKgPuy was an argv element of the job and PMK_COMPARE_CANARY held it
 in the environment.
 mem_canary comes from a page-by-page scan of every readable mapping in
 /proc/<pid>/mem.  strings(/proc/<pid>/mem) is not used because it seeks
@@ -632,7 +637,7 @@ the column exists.
 COMPARE: OK
 ################ conformance.sh
 PASS args-hidden cmdline=[cfm-conf|]
-PASS args-visible-control canary visible in pid 3655580 without supervision
+PASS args-visible-control canary visible in pid 3659878 without supervision
 PASS environ-hidden
 PASS environ-keep-control environ=[||||||||||||||||||||||||||||||||||||||||PMK_CONF_KEEP=CFMCON]
 PASS comm-is-label
@@ -643,7 +648,7 @@ PASS supervisor-selfmask comm=[cfm-conf] cmdline=[cfm-conf|]
 PASS same-uid-exe-maps exe=[/usr/bin/dash]
 PASS same-uid-environ-read
 PASS holder-environ-refused
-PASS payload-session pid=3660254
+PASS payload-session pid=3664658
 PASS secret-absent
 PASS core-limit-zero holder=[0 0] payload=[0 0]
 PASS core-limit-control payload soft=[0] hard=[18446744073709551615] without a secret
