@@ -1487,13 +1487,13 @@ impl Tracer {
 
     /// Does the tracee's memory at `addr` still start with the comm label?
     ///
-    /// When the read fails the answer is "yes".  For a live tracee the
-    /// read fails because it is non-dumpable, which is exactly the
-    /// `--no-dumpable` case this redirect exists for; treating that as
-    /// "no block" would replace a working redirect with a refused rename
-    /// and count a degradation that did not happen.  The address is
-    /// bookkeeping the tracer wrote itself at the completion stop and is
-    /// cleared at the tracee's next exec entry.
+    /// A failed read answers "no", and the caller falls through to the
+    /// write path.  That is deliberate: a tracee the tracer cannot read is
+    /// one the payload may have rewritten, and pointing `PR_SET_NAME` at
+    /// memory the payload controls would let it choose its own `comm` —
+    /// the exact leak this filter exists to stop.  Under `--no-dumpable`
+    /// both the read and the write are refused, so the rename is refused
+    /// with `EFAULT` instead: the label wins, and the session counts it.
     fn block_holds_label(&self, pid: libc::pid_t, addr: u64, n: usize) -> bool {
         if n == 0 {
             return true;
@@ -1501,7 +1501,7 @@ impl Tracer {
         let mut buf = [0u8; 16];
         let want = n.min(buf.len());
         if crate::remote::read_mem(pid, addr, &mut buf[..want]) != want as isize {
-            return true;
+            return false;
         }
         buf[..want] == self.cfg.label_comm[..want]
     }

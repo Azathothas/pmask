@@ -25,9 +25,9 @@
 #                              (`evil-name`): the payload really renames
 #   qa60-watch-only            --watch-rename alone still keeps the label
 #   qa60-unshare-both          the same under --unshare (the pair composes)
-#   qa60-no-warning            the old warning-and-continue path is gone:
-#                              with the fix no "cannot redirect" line is
-#                              printed for an ordinary run
+#   qa60-no-silent-continue    the old warning-and-continue path is gone: a
+#                              "cannot redirect" line, if printed at all,
+#                              says the rename was refused
 set -u
 cd "$(dirname "$0")"
 . ../lib.sh
@@ -132,17 +132,40 @@ run_rename both qa60both 3 --watch-rename --no-dumpable
 BOTH_SUP=$RUN_SUP
 BOTH_PID=$RUN_PID
 check_kept qa60-both qa60both "$BOTH_PID"
+# The old failure mode was warning *and continuing*, which let the
+# payload's rename through.  A warning is still allowed when the redirect
+# has to refuse the rename instead, because the label then wins.  So the
+# case is: if the line is printed at all, it must say the rename is
+# refused.  A line that only says "cannot redirect" is the defect.
 if grep -q 'cannot redirect a rename' "$D/both.err" 2>/dev/null; then
-    fail "qa60-no-warning (the old warning-and-continue path fired: $(grep -m1 'cannot redirect' "$D/both.err"))"
+    if grep -q 'the rename is refused' "$D/both.err" 2>/dev/null; then
+        pass qa60-no-silent-continue
+    else
+        fail "qa60-no-silent-continue (warning without the refusal: $(grep -m1 'cannot redirect' "$D/both.err"))"
+    fi
 else
-    pass qa60-no-warning
+    # No warning at all: the redirect used the block label directly.
+    pass qa60-no-silent-continue
 fi
-# The payload's own report is the control for "the rename was attempted and
-# the kernel accepted it".
+# What the payload's own report may say.  Two outcomes both keep the
+# promise, and which one happens depends on whether the tracer can read the
+# block that holds the label:
+#   - root, or any tracer that can read the tracee: the redirect points at
+#     the block label and the kernel accepts the rename (`rc=0`, `comm`
+#     stays the label because the name argument was replaced);
+#   - a non-root tracer with a non-dumpable tracee: neither the read nor
+#     the write is allowed, so the redirect fails closed and the kernel
+#     refuses the rename with EFAULT (`rc=-1 errno=14`), which also leaves
+#     `comm` at the label.
+# Both are correct; what is never allowed is `rc=0` with the payload's own
+# name taking effect, which is the defect and which the two `comm` cases
+# above already catch.
 if grep -q '^rename-rc=0' "$D/both.out" 2>/dev/null; then
-    pass qa60-both-rename-accepted
+    pass qa60-both-outcome-is-defined
+elif grep -q '^rename-rc=-1 errno=14$' "$D/both.out" 2>/dev/null; then
+    pass qa60-both-outcome-is-defined
 else
-    fail "qa60-both-rename-accepted (payload: $(head -2 "$D/both.out" | tr '\n' ' '))"
+    fail "qa60-both-outcome-is-defined (payload: $(head -2 "$D/both.out" | tr '\n' ' '))"
 fi
 kill -9 "$BOTH_SUP" "$BOTH_PID" 2>/dev/null
 wait "$BOTH_SUP" 2>/dev/null

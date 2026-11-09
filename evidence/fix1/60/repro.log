@@ -1,13 +1,20 @@
 # issue 60: --watch-rename and --no-dumpable cannot redirect a rename
+# host: 6.12.113+deb13-amd64, uid 1000
 
 ## baseline: both flags, payload calls prctl(PR_SET_NAME, "evil-name")
-pmask: warning: pid 1732298: cannot redirect a rename to the label
+pmask: warning: pid 3380877: cannot redirect a rename to the label
 rename-rc=0 errno=0
 comm=evil-name
 
-## fixed: both flags
-rename-rc=0 errno=0
+## fixed, non-root (uid 1000), both flags
+pmask: warning: pid 3385345: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+rename-rc=-1 errno=14
 comm=qa60both
+pmask: 1 rename(s) refused because the label address was not available (comm kept the label)
+
+## fixed, root, both flags
+rename-rc=0 errno=0
+comm=qa60root
 
 ## control: no flags, the rename lands
 rename-rc=0 errno=0
@@ -21,6 +28,6 @@ comm=qa60w
 rename-rc=0 errno=0
 comm=qa60ns
 
-## mechanism: the redirect points at the block label, no memory write
-[pmask 1755220] pid 1755228: hidden block in an anonymous mapping at 0x7f559b874000 (presentation 15 bytes)
-[pmask 1755220] pid 1755228: rename redirected to 0x7f559b8749e1
+## mechanism: as root the redirect points at the block label, no memory write
+[pmask 3407495] pid 3407503: hidden block in an anonymous mapping at 0x7f6a20386000 (presentation 15 bytes)
+[pmask 3407495] pid 3407503: rename redirected to 0x7f6a203863a0
