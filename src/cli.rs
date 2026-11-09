@@ -49,9 +49,10 @@ Options:
                        Keep only the named variables visible in
                        /proc/<pid>/environ; the rest stays redacted.  The
                        inline '=' form is required.  Repeatable.
-                       `--keep-env NAME` (space form) passes NAME to the
-                       program as its own argument; it keeps the whole
-                       environment and is refused when no program follows.
+                       `--keep-env NAME` (space form) keeps the whole
+                       environment and treats NAME as the program; when a
+                       `--` and a command follow, the parser refuses it and
+                       names the inline spelling you meant.
       --env K=V        Add or replace one variable for the program.
                        Repeatable.
       --env-file PATH  Read variables for the program from PATH: one KEY=VALUE
