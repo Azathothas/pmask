@@ -512,14 +512,16 @@ fi
 
 # ------------------------------------------------------- I8: fresh /dev
 # Catches: the host's /dev left in place, or a tmpfs mounted over it with no
-# usable device nodes.
+# usable device nodes.  `/dev/pts`, `/dev/ptmx` and `/dev/shm` are part of
+# the fresh /dev since issue 25 (a pty-using payload needs them), so they
+# are expected rather than leaks; each is checked for usability below.
 iso_run "$T/dev.out" "$T/dev.err" /bin/sh -c 'ls /dev'
 dev_list=$(tr '\n' ' ' <"$T/dev.out")
 if has "$probe_rep" "dev"; then
     unexpected=""
     for n in $dev_list; do
         case "$n" in
-            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr) ;;
+            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr|pts|ptmx|shm) ;;
             *) unexpected="$unexpected $n" ;;
         esac
     done
@@ -542,7 +544,7 @@ if has "$probe_rep" "dev"; then
     # A host node that exists outside the bound set must be gone.  Any one
     # of these proves the host's /dev is not visible.
     leak=""
-    for n in kvm mqueue shm pts fuse net console log core initctl ptmx; do
+    for n in kvm mqueue fuse net console log core initctl; do
         if [ -e "/dev/$n" ]; then
             leak=$n
             break
