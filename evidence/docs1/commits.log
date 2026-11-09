@@ -1,0 +1,30 @@
+$ git log --oneline d2f331a..HEAD
+eab58be docs: say when the mode line is printed
+644522b docs: refresh the docs1 commit log
+42443c4 docs: note the gate is run unprivileged in DEPLOY
+8a23e4b docs: tighten the secret and mode wording
+155fd4a docs: add the docs1 evidence index
+38ce703 docs: same-uid reader also reads payload memory
+939fdf7 docs: the tracer pid is a thread, not the supervisor
+d847eff docs: name the argv source in SECURITY
+e940dd3 docs: the daemon has no store of its own
+91f644d docs: note the gate skips same-uid cases as root
+c08e32c docs: add the audit and wrapper exposure to SECURITY
+50e9514 docs: list the signals a defender still sees
+82f2598 docs: state the keep-env and no-dumpable exposure
+4e2f75d docs: document the isolate /dev and hugetlb fallback
+3cc2003 docs: --report json shares stdout with the payload
+2d09e7c docs: the store belongs to pmask agent, not pmaskd
+68000d7 docs: say what each mode redacts and does not
+33da474 docs: nested pmask read works under a mask
+f8ccfbc docs: state the audit-log exposure of literal secrets
+
+$ git diff --stat d2f331a..HEAD
+ README.md                       | 201 +++++++++++++++++++++++++++++++++++-----
+ SECURITY.md                     |  29 +++++-
+ docs/DEPLOY.md                  |  24 +++++
+ evidence/docs1/README.md        |  78 ++++++++++++++++
+ evidence/docs1/check-rename.log |   2 +
+ evidence/docs1/commits.log      |  28 ++++++
+ evidence/docs1/style-checks.log |   5 +
+ 7 files changed, 338 insertions(+), 29 deletions(-)

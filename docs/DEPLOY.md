@@ -100,6 +100,23 @@ does not adopt a socket passed by systemd (it never reads `LISTEN_FDS`), and
 a socket unit's `DirectoryMode=0700` would create `/run/pmask` as root,
 which `DynamicUser=` cannot then own.
 
+The daemon's whole command line is
+`/usr/bin/pmaskd --socket %t/pmask/pmask.sock`. Do not add `--store` or
+`--passphrase-file` to it. `pmaskd` accepts neither: it takes the job
+environment from `--env-file` and has no encrypted store of its own, so a
+unit that adds `--store` exits 255 with `unknown option --store` and never
+starts. The store belongs to `pmask agent`, which holds the unlocked store
+and answers a `--secret NAME=agent:NAME` source over its own socket. Run
+the agent as a separate unit or as a sibling process, and give the job the
+agent's socket path.
+
+The tmpfiles entry creates `/var/lib/pmask` only. It deliberately has no
+`f` line for `store.enc`: a tmpfiles `f` entry creates a zero-byte file at
+boot, and `pmask store init` then refuses with "already exists" (255) while
+`store set` refuses the truncated header. `pmask store init` creates the
+file, its mode and its header itself. If a host still carries an `f` line
+for the store, remove it before the first `store init`.
+
 `pmask-run@.service` is the payload side. It loads the token with
 `LoadCredential=`, which puts a `0400` file in a private tmpfs, and passes
 it as `--secret TOKEN=file:%d/token`. It sets `ProtectProc=invisible`,
@@ -154,6 +171,13 @@ directives. Neither boots a unit, and the score is that of the
 directives, not of a running job. Treat a directive this document names
 but the installed systemd does not know as a version mismatch to resolve
 rather than a line to delete.
+
+Run the test gate as an unprivileged uid, not as root. `CAP_SYS_PTRACE`
+lets a root observer read what a same-uid peer cannot, so the suites that
+assert a same-uid refusal (`tests/isolation.sh`, `tests/conformance.sh`)
+cannot be decided as root. They print `SKIP` and name the root case
+instead of failing. `vm/run.sh` runs both passes, as root and as uid
+1000.
 
 The `contrib/` directory is excluded from the published crate; it is
 deployment material, not a build dependency. It ships in the release
