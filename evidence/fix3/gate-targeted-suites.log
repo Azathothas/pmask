@@ -26,3 +26,6 @@ PASS cli-spy-6: control=1 wrapped=0
 PASS s14-oversize-passphrase-refused
 == VERDICT: FAIL=0 ==
 
+################ tests/isolation.sh
+PASS i36-kcmp-refused-with-no-dumpable (masked=errno=EPERM control=ok result=0)
+== VERDICT: FAIL=0 ==
