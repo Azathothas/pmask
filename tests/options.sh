@@ -451,10 +451,18 @@ kill_comm mko-oxkill KILL
 # as 1 or 0 depending on where the boundary fell.  The property is that
 # `wait` outlives the payload and `detach` does not.
 now_ms() {
+    # GNU date prints 19 digits for %N; busybox prints the seconds from %s
+    # and ignores %N, so a short numeric value is seconds and is widened.
     _ns=$(date +%s%N 2>/dev/null)
     case "$_ns" in
-        *N*|"") echo $(( $(date +%s) * 1000 )) ;;
-        *) echo $(( _ns / 1000000 )) ;;
+        ''|*[!0-9]*) echo $(( $(date +%s) * 1000 )) ;;
+        *)
+            if [ ${#_ns} -le 10 ]; then
+                echo $(( _ns * 1000 ))
+            else
+                echo $(( _ns / 1000000 ))
+            fi
+            ;;
     esac
 }
 t0=$(now_ms)

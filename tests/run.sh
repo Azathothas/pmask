@@ -28,7 +28,9 @@ fi
 # way they stay correct is a check that reads the parser.  It needs no
 # binary and no host capability, so a missing script is a failure.
 echo "################ completions"
-if [ -f "$BIN_DIR/../scripts/check-completions.sh" ]; then
+if [ -f "$BIN_DIR/.vm-staged" ]; then
+    echo "SKIP completions (the VM tree has no repository: src/ and completions/ are not staged; the native gate runs this)"
+elif [ -f "$BIN_DIR/../scripts/check-completions.sh" ]; then
     sh "$BIN_DIR/../scripts/check-completions.sh" || FAIL=1
 else
     echo "FAIL completions (scripts/check-completions.sh is absent)"
@@ -39,6 +41,8 @@ fi
 echo "################ qa fragments"
 if [ -f qa.sh ]; then
     sh qa.sh || FAIL=1
+elif [ -f "$BIN_DIR/.vm-staged" ]; then
+    echo "SKIP qa fragments (tests/qa.sh is not staged in this VM tree)"
 else
     echo "FAIL qa fragments (tests/qa.sh is absent)"
     FAIL=1
