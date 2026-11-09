@@ -213,11 +213,15 @@ refused, except
 .BR \-\-secret\-close\-on\-exec ,
 which needs the tracer and is refused in plain and isolate modes.
 .TP
-.BI \-\-secret " N=SRC"
+.BI \-\-secret " NAME=SRC"
 Deliver a secret on descriptor 3, 4, ...; the child's environment
 variable
-.B PMASK_SECRET_<NAME>=<fd>
-holds the descriptor number.
+.B PMASK_SECRET_<NAME>
+holds the descriptor number, where NAME is the secret name upper-cased
+with every byte that is not an ASCII letter or digit turned into an
+underscore.
+Two names that differ only in punctuation therefore collide, and the
+run refuses them before any value is loaded.
 SRC is one of
 .BR file: PATH ,
 .BR env: VAR ,
