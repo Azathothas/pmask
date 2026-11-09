@@ -32,6 +32,7 @@ BASE="b2q47-$SHORT"
 SUP=""
 PAY=""
 CLIENT=""
+ORPH=""
 FAIL=0
 
 pass() { echo "PASS $*"; }
@@ -42,9 +43,13 @@ cleanup() {
     [ -n "${SUP:-}" ] && kill -9 "$SUP" 2>/dev/null
     [ -n "${PAY:-}" ] && kill -9 "$PAY" 2>/dev/null
     [ -n "${CLIENT:-}" ] && kill -9 "$CLIENT" 2>/dev/null
+    [ -n "${ORPH:-}" ] && kill -9 "$ORPH" 2>/dev/null
+    # Every label of this run shares BASE, and the label-scoped sweep is
+    # exhaustive for them: an abnormal exit must not leave a labelled
+    # orphan for a later sweep in the gate to attribute to another case.
     kill_label "$BASE" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP QUIT
 
 status_field() {
     sed -n "s/^$2:[[:space:]]*\(.*\)$/\1/p" "/proc/$1/status" 2>/dev/null

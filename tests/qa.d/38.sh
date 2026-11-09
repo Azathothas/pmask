@@ -44,6 +44,7 @@ LABEL="b2q38-$$"
 LONG="b2q38-abcdefghijklmnopqrstuvwxyz-$$"
 JOB_LABEL="b2q38job-$$"
 DPID=""
+CLIENT=""
 SOCKDIR=""
 SOCK=""
 SUP=""
@@ -58,13 +59,21 @@ cleanup() {
     [ -n "${SUP:-}" ] && kill -9 "$SUP" 2>/dev/null
     [ -n "${PAY:-}" ] && kill -9 "$PAY" 2>/dev/null
     [ -n "${DPID:-}" ] && kill -9 "$DPID" 2>/dev/null
+    [ -n "${CLIENT:-}" ] && kill -9 "$CLIENT" 2>/dev/null
     [ -n "${SOCKDIR:-}" ] && rm -rf "$SOCKDIR"
     [ -n "${TOK:-}" ] && rm -f "$TOK" 2>/dev/null
+    # Every label this fragment uses, so an abnormal exit cannot leave a
+    # parked sleeper behind for a later sweep in the gate to attribute to
+    # a different case.
     kill_label "$LABEL" 2>/dev/null
     kill_label "$LONG" 2>/dev/null
     kill_label "$JOB_LABEL" 2>/dev/null
+    kill_label "b2q38k-$$" 2>/dev/null
+    kill_label "b2q38d-$$" 2>/dev/null
+    kill_label "b2q38kc-" 2>/dev/null
+    kill_label "$RETIRED" 2>/dev/null
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP QUIT
 
 # status_field PID FIELD -> the value, empty when the process is gone
 status_field() {

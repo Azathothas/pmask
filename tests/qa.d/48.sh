@@ -24,6 +24,9 @@ require_bins || { echo "FATAL: binaries missing (build failed)"; exit 2; }
 ROOT=$(pwd)/..
 MEAS="$ROOT/measurements/launch-window.sh"
 SUP=""
+CTL=""
+PAY=""
+PIDS=""
 FAIL=0
 T="${TMPDIR:-/tmp}/pmask-q48.$$"
 mkdir -p "$T" || { echo "FATAL: mktemp"; exit 2; }
@@ -34,10 +37,23 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
 cleanup() {
+    # Every process this fragment started, plus a sweep by the run's own
+    # label: a payload left parked by an abnormal exit would carry a real
+    # argv, and any world-wide sweep in the gate would report it as a leak
+    # belonging to this fragment.
     [ -n "${SUP:-}" ] && kill -9 "$SUP" 2>/dev/null
+    [ -n "${CTL:-}" ] && kill -9 "$CTL" 2>/dev/null
+    [ -n "${PAY:-}" ] && kill -9 "$PAY" 2>/dev/null
+    for p in $PIDS; do
+        kill -9 "$p" 2>/dev/null
+    done
+    # The harness runs several of these itself; the labels are its own.
+    kill_label busyloop 2>/dev/null
+    kill_label "b2q48-$$" 2>/dev/null
+    kill_label "win-$$" 2>/dev/null
     rm -rf "$T"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP QUIT
 
 # A short run: this fragment runs inside the gate, and the full-length
 # numbers belong in measurements/ and the research note, not in the gate.
@@ -165,6 +181,7 @@ printf '%s\0%s\0%s\0%s\0' "$CASES" holdargs "$T/argv.out" "$VEC_MARK" >"$T/args.
 env -i PATH=/usr/bin:/bin "$TOOL" -q -l "b2q48-$$" --args-from-fd 3 -- \
     <"$T/args.bin" >/dev/null 2>&1 3<"$T/args.bin" &
 SUP=$!
+PIDS="$PIDS $SUP"
 sleep 0.8
 LL=$(tr '\0' '|' < "/proc/$SUP/cmdline" 2>/dev/null)
 if [ -z "$LL" ]; then
@@ -178,6 +195,7 @@ else
     esac
 fi
 PAY=$(pgrep -P "$SUP" 2>/dev/null | head -1)
+[ -n "$PAY" ] && PIDS="$PIDS $PAY"
 if [ -n "$PAY" ]; then
     PAYC=$(tr '\0' '|' < "/proc/$PAY/cmdline" 2>/dev/null)
     # The payload is masked too, so its cmdline is the label and not the
@@ -219,6 +237,7 @@ fi
 env -i PATH=/usr/bin:/bin "$CASES" holdargs "$T/plain2.out" "$VEC_MARK" \
     >/dev/null 2>&1 &
 CTL=$!
+PIDS="$PIDS $CTL"
 sleep 0.4
 CC=$(tr '\0' '|' < "/proc/$CTL/cmdline" 2>/dev/null)
 case "$CC" in

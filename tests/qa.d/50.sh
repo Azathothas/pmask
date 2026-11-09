@@ -34,22 +34,32 @@ chmod 700 "$T"
 SUP=""
 PAY=""
 FAIL=0
+# Every process this fragment starts, so an abnormal exit (a timeout, a
+# signal, a failed assertion that ends the shell early) cannot leave a
+# parked payload behind.  A stale `holdargs` carries a real argv, and any
+# world-wide sweep in the gate would then report it as a leak that belongs
+# to this fragment.
+PIDS=""
 
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
 cleanup() {
-    [ -n "${SUP:-}" ] && kill -9 "$SUP" 2>/dev/null
-    [ -n "${PAY:-}" ] && kill -9 "$PAY" 2>/dev/null
+    if [ -n "$PIDS" ]; then
+        for p in $PIDS; do
+            kill -9 "$p" 2>/dev/null
+        done
+    fi
     rm -rf "$T"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP QUIT
 
 status_field() {
-    sed -n "s/^$2:[[:space:]]*\(.*\)$/\1/p" "/proc/$1/status" 2>/dev/null
+    sed -n "s/^$2:[[:space:]]*\\(.*\\)$/\\1/p" "/proc/$1/status" 2>/dev/null
 }
 
+# wait_child PID SECONDS -> the first child of PID
 wait_child() {
     wc_end=$(( $(date +%s 2>/dev/null || echo 0) + $2 ))
     while :; do
@@ -161,6 +171,7 @@ MARK="Q50MK$$-$( (dd if=/dev/urandom bs=4 count=1 2>/dev/null | od -An -tx1 | tr
 env -i PATH=/usr/bin:/bin "$CASES" holdargs "$T/plain.out" "$MARK" \
     >/dev/null 2>&1 &
 CTL=$!
+PIDS="$PIDS $CTL"
 sleep 0.5
 scan "$CTL" "$MARK"
 ctl_rc=$SCAN_RC
@@ -180,7 +191,9 @@ L="b2q50-d-$$"
 env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L" -- "$CASES" holdargs "$T/d.out" "$MARK" \
     >/dev/null 2>&1 &
 SUP=$!
+PIDS="$PIDS $SUP"
 PAY=$(wait_child "$SUP" 10) || PAY=""
+[ -n "$PAY" ] && PIDS="$PIDS $PAY"
 if [ -z "$PAY" ]; then
     fail "q50b-default-payload-memory-is-readable (no payload)"
     fail "q50b2-default-cmdline-is-the-label (no payload)"
@@ -234,7 +247,9 @@ L="b2q50-n-$$"
 env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L" --no-dumpable \
     -- "$CASES" holdargs "$T/n.out" "$MARK" >/dev/null 2>&1 &
 SUP=$!
+PIDS="$PIDS $SUP"
 PAY=$(wait_child "$SUP" 10) || PAY=""
+[ -n "$PAY" ] && PIDS="$PIDS $PAY"
 if [ -z "$PAY" ]; then
     fail "q50d-nodumpable-refuses-the-read (no payload)"
     fail "q50d2-nodumpable-payload-still-runs (no payload)"
