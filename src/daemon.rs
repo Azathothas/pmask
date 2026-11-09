@@ -2470,13 +2470,7 @@ mod tests {
         // table is the issue's own, plus the blank/control rows; every
         // accepted line must produce the same pair whichever surface
         // reads it, and every refused line must be refused by both.
-        let accepted: &[(&[u8], &[(&str, &str)])] = &[
-            (b"export FOO=bar\n", &[("FOO", "bar")]),
-            (b"CRLF=v\r\n", &[("CRLF", "v")]),
-            (b"K=\"quoted value\"\n", &[("K", "quoted value")]),
-            (b"# comment\n\nA=1\n", &[("A", "1")]),
-        ];
-        for (text, want) in accepted {
+        fn check(text: &[u8], want: &[(&str, &str)]) {
             let got = parse_text_file("agree", text).unwrap_or_else(|e| {
                 panic!("{:?} was refused: {}", String::from_utf8_lossy(text), e)
             });
@@ -2487,6 +2481,11 @@ mod tests {
                 String::from_utf8_lossy(text)
             );
         }
+        check(b"export FOO=bar\n", &[("FOO", "bar")]);
+        check(b"CRLF=v\r\n", &[("CRLF", "v")]);
+        check(b"K=\"quoted value\"\n", &[("K", "quoted value")]);
+        check(b"# comment\n\nA=1\n", &[("A", "1")]);
+
         let refused: &[&[u8]] = &[b"BAD KEY=v\n", b"=v\n", b"noseparator\n", b"A=\0b\n"];
         for text in refused {
             assert!(
