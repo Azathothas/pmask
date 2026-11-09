@@ -1,14 +1,18 @@
 ## negative control: issue 25 against pre-fix src/isolate.rs (git show 240feec^)
-    Finished `release` profile [optimized] target(s) in 0.04s
+# The pre-fix binary is older than the q25f count split, so q25f prints the
+# single pre-split check name; the pty failures are the issue itself.
+    Finished `release` profile [optimized] target(s) in 0.02s
 PASS q25a-control-pty-openpty-works-outside-isolate
 FAIL q25b-pty-openpty-works-under-isolate (rc=1 out=[] err=[pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
 Traceback (most recent call last):
   File "<string>", line 1, in <module>])
-FAIL q25c-dev-pts-is-non-empty-under-isolate (rc=2 entries=0 err=[ls: cannot access '/dev/pts': No such file or directory
-pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2])
+FAIL q25c-dev-pts-is-non-empty-under-isolate (rc=2 entries=0 err=[pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+ls: cannot access '/dev/pts': No such file or directory])
 FAIL q25d-dev-shm-is-a-1777-directory (rc=1 out=[] err=[pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2])
 PASS q25e-basic-nodes-and-stdio-links-are-usable
-PASS q25f-report-does-not-disclaim-a-present-member
+SKIP q25f-report-counts-the-basic-nodes (no dev entry in the report: pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2)
+SKIP q25f2-report-counts-the-optional-members (no dev entry in the report)
+SKIP q25f3-report-does-not-disclaim-a-present-member (no dev entry in the report)
 SKIP q25g-degradation-is-named-for-a-missing-member (this host has /dev/pts, /dev/ptmx and /dev/shm)
 ################ qa25: FAIL
 rc=1
