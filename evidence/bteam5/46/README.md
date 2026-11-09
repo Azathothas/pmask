@@ -86,6 +86,19 @@ stays green and the branch it took is printed.
   number is not portable across hosts. The differential (same host, same
   payload, with and without the flag) is.
 
+## A flake found and fixed in the fragment
+
+The first version of `s2` looked up the payload's pid, then slept inside a
+`wait_report` loop, then read `comm` from that pid. On a loaded host the
+lookup could return a pid that had already exited by the time the report
+was read, and the case failed with `payload=[...] self=[]`. That is a
+fragment bug, not a pmask one: six consecutive runs of the direct command
+always reported `renamer-comm=qa46-sec` and `comm=qa46-sec`. The fixed
+fragment waits for the payload's own report first — which it prints only
+after the rename and before it parks — and only then re-finds the pid.
+Twenty consecutive fragment runs after the fix all printed
+`== QA46: PASS`.
+
 ## Re-run, verbatim
 
 ```
