@@ -14,6 +14,12 @@ that produced it. A number without those conditions is not a claim.
 | [`MICROVM-probes/`](MICROVM-probes/) | reproduces every number in `MICROVM-GAP.md` |
 | [`selfmask-window/`](selfmask-window/) | the self-mask window harness; its figures are in `detection-measured.md` |
 | [`survey-2025/`](survey-2025/) | the 2025-2026 field survey: queries, replay script, triage ledger, review data |
+| [`bteam-39-43.md`](bteam-39-43.md) | issues 39 to 43: the supervisor's own entry, the window arithmetic, `environ` shapes, the label and `exe` split, `AT_EXECFN` |
+| [`bteam-38-50.md`](bteam-38-50.md) | issues 38, 47, 48 and 50: the tracer thread, end states, the launch window, payload memory |
+| [`bteam-audit.md`](bteam-audit.md) | issues 44, 49, 56 and 59: `--no-dumpable`, the non-redacting modes, the audit record, the supervisor's literal secret |
+| [`bteam-records.md`](bteam-records.md) | issues 51 to 55: daemon discovery, the daemon tree, refusals, the on-disk footprint, out-of-tree records |
+| [`bteam-ebpf.md`](bteam-ebpf.md) | issues 45, 46 and 57: named kernel objects, the rename filter, eBPF and the process connector |
+| [`bteam-detectors.md`](bteam-detectors.md) | issue 58: the rootkit, hidden-pid and sweeper family measured against the release |
 
 The survey is a comparison of prior art, not a claim about this tree.
 The measurement harnesses in `measurements/` are separate: they compare

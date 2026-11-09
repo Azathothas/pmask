@@ -7,6 +7,7 @@
 | [`THREAT-MODEL.md`](THREAT-MODEL.md) | one row per claim, the mechanism behind it, and the test that catches a regression |
 | [`DEPLOY.md`](DEPLOY.md) | the three deployment shapes and the row each one closes |
 | [`research/README.md`](research/README.md) | the measurements, the detection residue, and the field survey |
+| [`research/bteam-*.md`](research/README.md) | the b-team notes behind the threat model's residuals: issues 38 to 59, one note per batch |
 | [`releases/`](releases/) | release notes, one file per tag |
 
 The README is the contract. A claim in any other document that the code
