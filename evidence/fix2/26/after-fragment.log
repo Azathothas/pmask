@@ -1,9 +1,9 @@
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.04s
 PASS qa26-run-exits-zero
 PASS qa26-no-new-privs (NoNewPrivs=0)
 PASS qa26-host-user-namespace (user:[4026532593])
 PASS qa26-host-mount-namespace (mnt:[4026532659])
 PASS qa26-no-isolation-line
 PASS qa26-note-names-the-choice
-PASS qa26-control-isolate-all-changes-both (nnp=1 user=user:[4026532969])
+PASS qa26-control-isolate-all-changes-both (nnp=1 user=user:[4026532739])
 == VERDICT: FAIL=0 ==

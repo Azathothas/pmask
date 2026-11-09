@@ -1,4 +1,4 @@
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.03s
 PASS qa10-plain-notes---comm
 PASS qa10-plain-notes---argv0
 PASS qa10-plain-notes---no-exact
