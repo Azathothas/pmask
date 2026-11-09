@@ -1,0 +1,10 @@
+--- as uid 1000 (allowed, neither daemon uid nor root) ---
+response code=0 signal=none msg=protocol=2 detail=reduced label=testlabel uid=0 run_as_uid=false 
+rc=0
+--- as root (daemon uid) ---
+response code=0 signal=none msg=protocol=2 detail=full label=testlabel uid=0 run_as_uid=false jobs=2 env_vars=19 allow_uids=1000 socket_mode=0666 io_timeout=30 job_timeout=0 max_job_bytes=1048576 peer_identity=pidfd + start time peer_uid=0 
+rc=0
+--- daemon stderr ---
+pmaskd: warning: /tmp/b4root.xW7Qlt is mode 0755; group or other can read and traverse it, so the socket name is visible to them
+pmaskd: listening on /tmp/b4root.xW7Qlt/s.sock (uid 0, label 'testlabel', 19 env vars, 2 job slots)
+pmaskd: peer identity: pidfd + start time

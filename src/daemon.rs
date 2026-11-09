@@ -157,13 +157,20 @@
 //! # PING
 //!
 //! A client may send the PING request frame in place of a job, and the
-//! daemon answers with the facts a caller needs before it sends work:
-//! the protocol version, the label, the uid the daemon runs as, whether
-//! `--run-as-uid` is in force, the number of environment entries, the
-//! policy for allowed uids, the job limits, and the peer identity method
-//! in use.  It never reports an environment value.  A PING is answered
-//! after the same uid check a job gets, and the socket directory rules
-//! are unchanged.
+//! daemon answers with facts about itself.  It never reports an
+//! environment value.  A PING is answered after the same uid check a job
+//! gets, and the socket directory rules are unchanged.
+//!
+//! The body depends on who asks.  Only the daemon's own uid and root get
+//! the full report: the label, the daemon uid, `--run-as-uid`, the job
+//! slot count, the environment entry count, the `--allow-uid` set, the
+//! socket mode, the timeouts, the job-size cap and the peer identity
+//! method in use.  Another allowed uid gets the reduced body, which
+//! carries only what a client needs to frame a job (the protocol
+//! version, the label, the daemon uid and `--run-as-uid`); the policy
+//! fields are omitted rather than zeroed, because a client parses
+//! `key=value` lines and skips what it does not know.  The `detail=`
+//! line says which body arrived.
 
 use crate::mask::{Mask, MaskedChild};
 use crate::tracer::ExitState;
@@ -239,12 +246,36 @@ pub fn run_remote_as(
     Ok(st)
 }
 
+/// How much of the daemon's configuration a PING reply carries.
+///
+/// A reply is reduced for a caller that is an allowed uid but is neither
+/// the daemon's own uid nor root.  The choice is made after the same
+/// `SO_PEERCRED` check a job gets, and it weakens nothing about that
+/// check: a refused uid is still refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusDetail {
+    /// Every field: the caller is the daemon's own uid or root.
+    #[default]
+    Full,
+    /// The protocol version and the fields a client needs to frame a job.
+    /// The daemon's policy fields are not on the wire at all.
+    Reduced,
+}
+
 /// What a running daemon reports about itself, as `PING` returns it.
 ///
 /// The fields are the facts a caller needs before it sends work.  There
 /// is no environment entry and no environment value in any field.
+///
+/// A [`StatusDetail::Reduced`] reply leaves the policy fields at their
+/// defaults and puts only [`protocol`](Self::protocol),
+/// [`label`](Self::label), [`uid`](Self::uid) and
+/// [`run_as_uid`](Self::run_as_uid) on the wire.  Read
+/// [`detail`](Self::detail) before trusting a default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonStatus {
+    /// Which fields this reply carries.
+    pub detail: StatusDetail,
     pub protocol: u8,
     pub label: String,
     pub uid: u32,
@@ -265,7 +296,30 @@ pub struct DaemonStatus {
 
 impl DaemonStatus {
     /// The wire form: one `key=value` per line.
+    ///
+    /// A reduced body omits every field that describes the daemon's
+    /// policy, and the `detail=` line says so.  A client that reads the
+    /// body as `key=value` lines sees the same keys it always did, minus
+    /// the ones it may not have.
     pub fn to_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("protocol={}\n", self.protocol));
+        out.push_str(&format!(
+            "detail={}\n",
+            match self.detail {
+                StatusDetail::Full => "full",
+                StatusDetail::Reduced => "reduced",
+            }
+        ));
+        out.push_str(&format!(
+            "label={}\nuid={}\nrun_as_uid={}\n",
+            escape_for_log(&self.label, MAX_LABEL),
+            self.uid,
+            self.run_as_uid
+        ));
+        if self.detail == StatusDetail::Reduced {
+            return out;
+        }
         let allow = if self.allow_uids.is_empty() {
             "none".to_string()
         } else {
@@ -275,16 +329,10 @@ impl DaemonStatus {
                 .collect::<Vec<_>>()
                 .join(",")
         };
-        format!(
-            "protocol={}\nlabel={}\nuid={}\nrun_as_uid={}\njobs={}\nenv_vars={}\n\
-             allow_uids={}\nsocket_mode={:04o}\nio_timeout={}\njob_timeout={}\n\
-             max_job_bytes={}\npeer_identity={}\npeer_uid={}\nlimits=an allowed uid may run \
-             arbitrary programs with this daemon's privileges; a privileged observer can read \
-             its memory\n",
-            self.protocol,
-            escape_for_log(&self.label, MAX_LABEL),
-            self.uid,
-            self.run_as_uid,
+        out.push_str(&format!(
+            "jobs={}\nenv_vars={}\nallow_uids={}\nsocket_mode={:04o}\n\
+             io_timeout={}\njob_timeout={}\nmax_job_bytes={}\n\
+             peer_identity={}\npeer_uid={}\n",
             self.jobs,
             self.env_vars,
             allow,
@@ -294,12 +342,14 @@ impl DaemonStatus {
             self.max_job_bytes,
             self.peer_identity,
             self.peer_uid
-        )
+        ));
+        out
     }
 
     /// Parse the wire form.  A line that is not `key=value` is skipped.
     pub fn parse(text: &str) -> Option<DaemonStatus> {
         let mut out = DaemonStatus {
+            detail: StatusDetail::Full,
             protocol: PROTOCOL_VERSION,
             label: String::new(),
             uid: 0,
@@ -322,6 +372,12 @@ impl DaemonStatus {
             seen = true;
             match key {
                 "protocol" => out.protocol = value.parse().ok()?,
+                "detail" => {
+                    out.detail = match value {
+                        "reduced" => StatusDetail::Reduced,
+                        _ => StatusDetail::Full,
+                    }
+                }
                 "label" => out.label = value.to_string(),
                 "uid" => out.uid = value.parse().ok()?,
                 "run_as_uid" => out.run_as_uid = value == "true",
@@ -1960,7 +2016,7 @@ fn handle_conn(
     let (label, argv) = match read_any_request(&mut stream) {
         Ok(Request::Ping) => {
             close_all(&first.fds);
-            let status = daemon_status(cfg, uid, peer_method);
+            let status = daemon_status(cfg, uid, daemon_uid, peer_method);
             return write_response(&mut stream, ExitState::plain(0, None), &status.to_text());
         }
         Ok(Request::Job(label, argv)) => (label, argv),
@@ -2012,11 +2068,26 @@ fn handle_conn(
 }
 
 /// The PING body: what this daemon would do with a job right now.
-fn daemon_status(cfg: &DaemonConfig, peer_uid: u32, method: PeerMethod) -> DaemonStatus {
+///
+/// The policy fields go only to the daemon's own uid and root.  Any other
+/// allowed uid gets the reduced body: it may run a job, so it learns what
+/// it must know to send one, and nothing about how the daemon is set up.
+fn daemon_status(
+    cfg: &DaemonConfig,
+    peer_uid: u32,
+    daemon_uid: u32,
+    method: PeerMethod,
+) -> DaemonStatus {
+    let detail = if peer_uid == daemon_uid || peer_uid == 0 {
+        StatusDetail::Full
+    } else {
+        StatusDetail::Reduced
+    };
     DaemonStatus {
+        detail,
         protocol: PROTOCOL_VERSION,
         label: cfg.label.clone(),
-        uid: unsafe { libc::geteuid() },
+        uid: daemon_uid,
         run_as_uid: cfg.run_as_uid,
         jobs: cfg.jobs,
         env_vars: cfg.env.len(),
@@ -2182,6 +2253,7 @@ mod tests {
     #[test]
     fn status_text_roundtrips() {
         let s = DaemonStatus {
+            detail: StatusDetail::Full,
             protocol: PROTOCOL_VERSION,
             label: "ci-runner".to_string(),
             uid: 1000,
@@ -2198,8 +2270,9 @@ mod tests {
         };
         let back = DaemonStatus::parse(&s.to_text()).expect("parse");
         assert_eq!(back, s);
-        // The report names the limit rather than implying security.
-        assert!(s.to_text().contains("privileged observer"));
+        // The reply is configuration, not documentation: the `limits=`
+        // sentence was served to whoever asked and is gone.
+        assert!(!s.to_text().contains("privileged observer"));
     }
 
     #[test]
@@ -2209,7 +2282,8 @@ mod tests {
             (OsString::from("TOKEN"), OsString::from("SUPERSECRET")),
             (OsString::from("OTHER"), OsString::from("second")),
         ];
-        let text = daemon_status(&cfg, 1000, PeerMethod::Pidfd).to_text();
+        // The daemon's own uid asks: the full body, still no value.
+        let text = daemon_status(&cfg, 1000, 1000, PeerMethod::Pidfd).to_text();
         assert!(!text.contains("SUPERSECRET"));
         assert!(!text.contains("second"));
         assert!(text.contains("env_vars=2"));
@@ -2224,9 +2298,93 @@ mod tests {
         cfg.label =
             "pmask-job-production-eu-west-1-deployment-runner-blue-canary-2026-11-07".to_string();
         assert!(cfg.label.len() > 64, "the case must exceed the old cut");
-        let st = daemon_status(&cfg, 1000, PeerMethod::Pidfd);
+        let st = daemon_status(&cfg, 1000, 1000, PeerMethod::Pidfd);
         let back = DaemonStatus::parse(&st.to_text()).expect("parse");
         assert_eq!(back.label, cfg.label);
+    }
+
+    #[test]
+    fn the_daemon_uid_and_root_get_every_field() {
+        let mut cfg = DaemonConfig::new();
+        cfg.env = vec![(OsString::from("TOKEN"), OsString::from("x"))];
+        for peer in [1000, 0] {
+            let text = daemon_status(&cfg, peer, 1000, PeerMethod::Pidfd).to_text();
+            assert!(text.contains("protocol=2"), "{}", text);
+            assert!(text.contains("detail=full"), "{}", text);
+            assert!(text.contains("jobs="), "{}", text);
+            assert!(text.contains("env_vars=1"), "{}", text);
+            assert!(text.contains("allow_uids="), "{}", text);
+            assert!(text.contains("socket_mode="), "{}", text);
+            assert!(text.contains("io_timeout="), "{}", text);
+            assert!(text.contains("job_timeout="), "{}", text);
+            assert!(text.contains("max_job_bytes="), "{}", text);
+            assert!(text.contains("peer_identity="), "{}", text);
+            assert!(text.contains("peer_uid="), "{}", text);
+            assert_eq!(
+                DaemonStatus::parse(&text).expect("parse").detail,
+                StatusDetail::Full
+            );
+        }
+    }
+
+    #[test]
+    fn another_allowed_uid_gets_the_reduced_body() {
+        let mut cfg = DaemonConfig::new();
+        cfg.label = "ci-runner".to_string();
+        cfg.jobs = 4;
+        cfg.env = vec![
+            (OsString::from("TOKEN"), OsString::from("SUPERSECRET")),
+            (OsString::from("OTHER"), OsString::from("second")),
+        ];
+        cfg.allow_uids = vec![1001, 1002];
+        let text = daemon_status(&cfg, 1001, 1000, PeerMethod::Pidfd).to_text();
+        // What a client needs to frame a job survives.
+        assert!(text.contains("protocol=2"), "{}", text);
+        assert!(text.contains("detail=reduced"), "{}", text);
+        assert!(text.contains("label=ci-runner"), "{}", text);
+        assert!(text.contains("uid=1000"), "{}", text);
+        assert!(text.contains("run_as_uid=false"), "{}", text);
+        // The policy and the peer identity do not.
+        for absent in [
+            "jobs=",
+            "env_vars=",
+            "allow_uids=",
+            "socket_mode=",
+            "io_timeout=",
+            "job_timeout=",
+            "max_job_bytes=",
+            "peer_identity=",
+            "peer_uid=",
+            "limits=",
+        ] {
+            assert!(!text.contains(absent), "{} leaked into {:?}", absent, text);
+        }
+        assert!(!text.contains("SUPERSECRET"));
+        let back = DaemonStatus::parse(&text).expect("parse");
+        assert_eq!(back.detail, StatusDetail::Reduced);
+        assert_eq!(back.label, "ci-runner");
+        assert_eq!(back.protocol, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn a_reduced_body_is_parseable_by_a_client_that_skips_unknown_keys() {
+        // The frame format and the version do not move; a reduced body is
+        // the same `key=value` shape with fields left out.
+        let mut cfg = DaemonConfig::new();
+        cfg.label = "lbl".to_string();
+        let reduced = daemon_status(&cfg, 4321, 1000, PeerMethod::Pidfd).to_text();
+        let full = daemon_status(&cfg, 1000, 1000, PeerMethod::Pidfd).to_text();
+        assert!(DaemonStatus::parse(&reduced).is_some());
+        assert!(DaemonStatus::parse(&full).is_some());
+        // The old body (with `limits=` and without `detail=`) still parses
+        // and is read as full.
+        let old = "protocol=2\nlabel=lbl\nuid=1000\nrun_as_uid=false\njobs=1\n\
+                   env_vars=0\nallow_uids=none\nsocket_mode=0600\nio_timeout=30\n\
+                   job_timeout=0\nmax_job_bytes=1048576\npeer_identity=pidfd + start time\n\
+                   peer_uid=1000\nlimits=an allowed uid may run arbitrary programs\n";
+        let back = DaemonStatus::parse(old).expect("parse");
+        assert_eq!(back.detail, StatusDetail::Full);
+        assert_eq!(back.jobs, 1);
     }
 
     #[test]
