@@ -552,7 +552,8 @@ impl Runner {
 
     /// True when isolation was asked for and the host refused it.
     pub fn isolate_unavailable(&self) -> bool {
-        self.isolate.is_some() && !self.is_none_isolation() && !Caps::cached().userns
+        let asked = self.isolate.is_some() || self.compose.is_some();
+        asked && !self.is_none_isolation() && !Caps::cached().userns
     }
 
     /// Check every secret source against the mode the run will use, and
@@ -910,12 +911,29 @@ impl Runner {
                 // user+pid+mount set (issue 19).
                 if let Some(iso) = self.compose {
                     if !iso.none {
-                        mask = mask.namespaces(crate::userns::ChildNs {
+                        let ns = crate::userns::ChildNs {
                             pid: iso.pid,
                             net: iso.net,
                             procfs: iso.pid,
                             private_tmp: iso.private_tmp,
-                        });
+                        };
+                        // The kernel can refuse a namespace set that the
+                        // userns probe said was possible (a seccomp
+                        // filter that filters by flag, a per-container
+                        // `unprivileged_userns_clone` change).  Probe the
+                        // whole set once, and name the refusal in the
+                        // report: the run still redacts, but the operator
+                        // must not believe the namespaces were applied.
+                        if let Err(e) = crate::userns::probe(ns) {
+                            notes.push(format!(
+                                "--isolate={} was not applied: this host refused the \
+                                 namespace set ({}); the tree is still redacted",
+                                isolate_spelling(iso),
+                                e
+                            ));
+                        } else {
+                            mask = mask.namespaces(ns);
+                        }
                     }
                 }
                 // `Mask::env` adds each pair on top of the inherited
@@ -1087,6 +1105,26 @@ impl Runner {
             hardening,
             secrets: secrets_report,
         })
+    }
+}
+
+/// The `--isolate` spelling for a set, for a note that has to quote what
+/// the operator wrote.
+fn isolate_spelling(iso: Isolate) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if iso.pid {
+        parts.push("pid");
+    }
+    if iso.net {
+        parts.push("net");
+    }
+    if iso.private_tmp {
+        parts.push("tmp");
+    }
+    if parts.is_empty() {
+        "minimal".to_string()
+    } else {
+        parts.join(",")
     }
 }
 

@@ -357,6 +357,21 @@ pub fn child_setup_proc() -> io::Result<ProcMode> {
     Err(last)
 }
 
+/// Create the namespaces in `ns` in a throwaway child and report whether
+/// the whole set came up.  Used before a run so a set the kernel refuses
+/// is named in the report instead of being discovered at the fork.
+pub fn probe(ns: ChildNs) -> io::Result<()> {
+    let pid = fork_in_userns_with(ns)?;
+    if pid == 0 {
+        // SAFETY: the child only exits.
+        unsafe { libc::_exit(0) };
+    }
+    match wait_for(pid) {
+        Ok(status) if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 => Ok(()),
+        _ => Err(io::Error::from_raw_os_error(libc::EPERM)),
+    }
+}
+
 /// Mount an empty tmpfs of mode 1777 on `/tmp` in the calling process's
 /// own mount namespace.  Used by the redaction-path composition, where
 /// the caller asked for a private `/tmp` without a private `/proc` or the

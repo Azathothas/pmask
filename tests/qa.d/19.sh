@@ -123,6 +123,18 @@ else
     skip "qa19-unshare-control-creates-a-pid-namespace (--unshare fell back to a plain fork)"
 fi
 
+# A host that refuses the user namespace must say that the namespace half
+# was dropped; it must not run the redaction path silently with no note.
+# `PMASK_PROBE_USERNS=0` makes the probe answer, which is the only way to
+# test the branch on a host that grants them.
+nog=$(PMASK_PROBE_USERNS=0 "$TOOL" --redact --isolate=net --report=json -- /bin/true 2>/dev/null)
+case "$nog" in
+    *'"mode": "redact"'*"isolate_unavailable"*"--isolate was requested but this host has no unprivileged user namespaces"*)
+        pass "qa19-refused-namespace-set-is-reported" ;;
+    *)
+        fail "qa19-refused-namespace-set-is-reported ($(printf '%s' "$nog" | tr '\n' '|' | cut -c1-300))" ;;
+esac
+
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ] || exit 1
 exit 0
