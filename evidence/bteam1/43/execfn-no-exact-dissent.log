@@ -1,0 +1,18 @@
+# --no-exact: does /proc/auxv serve the label or the real path?
+# payload is /tmp/qa43-probe (a copy of testcases), so the served string is unambiguous
+
+## exact mode, label=neatlabel
+in-payload: execfn=/tmp/qa43-probe
+served:     execfn_ptr=140036103327757 str=neatlabel
+stat:       arg_start=140036103327744 arg_end=140036103327754 env_start=140036103327757 env_end=140036103327757
+
+## --no-exact, label=neatlabel
+in-payload: execfn=/tmp/qa43-probe
+served:     execfn_ptr=140731885477864 str=/tmp/qa43-probe
+cmdline:    [neatlabel|||]
+stat:       arg_start=140731885477851 arg_end=140731885477863 env_start=140731885477863 env_end=140731885477864
+
+## --rexec, label=neatlabel
+in-payload: execfn=/dev/fd/200
+served:     execfn_ptr=140675802492941 str=neatlabel
+exe:        /memfd:neatlabel (deleted)

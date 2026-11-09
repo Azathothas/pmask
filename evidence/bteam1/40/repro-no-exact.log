@@ -1,0 +1,7 @@
+sup=55680 pay=55683
+0000000   p   r   o   c   -   e   v   i   d  \0  \0
+0000011
+environ:
+0000000  \0
+0000001
+cmdline=11 nul=2 argspan=11 envspan=1 envbytes=1 envnul=1

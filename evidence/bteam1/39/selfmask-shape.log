@@ -1,0 +1,22 @@
+# The supervisor's own /proc entry: default self-mask and the escape
+# kernel 6.12.113+deb13-amd64 uid 1000 pmask pmask 0.1.0-beta.1 (unknown)
+
+## 1. default run: self-mask shape, uid-1000 reader then root reader
+supervisor 83527
+cmdline: proc-evid|
+comm: [proc-evid]
+uid1000 stat 48-51: 0 0 0 0
+root    stat 48-51: 140721073217341 140721073217351 140721073217351 140721073217351
+threads: 2
+  task proc-evid
+  task pmask-tracer
+bash: line 16: /proc/83527/environ: Permission denied
+exe:   environ bytes: 
+
+## 2. PMASK_NO_SELFMASK=1, redact mode: the escape is overridden after the fork
+pmask: warning: PMASK_NO_SELFMASK=1 is overridden in redact mode: the supervisor masks its own /proc entry after the fork, so secret 'T' (literal:) is readable in its argv or environment only until then, not for the whole run; keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+20 samples, samples with the secret: 2; last: proc-evid|
+
+## 3. PMASK_NO_SELFMASK=1, plain mode: the escape is honoured
+pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for the whole run in plain mode, so secret 'T' (literal:) is in its argv or environment the entire time; every local account can read it.  Keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--no-redact|--allow-argv-secret|--secret|T=literal:CANARY39|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|

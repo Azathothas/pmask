@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS c1-control-plain-process (comm=testcases exe=testcases)
+PASS c2-label-vs-exe-split (label=qa42-sshd exe=testcases)
+PASS c3-tracerpid-non-zero (tracer=94874)
+PASS c4-comm-15-bytes-accepted (comm=123456789012345 file_bytes=16)
+PASS c5-comm-16-bytes-refused
+PASS c6-dash-label-blank (bytes=2 hex=2000 comm=[ ])
+PASS c7-label-empty (bytes=1 hex=00)
+PASS c8-254-byte-label (cmdline_bytes=255)
+PASS c9-255-byte-label-warns (warn=1 cmdline_bytes=256)
+PASS c10-comm-lf-accepted-today (comm hex=610a620a; fix1 #33 owns the fix)
+INFO c10 stat parse with an LF comm: broken
+PASS c11-comm-cr-accepted-today (comm hex=610d620a; fix1 #33 owns the fix)
+== QA42: PASS

@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS s1-self-mask-shape (comm=qa39-sup cmdline=qa39-sup| self=0/0 tracer=yes)
+PASS s1b-self-mask-window (root: argspan=9 envspan=0)
+PASS s2-supervisor-non-dumpable
+PASS s3-control-no-selfmask-serves-real-argv
+PASS s4-control-literal-secret-readable-in-argv
+PASS s5-literal-warns-once-names-exposure (warn=1 named=1 fd=1)
+PASS s11-warned-run-still-supervises (payload=94040 alive)
+PASS s6-redact-mode-says-overridden (warn=1 named=1)
+PASS s7-no-secret-no-warning
+PASS s8-audit-reachable-refuses
+PASS s9-allow-argv-secret-runs
+PASS s10-allow-argv-secret-still-warns
+== QA39: PASS

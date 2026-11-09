@@ -1,0 +1,21 @@
+# AT_EXECFN under --no-exact (the issue says the offset formula does not describe it)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=140731552661444 str=/workspace/wt/bteam1/target/release/pmask-testcases
+stat: arg_start=140731552661436 arg_end=140731552661443 env_start=140731552661443 env_end=140731552661444
+
+# AT_EXECFN with --keep-env (env window not collapsed)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=140508409565192 str=abcd
+stat: arg_start=140508409565184 arg_end=140508409565189 env_start=140722774794161 env_end=140722774794180
+
+# AT_EXECFN with --detach (tracer gone: TracerPid 0)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=139749520154632 str=abcd
+TracerPid: 0
+stat: arg_start=139749520154624 arg_end=139749520154629 env_start=139749520154632 env_end=139749520154632
+
+# AT_EXECFN under --rexec (exe becomes the memfd)
+payload printed: execfn=/dev/fd/200
+auxv+mem: execfn_ptr=140035950125064 str=abcd
+exe: /memfd:abcd (deleted)
+stat: arg_start=140035950125056 arg_end=140035950125061 env_start=140035950125064 env_end=140035950125064

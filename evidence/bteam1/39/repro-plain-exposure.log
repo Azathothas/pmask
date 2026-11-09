@@ -1,0 +1,12 @@
+== plain mode + literal + NO_SELFMASK
+sup=57264
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--no-redact|--allow-argv-secret|--secret|T=literal:hunter2|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+== plain mode + env secret + NO_SELFMASK
+sup=57276
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--no-redact|--allow-argv-secret|--secret|T=env:HUSH|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+/tmp/repro39b.sh: 12: cannot open /proc/57276/environ: Permission denied
+environ: 
+== redact mode + literal, no NO_SELFMASK, sample fast
+env|-i|PATH=/usr/bin:/bin|/workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--secret|T=literal:hunter4|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+proc-evid|
+|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
