@@ -101,7 +101,10 @@ else
     fail "51-socket-name-in-proc-net-unix (the name is absent from /proc/net/unix)"
 fi
 if command -v ss >/dev/null 2>&1; then
-    if ss -x 2>/dev/null | grep -qF -- "$SOCK"; then
+    # The listener is a listening socket: plain `ss -x` prints connected
+    # sockets only, so ask for the listening table.
+    if ss -xl 2>/dev/null | grep -qF -- "$SOCK" \
+        || ss -x state listening 2>/dev/null | grep -qF -- "$SOCK"; then
         pass "51-socket-name-in-ss-x (residual)"
     else
         fail "51-socket-name-in-ss-x (ss does not list the name)"
@@ -139,6 +142,12 @@ DPID=""
 start_root_daemon() {
     ROOTDIR=$(mktemp -d "${TMPDIR:-/tmp}/qa51root.XXXXXX") || return 1
     chmod 755 "$ROOTDIR"
+    # A root daemon refuses a socket directory owned by another uid, which
+    # is the right behaviour and would fail this fixture: hand the
+    # directory to root before it starts.
+    if [ "$MY_UID" != 0 ]; then
+        sudo chown root:root "$ROOTDIR" || return 1
+    fi
     RSOCK="$ROOTDIR/d.sock"
     if [ "$MY_UID" = 0 ]; then
         "$DAEMON" -q -l "$LABEL" -S "$RSOCK" --allow-uid "$OTHER_UID" \
@@ -227,7 +236,7 @@ else
         esac
 
         # 51e: a uid that is not allowed is refused before any body.
-        out=$(root_proto as-uid 12345 ping "$RSOCK")
+        out=$(root_proto as-uid 12345 "$RSOCK" ping)
         case "$out" in
             *"code=255"*"uid 12345 is not allowed"*)
                 pass "51-ping-refused-uid" ;;
