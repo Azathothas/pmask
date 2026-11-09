@@ -245,10 +245,13 @@ fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) 
 /// The secret side of a local run: descriptor delivery, isolation, or a
 /// forced plain exec.  Every mask option parsed from the command line is
 /// handed to the session as-is, so `--secret` composes with `--comm`,
-/// `--rexec`, `--unshare`, `--no-dumpable` and the rest.
+/// `--rexec`, `--unshare`, `--no-dumpable` and the rest.  Options the
+/// selected mode cannot apply are named in the run report.
 fn run_with_secrets(cli: cli::Cli) -> i32 {
     use pmask::run::{Mode, Runner};
-    let mut r = Runner::new().mask(cli.mask);
+    let mut r = Runner::new()
+        .mask(cli.mask)
+        .requested_options(&cli.mask_opts);
     for (name, src) in &cli.secrets {
         r = r.secret(name.clone(), src.clone());
     }
@@ -269,8 +272,13 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if let Some(sock) = &cli.agent_socket {
         r = r.daemon_socket(sock.clone());
     }
-    if let Some(iso) = cli.isolate {
-        r = r.isolate(iso);
+    // `--redact` with `--isolate` composes: the redaction path keeps the
+    // tree, and the child is forked into exactly the requested namespaces
+    // (issue 19).  A bare `--isolate` is the namespace-only mode.
+    match (cli.redact, cli.isolate) {
+        (true, Some(iso)) => r = r.redact_with_isolate(iso),
+        (_, Some(iso)) => r = r.isolate(iso),
+        (_, None) => {}
     }
     if cli.no_redact {
         r = r.no_redaction();
@@ -287,10 +295,28 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if cli.no_dumpable {
         r = r.no_dumpable(true);
     }
+    if cli.audit {
+        r = r.audit();
+    }
+    if cli.quiet {
+        r = r.quiet();
+    }
+    if cli.verbose {
+        r = r.verbose();
+    }
+    // Open the report target before the payload runs: a bad path or a
+    // closed descriptor is a usage error, and finding it after the run
+    // would leave the caller with neither the payload's result nor a
+    // report (issue 9).
+    let sink = if cli.report_json {
+        ReportSink::open(cli.report_file.as_deref(), cli.report_fd)
+    } else {
+        None
+    };
     match r.run(&cli.program, &cli.args) {
         Ok(outcome) => {
-            if cli.report_json {
-                print!("{}", outcome.report_json());
+            if let Some(sink) = sink {
+                sink.write(&outcome.report_json());
             }
             if !cli.quiet && !cli.report_json {
                 eprintln!(
@@ -325,6 +351,86 @@ sat in pmask's own argv or environ)"
             255
         }
     }
+}
+
+/// Where the `--report` document goes.  The target is opened before the
+/// payload runs, so a bad path or a closed descriptor is a usage error
+/// rather than a run whose result cannot be read.
+enum ReportSink {
+    Stdout,
+    File(std::fs::File, std::path::PathBuf),
+}
+
+impl ReportSink {
+    /// Open the target named on the command line.  `None` when the run has
+    /// no report at all.
+    fn open(file: Option<&std::path::Path>, fd: Option<libc::c_int>) -> Option<ReportSink> {
+        if let Some(path) = file {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+            {
+                Ok(f) => return Some(ReportSink::File(f, path.to_path_buf())),
+                Err(e) => {
+                    eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                    std::process::exit(255);
+                }
+            }
+        }
+        if let Some(n) = fd {
+            // SAFETY: `dup` on a descriptor the operator passed open; the
+            // original stays open, so a shell redirect the caller still
+            // owns is not closed by us.
+            let dup = unsafe { libc::dup(n) };
+            if dup < 0 {
+                eprintln!(
+                    "pmask: --report-fd {}: {}",
+                    n,
+                    std::io::Error::last_os_error()
+                );
+                std::process::exit(255);
+            }
+            let f = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(dup) };
+            return Some(ReportSink::File(f, std::path::PathBuf::new()));
+        }
+        Some(ReportSink::Stdout)
+    }
+
+    /// Write the finished document.  A failure here is reported and exits
+    /// 255: a report the caller cannot read is not a successful run.
+    fn write(self, text: &str) {
+        use std::io::Write;
+        match self {
+            ReportSink::Stdout => print!("{}", text),
+            ReportSink::File(mut f, path) => {
+                if let Err(e) = f.write_all(text.as_bytes()).and_then(|_| f.flush()) {
+                    if path.as_os_str().is_empty() {
+                        eprintln!("pmask: --report-fd: {}", e);
+                    } else {
+                        eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                    }
+                    std::process::exit(255);
+                }
+            }
+        }
+    }
+}
+
+/// The reason a failed ptrace session gives, when the cached probe can
+/// name one.  Empty when the probe says ptrace works, so a genuine EPERM
+/// from elsewhere is not misattributed.
+fn ptrace_refusal() -> Option<String> {
+    let caps = pmask::caps::Caps::cached();
+    if caps.ptrace {
+        return None;
+    }
+    let row = caps
+        .rows()
+        .into_iter()
+        .find(|(n, _)| *n == "metadata redaction")?;
+    Some(row.1.reason().to_string())
 }
 
 fn main() {
@@ -389,17 +495,19 @@ fn main() {
         }
     }
 
-    // `--redact --isolate` is the composed spelling of `--unshare`: the
-    // redaction path with a private pid namespace and procfs.  The pair is
-    // accepted here, before `needs_runner`, so the run takes the redaction
-    // path instead of the namespace-only isolate path.
-    if cli.redact && cli.isolate.is_some() {
-        cli.mask = cli.mask.unshare();
-        cli.isolate = None;
-    }
+    // `--redact --isolate` keeps both halves: the redaction path owns the
+    // tree and `run_with_secrets` forks the payload into exactly the
+    // namespaces LIST names.  Rewriting the pair into `--unshare` here
+    // (as this code used to) replaced the requested set with
+    // user+pid+mount and made `--redact --isolate=net` a lie (issue 19).
+    // `--redact` without `--isolate` needs nothing.
 
     // `--audit` describes the tree the tracer owns.  A mode without a
-    // tracer has no tree to describe, so refuse rather than print nothing.
+    // tracer has no tree to describe, so refuse rather than print
+    // nothing.  This check names an explicit mode; the host-selected
+    // plain mode is refused in `Runner::run`, after the probe has decided
+    // it (issue 32), because the flag must not be silently inert on a
+    // host that cannot ptrace.
     if cli.audit && (cli.no_redact || cli.isolate.is_some()) {
         eprintln!(
             "pmask: --audit needs the redaction mode; {} mode has no tracer to \
@@ -432,6 +540,16 @@ fn main() {
                  report describes a secret-side run, so add --secret, --isolate or --no-redact, \
                  or drop --report"
             );
+            // `--redact` changes nothing about the runner: it is the
+            // default mode spelled out.  Say so, because the old message
+            // told an operator to add a flag the line already carried
+            // (b-team finding against issue 19).
+            if cli.redact {
+                eprintln!(
+                    "pmask: note: --redact selects the same /proc treatment as the default \
+                     and does not produce a report; use --secret or --no-redact"
+                );
+            }
         }
         std::process::exit(255);
     }
@@ -541,6 +659,20 @@ fn main() {
     match child.wait() {
         Ok(st) => finish(st),
         Err(e) => {
+            // A sandboxed host refuses `PTRACE_SEIZE` with EPERM, and the
+            // bare errno names neither the cause nor the way out.  When
+            // the probe already knows why, print its reason and point at
+            // the secret side, which does not need ptrace (issue 34).
+            if e.raw_os_error() == Some(libc::EPERM) {
+                if let Some(reason) = ptrace_refusal() {
+                    eprintln!("pmask: cannot redact here: {}", reason);
+                    eprintln!(
+                        "pmask: this run needed ptrace; the secret side does not: use \
+                         --secret NAME=file:PATH or --secret NAME=agent:NAME, which deliver \
+                         over descriptors, or run pmask where ptrace is permitted"
+                    );
+                }
+            }
             eprintln!("pmask: session error: {}", e);
             std::process::exit(255);
         }

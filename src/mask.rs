@@ -172,6 +172,9 @@ pub struct Mask {
     watch_rename: bool,
     no_new_privs: bool,
     unshare: bool,
+    /// The namespace set `--redact --isolate` asked the redaction child to
+    /// enter.  `None` is the plain redaction path.
+    namespaces: Option<crate::userns::ChildNs>,
     rexec: bool,
     rexec_image: Option<crate::rexec::Source>,
     rexec_exec_once: bool,
@@ -230,6 +233,7 @@ impl std::fmt::Debug for Mask {
             .field("watch_rename", &self.watch_rename)
             .field("no_new_privs", &self.no_new_privs)
             .field("unshare", &self.unshare)
+            .field("namespaces", &self.namespaces)
             .field("rexec", &self.rexec)
             .field("rexec_image", &self.rexec_image.is_some())
             .field("rexec_exec_once", &self.rexec_exec_once)
@@ -329,6 +333,7 @@ impl Mask {
             watch_rename: false,
             no_new_privs: false,
             unshare: false,
+            namespaces: None,
             rexec: false,
             rexec_image: None,
             rexec_exec_once: false,
@@ -494,6 +499,20 @@ impl Mask {
     /// the run uses a plain fork.
     pub fn unshare(mut self) -> Mask {
         self.unshare = true;
+        self
+    }
+
+    /// Enter the requested namespaces in the redaction child, before its
+    /// exec: the `--redact --isolate` composition.  The tracer still owns
+    /// the tree; only the payload's view is namespaced.  A set the host
+    /// cannot grant is reported and the run continues with what it got,
+    /// the same contract as [`Mask::unshare`].
+    ///
+    /// A private `/proc` is only mounted when `ns.procfs` is set, and the
+    /// private `/tmp` only when `ns.private_tmp` is, so the payload gets
+    /// exactly the set the caller named.
+    pub fn namespaces(mut self, ns: crate::userns::ChildNs) -> Mask {
+        self.namespaces = Some(ns);
         self
     }
 
@@ -913,6 +932,21 @@ impl Mask {
             }
             unshare = false;
         }
+        // `--redact --isolate`: the child enters exactly the requested
+        // namespaces.  The user namespace is the only prerequisite; a
+        // requested namespace that the kernel then refuses is reported by
+        // `child_namespaces` in the session report, never swapped for a
+        // different set.
+        let mut namespaces = self.namespaces;
+        if namespaces.is_some() && !crate::userns::available() {
+            if !self.quiet {
+                eprintln!(
+                    "pmask: --isolate unavailable: user namespaces are not permitted here; \
+                     the tree is still redacted"
+                );
+            }
+            namespaces = None;
+        }
 
         if self.rexec_exec_once && !self.quiet {
             if unshare {
@@ -1080,6 +1114,7 @@ impl Mask {
                 "pmask: --watch-rename unavailable: seccomp filter not installed, errno ",
             ),
             msg_proc: c_text("pmask: --unshare unavailable: cannot mount private proc, errno "),
+            msg_tmp: c_text("pmask: --isolate: cannot mount the private /tmp, errno "),
             msg_rexec: c_text("pmask: --rexec: the sealed image could not be executed, errno "),
             msg_rexec_1: c_text("pmask: --rexec: execveat refused, trying /proc/self/fd; errno "),
             msg_rexec_2: c_text(
@@ -1102,6 +1137,7 @@ impl Mask {
             fault_rexec_disk: std::env::var_os("PMASK_FAULT_REXEC_DISK").is_some(),
             fault_rexec_no_proc: std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some(),
             unshare,
+            namespaces,
             run_as: self.run_as,
             secret_fds: self.secret_fds.clone(),
         })
@@ -1208,6 +1244,7 @@ pub struct Prepared {
     msg_nnp: CString,
     msg_seccomp: CString,
     msg_proc: CString,
+    msg_tmp: CString,
     msg_rexec: CString,
     msg_rexec_1: CString,
     msg_rexec_2: CString,
@@ -1243,6 +1280,9 @@ pub struct Prepared {
     /// `/proc/self/fd` works.  Read from `PMASK_FAULT_REXEC_NO_PROC`.
     fault_rexec_no_proc: bool,
     unshare: bool,
+    /// `--redact --isolate`: the namespaces the child enters before its
+    /// exec.  `None` for the plain redaction path.
+    namespaces: Option<crate::userns::ChildNs>,
     run_as: Option<(u32, u32)>,
     /// Descriptors to install at 3, 4, ... in the child.
     secret_fds: Vec<libc::c_int>,
@@ -1476,9 +1516,25 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
     let report_r = rep[0];
     let report_w = rep[1];
 
+    // `--unshare` asks for the historical user+pid+mount set with a
+    // private /proc.  `--redact --isolate` asks for exactly the namespaces
+    // in `p.namespaces`.  Both go through the same fork helper, so the
+    // id-map handshake and the report shape are shared.
+    let ns: Option<crate::userns::ChildNs> = if p.unshare {
+        Some(crate::userns::ChildNs {
+            pid: true,
+            net: false,
+            procfs: true,
+            private_tmp: false,
+        })
+    } else {
+        p.namespaces
+    };
     let mut in_userns = false;
-    let pid: libc::pid_t = if p.unshare {
-        match crate::userns::fork_in_userns() {
+    // The set the child actually entered, for its post-fork setup.
+    let entered: Option<crate::userns::ChildNs> = ns;
+    let pid: libc::pid_t = match ns {
+        Some(ns) if ns.wanted() => match crate::userns::fork_in_userns_with(ns) {
             Ok(pid) => {
                 in_userns = true;
                 pid
@@ -1490,11 +1546,12 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
                 // SAFETY: plain fork; the child side is child_exec.
                 unsafe { libc::fork() }
             }
+        },
+        _ => {
+            // SAFETY: the child only calls async-signal-safe functions
+            // until execve/_exit; all buffers were built before the fork.
+            unsafe { libc::fork() }
         }
-    } else {
-        // SAFETY: the child only calls async-signal-safe functions until
-        // execve/_exit; all buffers were built before the fork.
-        unsafe { libc::fork() }
     };
     if pid < 0 {
         let e = io::Error::last_os_error();
@@ -1516,7 +1573,15 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
             // SAFETY: the child does not read its own report.
             unsafe { libc::close(report_r) };
         }
-        child_exec(p, in_userns && pid == 0, rdy_r, rdy_w, go_r, go_w, report_w);
+        child_exec(
+            p,
+            if in_userns { entered } else { None },
+            rdy_r,
+            rdy_w,
+            go_r,
+            go_w,
+            report_w,
+        );
     }
     // Parent side: keep `rdy_r` (the child's readiness byte), `go_w` (the
     // go signal) and `report_r`.  Close the others so the readiness pipe
@@ -1535,7 +1600,7 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
 /// Child side of `fork_prepared`.  Never returns.
 fn child_exec(
     p: &Prepared,
-    in_userns: bool,
+    entered: Option<crate::userns::ChildNs>,
     rdy_r: RawFd,
     rdy_w: RawFd,
     go_r: RawFd,
@@ -1593,12 +1658,24 @@ fn child_exec(
             libc::_exit(126);
         }
 
-        if in_userns {
-            if let Err(e) = crate::userns::child_setup_proc() {
-                if !quiet {
-                    child_note(&p.msg_proc, e.raw_os_error().unwrap_or(0));
+        if let Some(ns) = entered {
+            if ns.procfs {
+                if let Err(e) = crate::userns::child_setup_proc() {
+                    if !quiet {
+                        child_note(&p.msg_proc, e.raw_os_error().unwrap_or(0));
+                    }
                 }
             }
+            if ns.private_tmp {
+                if let Err(e) = crate::userns::child_private_tmp() {
+                    if !quiet {
+                        child_note(&p.msg_tmp, e.raw_os_error().unwrap_or(0));
+                    }
+                }
+            }
+            // Every mechanism of the isolation is independent; a namespace
+            // the caller asked for and the kernel refuses is reported by
+            // the tracer's own warning, not turned into a different set.
         }
 
         if p.no_new_privs && libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 && !quiet {

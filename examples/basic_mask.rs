@@ -1,5 +1,10 @@
 //! Run a command under a label and report its exit code.
 //!
+//! Needs ptrace: on a host that seccomp-bans `PTRACE_SEIZE` this example
+//! dies with `PermissionDenied`, which is the session error and not a
+//! usage error.  `pmask probe` says whether the host allows it, and
+//! `vm/run.sh` gives a host that does.
+//!
 //! ```sh
 //! cargo run --example basic_mask -- /bin/echo hello
 //! cargo run --example basic_mask -- --label worker /bin/echo hello

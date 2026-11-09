@@ -49,6 +49,9 @@ Options:
                        Keep only the named variables visible in
                        /proc/<pid>/environ; the rest stays redacted.  The
                        inline '=' form is required.  Repeatable.
+                       `--keep-env NAME` (space form) passes NAME to the
+                       program as its own argument; it keeps the whole
+                       environment and is refused when no program follows.
       --env K=V        Add or replace one variable for the program.
                        Repeatable.
       --env-file PATH  Read variables for the program from PATH: one KEY=VALUE
@@ -156,25 +159,39 @@ Environment: PMASK_NO_SELFMASK=1 disables the redaction of pmask's own
 /proc entry (argv, environ, comm).  Use it only for debugging.
 
 Secret side (works even where ptrace is refused):
-  --secret N=SRC       deliver a secret on descriptor 3, 4, ...  SRC is
+  --secret NAME=SRC    deliver a secret on descriptor 3, 4, ...  SRC is
                        file:PATH | env:VAR | agent:NAME | stdin | literal:VAL.
                        A SRC that starts with 'word:' where word is not one
                        of those schemes is delivered whole as a literal and
                        one warning names the word; a bare value
                        (--secret T=abc) is a literal with no warning.
-                       Repeatable; PMASK_SECRET_<N> names the descriptor in
-                       the child, and `pmask read NAME` prints it there.
+                       Repeatable.  The child reads the descriptor from
+                       PMASK_SECRET_<NAME> (the name upper-cased, with
+                       every non-alphanumeric byte turned into '_'), and
+                       `pmask read NAME` prints it there.
   --socket PATH        secret-agent socket for agent:NAME sources.
   --isolate[=LIST]     run the payload in fresh namespaces: pid,net,tmp |
-                       all | none (default all).
+                       all | none (default all).  `none` runs the payload
+                       with the host's view unchanged: no namespace, no
+                       no_new_privs and no Landlock.  A host that cannot
+                       create user namespaces runs the plain path and
+                       says so.
   --audit              print one residue row per tracee at each exec
                        completion, then a residue count: what the tree
-                       still discloses.  Needs the redaction mode.
+                       still discloses.  Needs the redaction mode, so it
+                       is refused with --no-redact, --isolate and on a
+                       host that cannot ptrace (the refusal names the
+                       mode).
   --redact             ask for /proc redaction explicitly (the default).
-                       With --isolate it is the composed spelling of
-                       --unshare: the label and a private pid namespace
-                       and procfs in one run.
+                       With --isolate it composes: the tree is redacted
+                       and the payload gets exactly the namespaces LIST
+                       names, in one run.  A LIST the host cannot grant is
+                       reported as a degradation; it is never replaced by
+                       a different namespace set.
   --no-redact          never touch /proc metadata, even where ptrace works.
+                       With --isolate the payload still gets its
+                       namespaces: isolation does not need ptrace, and
+                       dropping it would be a silent fallback.
   --allow-argv-secret  keep a literal: or env: secret source in a mode that
                        cannot redact /proc, and warn instead of refusing.
   --secret-close-on-exec
@@ -205,12 +222,23 @@ Secret side (works even where ptrace is refused):
                        checked like --secret-fd-name.  Has no effect on a
                        run that prepares no image.
   --report=json        print the run as one JSON object on stdout.  The
-                       report describes a secret-side run, so it needs
-                       --secret, --isolate or --no-redact; a plain mask
-                       run and a --daemon job refuse the flag.
+                       report is
+                       written after the payload has exited, so a payload
+                       that writes to stdout shares fd 1 with it: use
+                       --report-file PATH or --report-fd N when a consumer
+                       has to parse the document.  The report describes a
+                       secret-side run, so it needs --secret, --isolate or
+                       --no-redact; a plain mask run and a --daemon job
+                       refuse the flag.
+  --report-file PATH   write the --report document to PATH instead of
+                       stdout; the payload keeps fd 1 to itself.
+  --report-fd N        write the --report document to descriptor N, which
+                       is inherited by pmask and closed afterwards.  The
+                       descriptor is checked before the payload runs.
 
   `pmask run ...` is this same parser; `pmask help` lists the rest
-  (store, agent, get, read, probe, doctor).
+  (store, agent, get, read, probe, doctor).  `pmask help <topic>` prints
+  one section (`redact`, `isolate`, `secret`, `report`, `daemon`).
 
 Examples:
   # a deployment whose token must not land in `ps` output:
@@ -236,6 +264,8 @@ pub struct Cli {
     pub remote_label: RemoteLabel,
     /// `-q` is the last of `-q` and `-v`.
     pub quiet: bool,
+    /// `-v` (the last of the pair); false when `-q` came last.
+    pub verbose: bool,
     /// Mask options given on the command line that a daemon ignores.
     pub mask_opts: Vec<&'static str>,
     /// `--scope-name NAME`.
@@ -279,6 +309,10 @@ pub struct Cli {
     pub no_dumpable: bool,
     /// `--report=json`: print the run as one JSON object.
     pub report_json: bool,
+    /// `--report-file PATH`: write that object to PATH instead of stdout.
+    pub report_file: Option<PathBuf>,
+    /// `--report-fd N`: write that object to an inherited descriptor.
+    pub report_fd: Option<libc::c_int>,
 }
 
 impl Cli {
@@ -377,6 +411,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut daemon: Option<OsString> = None;
     let mut remote_label = RemoteLabel::Default;
     let mut quiet = false;
+    let mut verbose = false;
     let mut mask_opts: Vec<&'static str> = Vec::new();
     let mut scope_name: Option<String> = None;
     let mut skip: Vec<usize> = Vec::new();
@@ -396,6 +431,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut secret_close_on_exec = false;
     let mut no_dumpable = false;
     let mut report_json = false;
+    let mut report_file: Option<PathBuf> = None;
+    let mut report_fd: Option<libc::c_int> = None;
     let mut isolate: Option<Isolate> = None;
     let mut no_redact = false;
     let mut redact = false;
@@ -487,13 +524,21 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 "env" => {
                     let v = take_value("--env", inline, &argv, &mut i);
                     match v.iter().position(|&b| b == b'=') {
+                        // An empty key (`--env =VALUE`) is not a variable:
+                        // execve would see a leading '=' and every backend
+                        // treats it differently (the redaction path refuses
+                        // it, the plain path used to pass it through).  The
+                        // parser is the one place every mode shares.
+                        Some(0) | None => die(&format!(
+                            "--env needs KEY=VALUE with a non-empty KEY, not '{}'",
+                            String::from_utf8_lossy(&v)
+                        )),
                         Some(p) => {
                             let key = OsString::from_vec(v[..p].to_vec());
                             let val = OsString::from_vec(v[p + 1..].to_vec());
                             mask = mask.env(key.clone(), val.clone());
                             env_overrides.push((key, val));
                         }
-                        None => die("--env needs KEY=VALUE"),
                     }
                     note_opt(&mut mask_opts, "--env");
                 }
@@ -513,7 +558,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                         .filter(|n| *n >= 0);
                     match n {
                         Some(n) => args_fd = Some(n),
-                        None => die("--args-from-fd needs a file descriptor number"),
+                        // Naming the offending value is what makes a typo
+                        // (`--args-from-fd abc`) obvious without a re-read
+                        // of the whole command line.
+                        None => die(&format!(
+                            "--args-from-fd needs a file descriptor number, not '{}'",
+                            String::from_utf8_lossy(&v)
+                        )),
                     }
                 }
                 "on-exit" => {
@@ -583,7 +634,10 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                             mask = mask.image_fd(n);
                             image_program = Some(OsString::from("<fd image>"));
                         }
-                        None => die("--image-from-fd needs a file descriptor number"),
+                        None => die(&format!(
+                            "--image-from-fd needs a file descriptor number, not '{}'",
+                            String::from_utf8_lossy(&v)
+                        )),
                     }
                     note_opt(&mut mask_opts, "--image-from-fd");
                 }
@@ -691,24 +745,63 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     let v = take_value("--report", inline, &argv, &mut i);
                     match &v[..] {
                         b"json" => report_json = true,
-                        b"text" | b"plain" => report_json = false,
+                        // `text` and `plain` used to be accepted and did
+                        // nothing, which made `--report=text` look like a
+                        // format request that was honoured.  The only
+                        // format is json; the default output is the
+                        // human-readable `pmask: mode=...` line on stderr.
+                        b"text" | b"plain" => {
+                            die("--report takes json; text is the default output (the \
+                             'pmask: mode=...' summary on stderr), so drop --report")
+                        }
                         _ => die("--report takes json"),
+                    }
+                }
+                "report-file" => {
+                    let v = take_value("--report-file", inline, &argv, &mut i);
+                    if v.is_empty() {
+                        die("--report-file needs a path");
+                    }
+                    report_file = Some(PathBuf::from(OsString::from_vec(v)));
+                    report_json = true;
+                }
+                "report-fd" => {
+                    let v = take_value("--report-fd", inline, &argv, &mut i);
+                    let n = std::str::from_utf8(&v)
+                        .ok()
+                        .and_then(|s| s.parse::<libc::c_int>().ok())
+                        .filter(|n| *n >= 0);
+                    match n {
+                        Some(n) => {
+                            report_fd = Some(n);
+                            report_json = true;
+                        }
+                        None => die(&format!(
+                            "--report-fd needs a file descriptor number, not '{}'",
+                            String::from_utf8_lossy(&v)
+                        )),
                     }
                 }
                 "quiet" => {
                     mask = mask.quiet();
                     quiet = true;
+                    verbose = false;
                 }
                 "verbose" => {
                     mask = mask.verbose();
                     quiet = false;
+                    verbose = true;
                 }
                 "version" => {
                     println!("pmask {} ({})", pmask::VERSION, pmask::COMMIT);
                     exit(0);
                 }
                 "help" => {
-                    print_help(true);
+                    if let Some(topic) = inline {
+                        print_topic(&topic);
+                    } else {
+                        print_help(true);
+                    }
                     exit(0);
                 }
                 _ => {
@@ -754,10 +847,12 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 b'q' => {
                     mask = mask.quiet();
                     quiet = true;
+                    verbose = false;
                 }
                 b'v' => {
                     mask = mask.verbose();
                     quiet = false;
+                    verbose = true;
                 }
                 b'V' => {
                     println!("pmask {} ({})", pmask::VERSION, pmask::COMMIT);
@@ -847,6 +942,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         daemon,
         remote_label,
         quiet,
+        verbose,
         mask_opts,
         scope_name,
         reexec_argv,
@@ -860,6 +956,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         secret_close_on_exec,
         no_dumpable,
         report_json,
+        report_file,
+        report_fd,
         agent_socket,
         isolate,
         no_redact,
@@ -937,6 +1035,21 @@ impl Cli {
 pub fn help_text() -> String {
     HELP.replace("{version}", pmask::VERSION)
         .replace("{arch}", arch_name())
+}
+
+/// Print one help topic (`--help=<topic>`).  `short` is the option index;
+/// `redact`, `isolate`, `secret`, `report` and `daemon` print one option
+/// group each.  An unknown topic prints the index and exits 255, so a typo
+/// is visible to a script.
+fn print_topic(topic: &[u8]) {
+    let text = help_text();
+    let t = String::from_utf8_lossy(topic).into_owned();
+    if t == "short" {
+        print!("{}", pmask::subcmd::short_help(&text));
+        exit(0);
+    }
+    let code = pmask::subcmd::help_topic(&text, &t);
+    exit(code);
 }
 
 fn print_help(stdout: bool) {
