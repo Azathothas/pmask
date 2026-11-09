@@ -1,0 +1,56 @@
+################ qa: qa.d/44.sh
+PASS 44a-control-readable environ=ok maps=ok auxv=ok exe=ok fd=ok
+PASS 44c-control-stat-not-zero (stat48_51=139744043257856 139744043257869 139744043257871 139744043257871)
+PASS 44-control-payload-visible (cmdline=[qa44-1500700|])
+PASS 44b-nodumpable-refuses-five environ=denied maps=denied auxv=denied exe=denied fd=denied
+PASS 44b-rest-of-the-entry-readable cmdline=ok comm=ok stat=ok status=ok
+PASS 44c-stat-zeros (stat48_51=0 0 0 0)
+PASS 44d-access-vs-open (open() refused all five; access() disagrees on 1: environ=access-no maps=access-yes auxv=access-no exe=access-no fd=access-no)
+PASS 44e-payload-alive-under-the-flag
+PASS 44f-supervisor-in-the-same-set environ=denied maps=denied auxv=denied exe=denied fd=denied
+PASS 44f-tracer-thread-named (pmask-tracer x1)
+PASS 44g-plain-mode-note (--no-dumpable was not applied: plain mode does not change th)
+PASS 44g-isolate-mode-note
+PASS 44g-plain-payload-is-dumpable (PR_GET_DUMPABLE=1)
+PASS 44g-redact-payload-is-not-dumpable (PR_GET_DUMPABLE=0)
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/49.sh
+PASS 49a-default-redacted cmdline=[qa49-1502649|] comm=[qa49-1502649] env=0 tracer=1502700
+PASS 49b-plain-real cmdline=[/bin/sleep|20|] comm=[sleep] environ-has-marker tracer=0
+PASS 49b-plain-note (the payload's label was not applied: plain mode does not redact the pa)
+PASS 49c-isolate-real cmdline=[/bin/sleep|20|] comm=[sleep] environ-has-marker tracer=0
+PASS 49c-isolate-procfs-fingerprint (mountinfo: 1003 975 0:89 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=invisible)
+PASS 49c-isolate-nspid-fingerprint (NSpid=[1504748	1])
+PASS 49c-isolate-intermediate-labelled (supervisor cmdline=[qa49-1502649|])
+PASS 49d-unshare-fixed cmdline=[qa49-1502649|] env=0 tracer=1505923 NSpid=[1505926	1]
+PASS 49d-unshare-procfs-fingerprint (hidepid=invisible present)
+PASS 49d-unshare-nspid-fingerprint (NSpid=[1505926	1])
+PASS 49e-redact-isolate-fixed cmdline=[qa49-1502649|] env=0 tracer=1507003 NSpid=[1507006	1]
+PASS 49e-redact-isolate-procfs-fingerprint (hidepid=invisible present)
+PASS 49e-redact-isolate-nspid-fingerprint (NSpid=[1507006	1])
+PASS 49f-32bit-real-argv cmdline=[./testcases32|sleeper|MK49B-MK49-1502649|]
+PASS 49f-32bit-exe-names-the-image (exe=/workspace/wt/bteam3/tests/testcases32)
+PASS 49f-32bit-refusal-is-loud (pmask: warning: pid 1511259: 32-bit (foreign ABI) program is not redacted)
+PASS 49f-32bit-summary-counts-foreign-arch (pmask: 1 of 1 execs degraded (foreign-arch))
+PASS 49g-unshare-report-mode-and-execs (mode=redact execs=1)
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/56.sh
+SKIP 56-audit-subsystem (auditctl -l: The audit system is disabled; auditctl -s printed nothing and exited 0)
+== VERDICT: FAIL=0 (SKIP: audit disabled) ==
+################ qa: qa.d/59.sh
+PASS 59a-one-warning (secret source S=literal: puts the value in pmask's own argv,...)
+PASS 59a-warning-names-the-artefacts-and-the-way-out
+PASS 59b-warning-hides-the-value
+PASS 59c-quiet-suppresses-the-warning
+PASS 59d-literal-secret-delivered (the payload read 19 bytes from fd 3)
+PASS 59e-file-source-is-quiet
+PASS 59f-env-source-warns-about-the-environment
+PASS 59f-env-source-claims-no-exec-record
+PASS 59g-enabled-audit-wording-is-stronger
+PASS 59g-disabled-audit-wording-does-not-claim-the-record
+PASS 59h-args-from-fd-still-warns-for-the-secret
+PASS 59h-args-from-fd-payload-ran
+PASS 59i-json-report-records-the-exposure
+PASS 59i-json-report-hides-the-value
+== VERDICT: FAIL=0 ==
+################ QA: PASS cases=4
