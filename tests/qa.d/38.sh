@@ -156,6 +156,26 @@ else
     skip "q38a-control-retired-name-is-observable (no task could take the name here)"
 fi
 
+# The control above proves the observer can see a task named with the
+# retired string.  A stronger control is a binary built before #38: it
+# names the thread `pmask-tracer`, so the same observer must find it.
+# That binary is not built by the gate (it needs a source checkout at the
+# parent commit), so when it is present the control runs; otherwise the
+# evidence log from the last run of it is cited instead of claimed.
+OLD_BIN="$(cd .. && pwd)/evidence/bteam2/38/negative-control-old-binary.sh"
+T38="/tmp/qa38.$$"
+mkdir -p "$T38" || { echo "FATAL: cannot create $T38"; exit 2; }
+trap 'rm -rf "$T38"' EXIT INT TERM HUP QUIT
+if [ -x "$OLD_BIN" ]; then
+    if sh "$OLD_BIN" >"$T38/old.log" 2>&1; then
+        pass "q38a2-pre-fix-binary-names-the-thread (control for the sweep)"
+    else
+        skip "q38a2-pre-fix-binary-names-the-thread (evidence script needs a parent-commit build: $(tail -1 "$T38/old.log"))"
+    fi
+else
+    skip "q38a2-pre-fix-binary-names-the-thread (no pre-fix build here; evidence/bteam2/38/negative-control-old-binary.log)"
+fi
+
 # ---------------------------------------- q38b..q38e: the default session
 env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$LABEL" -- "$CASES" sleeper &
 SUP=$!

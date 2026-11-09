@@ -252,10 +252,9 @@ SUP=""
 #   2. fixed: comm and the payload's own reading are both the label, which
 #      proves the payload's PR_SET_NAME("other") was redirected rather than
 #      not attempted;
-#   3. the open defect: comm and the payload's reading are both "other",
-#      with the documented warning.
-# A divergence with no warning is a FAIL: that is a silent degradation
-# (invariant 13).
+# The open defect (comm and the payload's reading both "other") is a FAIL
+# in this tree: issue 60 is fixed here, so a run that lands the rename is a
+# regression, not a documented shape.
 # No -q here: the degradation warning is printed at the default
 # verbosity only, so a quiet run would hide the evidence.
 err="$D/s5.err"
@@ -281,10 +280,6 @@ if [ -z "$PAY" ]; then
 elif [ "$comm" = "$L2" ] && [ "$self" = "$L2" ]; then
     pass "s5-watch-rename-no-dumpable (fixed: comm=$comm payload=$self)"
     echo "NOTE s5 saw the fixed shape (issue #60): the redirect needed no write"
-elif [ "$comm" = "other" ] && [ "$self" = "other" ] && [ "$warn" != 0 ]; then
-    pass "s5-watch-rename-no-dumpable (defect #60 open: comm=$comm payload=$self)"
-    echo "NOTE s5 saw the open defect shape (issue #60, fix1 owns the fix):"
-    echo "     $(head -1 "$err")"
 else
     fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=${waited}s warn=$warn: neither the fixed shape nor the documented defect)"
 fi
