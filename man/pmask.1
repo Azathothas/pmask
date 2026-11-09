@@ -329,10 +329,17 @@ contract:
 .B \-\-audit
 needs a tracer,
 .B \-\-image
-(and the rest of the image family) cannot exec an image without the
-redaction child, and
+and
+.B \-\-image\-from\-fd
+cannot exec an image without the redaction child, and
 .B \-\-secret\-close\-on\-exec
 needs a tracer once a secret is delivered.
+The rest of the image family
+.RB ( \-\-rexec ,
+.BR \-\-rexec\-allow\-disk ,
+.BR \-\-exec\-once ,
+.B \-\-hugetlb )
+is dropped with a note, because it does not by itself name an image.
 .PP
 The label and
 .B \-\-label\-empty
@@ -386,9 +393,9 @@ source still sits in pmask's own command line or environment, where
 /proc shows it; the value is absent from the child's /proc entry.
 A
 .B literal:
-value is also in pmask's own argument vector, and the kernel audit
-subsystem records the supervisor's own exec before pmask can redact
-anything: the
+value is also in pmask's own argument vector.
+When the kernel audit subsystem is enabled, it records the supervisor's
+own exec before pmask can redact anything: the
 .B type=EXECVE
 and
 .B type=PROCTITLE
@@ -697,7 +704,8 @@ Mask options other than
 .B \-\-label
 and
 .B \-\-label\-empty
-have no effect there and produce a warning.
+have no effect there and produce a warning, except the flags below,
+which are refused instead.
 .BR \-\-secret ,
 .BR \-\-isolate ,
 .B \-\-no\-redact
