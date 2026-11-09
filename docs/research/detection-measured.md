@@ -109,8 +109,8 @@ Measured on the `sleep` child:
 | observable | value |
 | --- | --- |
 | `ps -o comm,args` | `ci-runner       ci-runner` |
-| `stat` 48/49 span | 11 |
-| `cmdline` bytes | 11 (`ci-runner` then zeros) |
+| `stat` 48/49 span | 10 |
+| `cmdline` bytes | 10 (`ci-runner` then NUL) |
 | `environ` bytes | 37, all zero |
 | byte at `arg_end - 1` | `0x00` |
 | `comm` | `ci-runner` |

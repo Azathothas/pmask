@@ -1,0 +1,43 @@
+# source-line verification for #61, 2026-11-09T11:56:37Z
+## arg_end
+        let arg_end = block.base + label.len() as u64 + 1;
+## execfn
+        let execfn = 1 + fl + argv.len();
+## TracerPid doc / detach
+
+    /// `PTRACE_DETACH` each tracee once its exec has settled, so
+    /// `TracerPid` reads 0 for the payload at rest.  This is a coverage
+    /// trade, not a free win: a detached process and every descendant it
+    /// creates run unredacted for the rest of their lives, and the
+    /// session summary counts each detach.  Off by default because the
+    /// label then survives through restarts rather than through
+    /// supervision.
+    pub fn detach_after_exec(mut self, on: bool) -> Mask {
+        self.detach = on;
+## tracer thread
+    /// Fork a [`Prepared`] program on the tracer thread and supervise it.
+    pub fn spawn_prepared(&self, prepared: Prepared) -> io::Result<MaskedChild> {
+        let cfg = prepared.cfg.clone();
+        let tree = cfg.tree.clone();
+        let (pid_tx, pid_rx) = mpsc::channel();
+        let (st_tx, st_rx) = mpsc::channel();
+        let cfg_thread = cfg.clone();
+        std::thread::Builder::new()
+            .name("pmask-tracer".into())
+## reader of TracerPid
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "not reachable".to_string());
+        let status = read("status").map(|b| String::from_utf8_lossy(&b).into_owned());
+        let tracer = status
+            .as_deref()
+            .and_then(|s| s.lines().find(|l| l.starts_with("TracerPid:")))
+            .and_then(|l| l.split_whitespace().nth(1).map(|v| v.to_string()))
+            .unwrap_or_else(|| "not reachable".to_string());
+        let cmdline = read("cmdline");
+        let (cmdline_bytes, nul_ratio) = match &cmdline {
+            Some(b) if !b.is_empty() => {
+                let nuls = b.iter().filter(|&&c| c == 0).count();
+                (
+                    b.len().to_string(),
+                    format!("{:.2}", nuls as f64 / b.len() as f64),
+                )

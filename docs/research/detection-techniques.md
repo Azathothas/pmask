@@ -369,7 +369,7 @@ mode 4, a 10-byte span and an anonymous VMA for mode 2.
 | signal | naive zero-fill | label at `arg_start` | PR_SET_MM relocation | pmask |
 | --- | --- | --- | --- | --- |
 | NUL run in `cmdline` (DET0164) | yes, 49 bytes | no, 1 | no, 1 | no |
-| `cmdline` shorter than the `stat` span | no, 58 vs 58 | yes, 58 vs 10 | no, 10 vs 10 | yes, 11 vs 10 |
+| `cmdline` shorter than the `stat` span | no, 58 vs 58 | yes, 58 vs 10 | no, 10 vs 10 | no, 11 vs 11 |
 | span not in `[stack]` | no | no | yes, `[anonymous]` | no |
 | `environ` empty | no | no | yes, 0 bytes | yes, 0 bytes |
 | `comm` versus `exe` | no | no | no | yes |
@@ -381,13 +381,19 @@ The `comm` versus `exe` column is "no" for the three hand-written modes only
 because the test harness never calls `PR_SET_NAME`; pmask does, and that is
 why its column differs.
 
-The `AT_EXECFN` row is a finding from `detection-residue.md` row 10, not a
-restatement: on eight plain execs `AT_EXECFN == env_end` exactly, while under
-pmask `AT_EXECFN == arg_start` in three runs out of three. The relocation
-mode was not measured on this row.
+The `AT_EXECFN` row is a finding from `detection-residue.md` row 10 and has
+moved since that row was written: on this release the presentation block
+places a second label copy at `env_end` and points `AT_EXECFN` at it, so
+`/proc/<pid>/auxv` serves the label and keeps `AT_EXECFN == env_end`, the
+relation a plain exec has. The earlier `AT_EXECFN == arg_start` observation is
+stale.
 
-The honest reading: no single signal covers every variant, the three signals
-that cover pmask are `cmdline` shorter than the span, an empty `environ`,
-and `comm` disagreeing with `exe`, and of those three the first two also fire
-on a legitimate newline-free setproctitle caller while the third does not.
-`[inferred]`
+The honest reading: no single signal covers every variant. The signals that
+cover pmask are an empty `environ`, `comm` disagreeing with `exe`, and a
+nonzero `TracerPid` whose tracer is a thread of the parent. The first also
+fires on a legitimate process started with an empty environment; the third
+fires on every debugger unless the tracer's identity is checked. The
+`cmdline`-shorter-than-the-span signal does not fire on pmask at all: the
+`PR_SET_MM_MAP` relocation moves `arg_start` and `arg_end` onto the label, so
+the span equals the `cmdline` length. `[observed]` for the span, `[inferred]`
+for the generalisation.
