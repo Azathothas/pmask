@@ -48,6 +48,27 @@ masking tool from a sandbox.
 
 ## The `--watch-rename --no-dumpable` dependency (issue #60)
 
+`qa/fix1` gained commits after this note was first written (`cd389fd fix:
+redirect rename to the mapped label, no write`), so `s5` was widened to
+decide from the observed shape and to name which one it took.  Both were
+run against a real binary:
+
+```
+this branch (fix1 not merged):
+  PASS s5-watch-rename-no-dumpable (defect #60 open: comm=other payload=other)
+  NOTE s5 saw the open defect shape (issue #60, fix1 owns the fix)
+
+fix1's built binary (/tmp/fix1-target/release/pmask):
+  PASS s5-watch-rename-no-dumpable (fixed: comm=qa46-sec payload=qa46-sec)
+  NOTE s5 saw the fixed shape (issue #60): the redirect needed no write
+```
+
+The side-by-side run used a copy of the fragment and fix1's binaries in a
+scratch directory (`/tmp/fixsim`), so the worktree's own binary was not
+swapped.  A divergence with no warning is a FAIL in either branch: that
+would be a silent degradation (invariant 13).
+
+
 `--watch-rename --no-dumpable` is a broken combination: the redirect is a
 tracee memory write, and a non-dumpable tracee refuses it. Measured shape
 on this branch:

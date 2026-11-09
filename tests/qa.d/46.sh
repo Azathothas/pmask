@@ -242,13 +242,22 @@ wait "$SUP" 2>/dev/null
 SUP=""
 
 # ------------------------- s5: --watch-rename --no-dumpable (defect #60)
-# The redirect needs a tracee memory write; a non-dumpable tracee refuses
-# it, so the payload renames itself.  fix1 owns the fix, and this branch
-# does not carry it, so the defect's current shape is what is asserted.
-# The case is written to accept either shape and to name which one it saw,
-# so a merge of fix1 does not turn this into a false failure.
+# The redirect used to need a tracee memory write, and a non-dumpable
+# tracee refuses it, so the payload renamed itself and only a warning
+# said so.  fix1 owns the fix (redirect to the label already mapped in the
+# presentation block, no write); this branch may or may not carry it when
+# the reconciler runs, so the case decides from the observed shape and
+# names which one it saw.  Three shapes are acceptable:
+#   1. the pair is refused before a payload exists, with a message;
+#   2. fixed: comm and the payload's own reading are both the label, which
+#      proves the payload's PR_SET_NAME("other") was redirected rather than
+#      not attempted;
+#   3. the open defect: comm and the payload's reading are both "other",
+#      with the documented warning.
+# A divergence with no warning is a FAIL: that is a silent degradation
+# (invariant 13).
 # No -q here: the degradation warning is printed at the default
-# verbosity only (invariant 13), so a quiet run would hide the evidence.
+# verbosity only, so a quiet run would hide the evidence.
 err="$D/s5.err"
 "$TOOL" -l "$L2" --watch-rename --no-dumpable -- "$CASES" renamer \
     >"$D/s5.out" 2>"$err" &
@@ -260,26 +269,25 @@ comm=""
 kill "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
+warn=$(grep -c 'cannot redirect a rename to the label' "$err" 2>/dev/null)
+waited=$(cat "$D/s5.waited" 2>/dev/null)
 if [ -z "$PAY" ]; then
-    # The fixed shape: the pair is refused before a payload exists.
     if [ -s "$err" ]; then
-        pass "s5-watch-rename-no-dumpable (refused: $(head -1 "$err"))"
+        pass "s5-watch-rename-no-dumpable (refused before a payload: $(head -1 "$err"))"
+        echo "NOTE s5 saw the refusal shape"
     else
         fail "s5-watch-rename-no-dumpable (no payload and no message)"
     fi
-elif [ "$comm" = "$L2" ]; then
-    if [ -s "$err" ]; then
-        pass "s5-watch-rename-no-dumpable (fixed: comm=$comm, warning=$(head -1 "$err"))"
-    else
-        pass "s5-watch-rename-no-dumpable (fixed: comm=$comm, no warning)"
-    fi
-elif [ "$comm" = "other" ] && grep -q 'cannot redirect a rename to the label' "$err" 2>/dev/null; then
-    pass "s5-watch-rename-no-dumpable (defect #60 open: comm=$comm, payload=$self, warning=$(head -1 "$err"))"
+elif [ "$comm" = "$L2" ] && [ "$self" = "$L2" ]; then
+    pass "s5-watch-rename-no-dumpable (fixed: comm=$comm payload=$self)"
+    echo "NOTE s5 saw the fixed shape (issue #60): the redirect needed no write"
+elif [ "$comm" = "other" ] && [ "$self" = "other" ] && [ "$warn" != 0 ]; then
+    pass "s5-watch-rename-no-dumpable (defect #60 open: comm=$comm payload=$self)"
+    echo "NOTE s5 saw the open defect shape (issue #60, fix1 owns the fix):"
+    echo "     $(head -1 "$err")"
 else
-    fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=$(cat "$D/s5.waited" 2>/dev/null)s warn=$(grep -c 'cannot redirect' "$err" 2>/dev/null): neither the fixed shape nor the documented defect)"
+    fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=${waited}s warn=$warn: neither the fixed shape nor the documented defect)"
 fi
-echo "NOTE s5 depends on issue #60 (fix1); this branch's qa/fix1 has no commits," \
-     "so the open-defect shape is what was asserted here"
 
 echo "== QA46: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL)"
 [ "$FAIL" = 0 ] || exit 1
