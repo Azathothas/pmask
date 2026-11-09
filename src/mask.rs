@@ -58,13 +58,27 @@ use std::time::Duration;
 
 static SESSION: Mutex<()> = Mutex::new(());
 
-/// The argument vector of this process, copied out of
-/// `/proc/self/cmdline` into owned memory.
+/// The argument vector of this process, in owned memory.
 ///
 /// A caller that reads its options from this copy can redact the
 /// kernel-served argv block immediately at startup, before parsing, which
 /// is the earliest point a supervisor can act on its own metadata.
+///
+/// The vector comes from the runtime's own copy (`std::env::args_os()`),
+/// not from `/proc/self/cmdline`.  The kernel's copy is what the block
+/// holds *now*, and a process that is itself running under an exact mask
+/// has already had that window moved onto the label; reading it would
+/// turn a nested `pmask read NAME` into `pmask <label>`, which finds no
+/// subcommand and prints the help text (issue 5).  `/proc/self/cmdline`
+/// stays as the fallback for the one case where the runtime vector is
+/// empty: a caller that cleared it, or an exec the library did not make.
+/// The block is zeroed afterwards exactly as before, so the self-mask
+/// property is unchanged.
 pub fn snapshot_argv() -> Vec<OsString> {
+    let from_runtime: Vec<OsString> = std::env::args_os().collect();
+    if !from_runtime.is_empty() {
+        return from_runtime;
+    }
     let raw = std::fs::read("/proc/self/cmdline").unwrap_or_default();
     split_cmdline(&raw)
 }
