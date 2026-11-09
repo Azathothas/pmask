@@ -228,6 +228,12 @@ pub struct Cli {
     pub env_overrides: Vec<(OsString, OsString)>,
     /// `--secret NAME=SRC`, delivered over descriptors.
     pub secrets: Vec<(String, Source)>,
+    /// `--keep-env`: the whole environment stays visible.  Kept next to
+    /// `mask`, which owns the same decision, so the CLI can warn about a
+    /// combination without reaching into `Mask`'s private state.
+    pub keep_env_all: bool,
+    /// `--keep-env=NAME`: these variables stay visible.
+    pub keep_env_names: Vec<String>,
     /// `--socket PATH`: the secret agent to ask for `agent:NAME` sources.
     pub agent_socket: Option<PathBuf>,
     /// `--isolate[=LIST]`: a private namespace set for the payload.
@@ -370,6 +376,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut args_fd: Option<libc::c_int> = None;
     let mut env_overrides: Vec<(OsString, OsString)> = Vec::new();
     let mut secrets: Vec<(String, Source)> = Vec::new();
+    let mut keep_env_all = false;
+    let mut keep_env_names: Vec<String> = Vec::new();
     let mut agent_socket: Option<PathBuf> = None;
     let mut allow_argv_secret = false;
     let mut secret_burn = false;
@@ -436,7 +444,10 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "keep-env" => {
                     match inline {
-                        None => mask = mask.keep_environ_visible(),
+                        None => {
+                            mask = mask.keep_environ_visible();
+                            keep_env_all = true;
+                        }
                         Some(list) => {
                             let names: Vec<String> = list
                                 .split(|&b| b == b',')
@@ -446,6 +457,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                             if names.is_empty() {
                                 die("--keep-env= needs at least one name");
                             }
+                            keep_env_names.extend(names.iter().cloned());
                             mask = mask.keep_env_vars(names);
                         }
                     }
@@ -680,6 +692,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 b'E' => {
                     mask = mask.keep_environ_visible();
+                    keep_env_all = true;
                     note_opt(&mut mask_opts, "--keep-env");
                 }
                 b'F' => {
@@ -766,6 +779,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         args_fd,
         env_overrides,
         secrets,
+        keep_env_all,
+        keep_env_names,
         allow_argv_secret,
         secret_burn,
         secret_close_on_exec,
