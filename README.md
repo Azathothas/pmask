@@ -437,9 +437,10 @@ lets the observer read what a same-uid peer cannot, so the same-uid
 refusal cases cannot be decided. They print `SKIP` and name the root case
 instead of failing. `vm/run.sh` runs the suites as root and as uid 1000.
 
-`tests/run.sh` runs sixteen suites: validate, suite, stress, edge,
+`tests/run.sh` runs seventeen suites: validate, suite, stress, edge,
 daemon, daemon_neg, options, core, audit, store, isolation, lease,
-secrets, compare, conformance and regressions. `vm/run.sh` fetches a
+secrets, compare, conformance, regressions and the per-issue QA fragment
+dispatcher (`tests/qa.sh`). `vm/run.sh` fetches a
 pinned kernel and static busybox by sha256, builds the musl binaries,
 packs an initramfs and boots it under QEMU: KVM when the host provides a
 usable `/dev/kvm` for the guest architecture, TCG otherwise

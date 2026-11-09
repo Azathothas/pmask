@@ -175,7 +175,7 @@ fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
 ///
 /// Only `env:` is warned about, and that is a measurement, not a
 /// simplification: the payload's environment carries the variable itself
-/// plus `PMASK_SECRET_<N>=<fd>`, never a `literal:` value (see
+/// plus `PMASK_SECRET_<NAME>=<fd>`, never a `literal:` value (see
 /// `evidence/bteam1/41/`).  A `literal:` value lives in the supervisor's
 /// own argv, which the self-mask removes; `--keep-env` does not publish
 /// it, so warning there would be false.

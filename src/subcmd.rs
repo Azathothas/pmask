@@ -71,7 +71,7 @@ Commands (the secret side; these work even where ptrace is refused):
   run [OPTIONS] [--] CMD  run a command; accepts every mask option, plus:
       --secret N=SRC        deliver a secret on descriptor 3, 4, ...; SRC is
                             file:PATH | env:VAR | agent:NAME | stdin | literal:VAL
-                            (repeatable; PMASK_SECRET_<N> names the descriptor)
+                            (repeatable; PMASK_SECRET_<NAME> names the descriptor)
       --socket PATH         secret-agent socket for agent:NAME sources
       --isolate[=LIST]      private namespaces: pid,net,tmp | all | none
       --no-redact           never touch /proc metadata, even where ptrace works
