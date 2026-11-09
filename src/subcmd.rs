@@ -41,10 +41,15 @@ pub fn dispatch(argv: &[OsString], mask_help: &str) -> i32 {
         Some(b"read") => cmd_read(args),
         Some(b"probe") => cmd_probe(args),
         Some(b"doctor") => cmd_doctor(args),
-        Some(b"help") => {
-            print!("{}", help(mask_help));
-            0
-        }
+        Some(b"help") => match args.first().map(|a| a.to_string_lossy().into_owned()) {
+            // `pmask help <topic>` prints one section, so a reader does not
+            // have to page the whole 13 KB for one option group.
+            Some(topic) => help_topic(mask_help, &topic),
+            None => {
+                print!("{}", help(mask_help));
+                0
+            }
+        },
         Some(b"version") => {
             println!("pmask {} ({})", crate::VERSION, crate::arch_name());
             0
@@ -280,6 +285,11 @@ fn verdict_of(caps: &Caps, require: &[String]) -> i32 {
             Some(crate::caps::State::Active) => {}
             Some(crate::caps::State::Degraded(_)) => worst = worst.max(3),
             Some(crate::caps::State::Unavailable(_)) => worst = worst.max(4),
+            // A mechanism that cannot take effect because the mechanism it
+            // belongs to is unavailable is a degraded guarantee, not an
+            // active one: `--require=exact` on a host with no ptrace must
+            // not report success for a redaction property (issue 13).
+            Some(crate::caps::State::Inapplicable(_)) => worst = worst.max(3),
             None => worst = worst.max(255),
         }
     }
@@ -1008,22 +1018,19 @@ fn cmd_read(args: &[OsString]) -> i32 {
 }
 
 /// Parse `--isolate[=LIST]`.
+///
+/// `all`, `none` and a comma-separated subset of `pid`, `net` and `tmp`
+/// are the only accepted spellings.  `none` means no isolation at all and
+/// is a distinct value ([`Isolate::none`]) rather than "all three fields
+/// false", which would still create the unconditional namespaces.
 pub fn parse_isolate(v: &[u8]) -> Option<Isolate> {
     if v == b"all" || v.is_empty() {
         return Some(Isolate::all());
     }
     if v == b"none" {
-        return Some(Isolate {
-            pid: false,
-            net: false,
-            private_tmp: false,
-        });
+        return Some(Isolate::none());
     }
-    let mut iso = Isolate {
-        pid: false,
-        net: false,
-        private_tmp: false,
-    };
+    let mut iso = Isolate::minimal();
     for part in v.split(|&b| b == b',') {
         match part {
             b"pid" => iso.pid = true,
@@ -1033,4 +1040,299 @@ pub fn parse_isolate(v: &[u8]) -> Option<Isolate> {
         }
     }
     Some(iso)
+}
+
+// ------------------------------------------------------------- help text
+
+/// One option of the short help index.  The table is explicit because
+/// parsing the long text back out of its columns is how an option ends up
+/// listed under a name it does not have.  `short_help_names_are_in_the_
+/// full_text` keeps the two in step.
+pub const SHORT_HELP: &[(&str, &str)] = &[
+    (
+        "-l, --label NAME",
+        "presentation label for every process' /proc entry",
+    ),
+    ("--label-empty", "empty label: cmdline shows nothing"),
+    (
+        "--argv0 NAME",
+        "argv[0] of the program (default: the command as typed)",
+    ),
+    ("--comm NAME", "comm name for top, at most 15 bytes"),
+    ("--keep-env", "leave /proc/<pid>/environ visible"),
+    (
+        "--keep-env=NAME[,NAME...]",
+        "keep only the named variables visible",
+    ),
+    ("--env K=V", "add or replace one variable for the program"),
+    ("--env-file PATH", "read KEY=VALUE lines from a file"),
+    ("--args-from-fd N", "read the command from descriptor N"),
+    (
+        "--on-exit POLICY",
+        "what happens to descendants: detach, wait or kill",
+    ),
+    ("--no-follow", "redact the direct child only"),
+    ("--no-exit-kill", "let the tree survive pmask's own death"),
+    (
+        "--no-dumpable",
+        "PR_SET_DUMPABLE=0 in every process of the tree",
+    ),
+    ("--no-new-privs", "set no_new_privs before exec"),
+    ("--no-exact", "keep the original cmdline byte extent"),
+    (
+        "--detach",
+        "PTRACE_DETACH each process after its exec settles",
+    ),
+    (
+        "--watch-rename",
+        "keep the label as comm across PR_SET_NAME",
+    ),
+    (
+        "--rexec",
+        "exec from a sealed memfd so /proc/<pid>/exe is the label",
+    ),
+    (
+        "--rexec-allow-disk",
+        "on-disk path as the explicit last resort",
+    ),
+    ("--image PATH", "exec the ELF image in PATH"),
+    ("--image-from-fd N", "exec the ELF image on descriptor N"),
+    ("--exec-once", "reuse one sealed image per distinct program"),
+    ("--hugetlb", "ask for a hugetlb-backed image"),
+    (
+        "--unshare",
+        "new user, pid and mount namespaces with a private /proc",
+    ),
+    ("--scope-name NAME", "re-exec through systemd-run --scope"),
+    ("-q, --quiet", "suppress diagnostics"),
+    ("-v, --verbose", "trace every redaction event to stderr"),
+    ("-V, --version", "print version"),
+    (
+        "-h, --help",
+        "print this index (--help prints the full text)",
+    ),
+    (
+        "--secret NAME=SRC",
+        "deliver a secret on descriptor 3, 4, ...",
+    ),
+    (
+        "--socket PATH",
+        "secret-agent socket for agent:NAME sources",
+    ),
+    (
+        "--isolate[=LIST]",
+        "fresh namespaces: pid,net,tmp | all | none",
+    ),
+    (
+        "--audit",
+        "one residue row per tracee, then a residue count",
+    ),
+    (
+        "--redact",
+        "ask for /proc redaction explicitly (the default)",
+    ),
+    ("--no-redact", "never touch /proc metadata"),
+    (
+        "--allow-argv-secret",
+        "allow a literal:/env: source where /proc is not redacted",
+    ),
+    (
+        "--secret-close-on-exec",
+        "close the descriptor in each descendant at its fork",
+    ),
+    ("--secret-burn", "let the reader truncate a value to zero"),
+    ("--report=json", "print the run as one JSON object"),
+    (
+        "--report-file PATH",
+        "write that object to PATH instead of stdout",
+    ),
+    ("--report-fd N", "write that object to descriptor N"),
+];
+
+/// The short form of the mask help: usage, every option and a one-line
+/// summary each, so a terminal reader gets an index instead of the full
+/// text.  `--help=short` and `pmask help short` print it.
+pub fn short_help(mask_help: &str) -> String {
+    let mut out = String::new();
+    out.push_str(
+        mask_help
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("pmask")
+            .trim_end(),
+    );
+    out.push_str("\n\nUsage: pmask [OPTIONS] [--] COMMAND [ARGS...]\n");
+    out.push_str("       pmask [OPTIONS] --args-from-fd N\n");
+    out.push_str("       pmask [OPTIONS] --image PATH [ARGS...]\n\n");
+    out.push_str("Options (see `pmask --help` or `man pmask` for the full text):\n");
+    for (name, doc) in SHORT_HELP {
+        out.push_str(&format!("  {:<26} {}\n", name, doc));
+    }
+    out.push_str(
+        "\n`pmask --help` prints the full text; `pmask help <topic>` prints one section\n\
+         (redact, isolate, secret, report, daemon, short).\n",
+    );
+    out
+}
+
+/// Print one help topic over the mask help text.  Returns 0 for a known
+/// topic, 255 for an unknown one after printing the index, so a typo stays
+/// visible to a script.
+///
+/// The full text is parsed into option blocks (a header line at the option
+/// indent, then its continuation lines), so a topic prints the whole block
+/// including the prose that wraps.  A substring match over single lines
+/// would print a continuation line of a block it did not select.
+pub fn help_topic(mask_help: &str, topic: &str) -> i32 {
+    if topic == "short" {
+        print!("{}", short_help(mask_help));
+        return 0;
+    }
+    let want: &[&str] = match topic {
+        "redact" => &["--label", "--argv0", "--comm", "--keep-env", "--no-exact"],
+        "isolate" => &["--isolate", "--redact", "--no-redact", "--unshare"],
+        "secret" => &[
+            "--secret",
+            "--socket",
+            "--secret-burn",
+            "--secret-close-on-exec",
+        ],
+        "report" => &["--report", "--report-file", "--report-fd", "--audit"],
+        "daemon" => &["--daemon"],
+        _ => {
+            print!("{}", short_help(mask_help));
+            eprintln!(
+                "pmask: help: unknown topic '{}'; try redact, isolate, secret, report, \
+                 daemon or short",
+                topic
+            );
+            return 255;
+        }
+    };
+    let blocks = option_blocks(mask_help);
+    let mut printed = 0usize;
+    for (name, block) in &blocks {
+        if want.contains(&name.as_str()) {
+            print!("{}", block);
+            printed += 1;
+        }
+    }
+    if printed == 0 {
+        eprintln!(
+            "pmask: help: the topic '{}' names no option in this build; see `pmask --help`",
+            topic
+        );
+        return 255;
+    }
+    0
+}
+
+/// Split the full help into `(option name, full block)` pairs.  An option
+/// header is a line that starts with `-` after two or six spaces of
+/// indent; its block runs until the next header or a blank line.
+fn option_blocks(mask_help: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in mask_help.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let t = line.trim_start();
+        let is_header = (indent == 2 || indent == 6) && t.starts_with('-');
+        if is_header {
+            if let Some(entry) = current.take() {
+                out.push(entry);
+            }
+            let name = t
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(',')
+                .to_string();
+            current = Some((name, format!("{}\n", line)));
+        } else if let Some((_, block)) = current.as_mut() {
+            if line.trim().is_empty() {
+                out.push(current.take().expect("checked above"));
+            } else {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+    }
+    if let Some(entry) = current {
+        out.push(entry);
+    }
+    out
+}
+
+#[cfg(test)]
+mod short_help_tests {
+    use super::*;
+
+    /// The full help text, read from the parser's own source.  The binary
+    /// crate owns `HELP` and the library must not depend on a bin, so the
+    /// test reads the file the const lives in.
+    fn mask_help_for_test() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli.rs");
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    // A short index that drifts from the long text is worse than no
+    // index: a reader trusts it and misses the option they needed.  Every
+    // entry's first spelling has to appear in the full help.
+    #[test]
+    fn short_help_names_are_in_the_full_text() {
+        let full = mask_help_for_test();
+        assert!(full.contains("--secret"), "the help source was not read");
+        for (name, _) in SHORT_HELP {
+            let first = name.split_whitespace().next().unwrap_or("");
+            let bare = first.trim_end_matches(',');
+            assert!(
+                full.contains(bare),
+                "short help names {:?}, which the full text does not",
+                bare
+            );
+        }
+    }
+
+    // Every entry has to be an option spelling, not prose, or the index
+    // reads as an option that does not exist.
+    #[test]
+    fn every_short_entry_is_an_option_spelling() {
+        let full = mask_help_for_test();
+        assert!(full.contains("--report-fd"));
+        for (name, doc) in SHORT_HELP {
+            let first = name.split_whitespace().next().unwrap_or("");
+            let bare = first.trim_end_matches(',');
+            assert!(bare.starts_with('-'), "{:?} is not an option", name);
+            assert!(!doc.is_empty(), "{} has no description", name);
+        }
+    }
+
+    #[test]
+    fn unknown_topic_is_not_a_success() {
+        // A topic the code does not know must not exit 0, or a script
+        // asking for a section silently gets the index.
+        assert_eq!(help_topic("pmask help", "no-such-topic"), 255);
+    }
+
+    #[test]
+    fn known_topics_print_their_block() {
+        let full = mask_help_for_test();
+        assert_eq!(help_topic(&full, "isolate"), 0);
+        assert_eq!(help_topic(&full, "report"), 0);
+    }
+
+    #[test]
+    fn parse_isolate_distinguishes_none_from_empty() {
+        // issue 26: `none` must not be "all three switches off", which
+        // still creates the unconditional namespaces.
+        let none = parse_isolate(b"none").expect("none parses");
+        assert!(none.none);
+        assert!(parse_isolate(b"pid=0").is_none(), "a bad spelling parses");
+        let one = parse_isolate(b"pid").expect("pid parses");
+        assert!(!one.none);
+        assert!(one.pid && !one.net && !one.private_tmp);
+        let all = parse_isolate(b"all").expect("all parses");
+        assert!(!all.none);
+        assert!(all.pid && all.net && all.private_tmp);
+    }
 }

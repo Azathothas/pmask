@@ -52,11 +52,16 @@ pub enum State {
     Degraded(String),
     /// The mechanism does not work here.
     Unavailable(String),
+    /// The mechanism works on this host but cannot take effect because
+    /// the mechanism it belongs to is unavailable.  `exact cmdline
+    /// window` is the case: `prctl(PR_SET_MM_MAP)` may be callable while
+    /// there is no redaction for it to make exact.
+    Inapplicable(String),
 }
 
 impl State {
     pub fn ok(&self) -> bool {
-        !matches!(self, State::Unavailable(_))
+        !matches!(self, State::Unavailable(_) | State::Inapplicable(_))
     }
 
     pub fn as_word(&self) -> &'static str {
@@ -64,6 +69,7 @@ impl State {
             State::Active => "active",
             State::Degraded(_) => "degraded",
             State::Unavailable(_) => "unavailable",
+            State::Inapplicable(_) => "n/a",
         }
     }
 
@@ -71,7 +77,7 @@ impl State {
     pub fn reason(&self) -> &str {
         match self {
             State::Active => "",
-            State::Degraded(r) | State::Unavailable(r) => r,
+            State::Degraded(r) | State::Unavailable(r) | State::Inapplicable(r) => r,
         }
     }
 
@@ -428,7 +434,18 @@ impl Caps {
             ),
             (
                 "exact cmdline window",
-                if self.set_mm_map {
+                if !self.ptrace {
+                    // The row has to read as part of the redaction story:
+                    // the syscall may work, but with no redaction there is
+                    // no window for it to make exact, and a bare "active"
+                    // beside "metadata redaction unavailable" reads as a
+                    // guarantee that cannot be delivered.
+                    State::Inapplicable(
+                        "prctl(PR_SET_MM_MAP) works here, but there is no redaction for it to \
+                         make exact; the row is unused without a redaction mode"
+                            .into(),
+                    )
+                } else if self.set_mm_map {
                     State::Active
                 } else {
                     State::Unavailable(
@@ -779,8 +796,47 @@ mod tests {
         let c = Caps::detect();
         for (name, st) in c.rows() {
             assert!(!name.is_empty());
-            assert!(["active", "degraded", "unavailable"].contains(&st.as_word()));
+            assert!(
+                ["active", "degraded", "unavailable", "n/a"].contains(&st.as_word()),
+                "{} has no state word",
+                name
+            );
         }
+    }
+
+    // issue 13: with no redaction the exact-window row must not read as a
+    // redaction guarantee.  It is reported `n/a`, its reason says why, and
+    // the row is still present (a reader must never have to infer it from
+    // an absence).
+    #[test]
+    fn exact_window_is_inapplicable_without_redaction() {
+        let c = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(false),
+            ..ProbeOverrides::default()
+        });
+        let row = c
+            .rows()
+            .into_iter()
+            .find(|(n, _)| *n == "exact cmdline window")
+            .expect("the exact row must exist");
+        assert_eq!(row.1.as_word(), "n/a", "{:?}", row.1);
+        assert!(
+            row.1.reason().contains("no redaction"),
+            "{:?}",
+            row.1.reason()
+        );
+        assert!(!row.1.ok(), "an inapplicable guarantee is not active");
+        // With redaction the row is the probe's answer.
+        let c = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(true),
+            ..ProbeOverrides::default()
+        });
+        let row = c
+            .rows()
+            .into_iter()
+            .find(|(n, _)| *n == "exact cmdline window")
+            .expect("the exact row must exist");
+        assert_ne!(row.1.as_word(), "n/a");
     }
 
     #[test]

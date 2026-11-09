@@ -262,6 +262,8 @@ pub struct Tracer {
     master_exit: Option<ExitState>,
     /// Detach drain: when the grace period ends.
     drain_deadline: Option<Instant>,
+    /// Session start, the origin for the `-v` line timestamps.
+    started: Instant,
     /// Tracees that were sent `PTRACE_INTERRUPT` during the drain.
     interrupted: std::collections::HashSet<libc::pid_t>,
     /// Child pid to the pid that forked it and that parent's fork depth,
@@ -299,7 +301,19 @@ pub struct Tracer {
 impl Tracer {
     pub(crate) fn vlog(&self, args: std::fmt::Arguments) {
         if self.cfg.verbose && !self.cfg.quiet {
-            eprintln!("[pmask {}] {}", std::process::id(), args);
+            // A monotonic offset makes two `-v` lines orderable and lets a
+            // reader correlate a completion-stop duration with the event
+            // before it (issue 14 N7).  A wall-clock prefix would tie the
+            // trace to an external log but also disclose the host clock,
+            // so the offset is relative to the session start.
+            let ms = self.started.elapsed().as_micros();
+            eprintln!(
+                "[pmask {} +{}.{:06}s] {}",
+                std::process::id(),
+                ms / 1_000_000,
+                ms % 1_000_000,
+                args
+            );
         }
     }
 
@@ -322,6 +336,7 @@ impl Tracer {
             master: 0,
             master_exit: None,
             drain_deadline: None,
+            started: Instant::now(),
             interrupted: std::collections::HashSet::new(),
             pending_children: HashMap::new(),
             vfork_children: std::collections::HashSet::new(),

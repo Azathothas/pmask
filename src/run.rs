@@ -215,6 +215,10 @@ pub struct Runner {
     verbose: bool,
     force_mode: Option<Mode>,
     isolate: Option<Isolate>,
+    /// `--redact --isolate`: redact the tree *and* give the payload the
+    /// requested namespaces.  Distinct from [`Runner::isolate`], which is
+    /// the namespace-only mode.
+    compose: Option<Isolate>,
     secrets: Vec<(String, Source)>,
     env_overrides: Vec<(OsString, OsString)>,
     socket: Option<PathBuf>,
@@ -223,6 +227,13 @@ pub struct Runner {
     close_on_exec: bool,
     allow_argv_secret: bool,
     no_dumpable: bool,
+    /// Mask options the caller passed, for the modes that cannot apply
+    /// them.  Every entry becomes one note, so a dropped option is never
+    /// silent (AGENTS.md invariant 13).
+    requested: Vec<&'static str>,
+    /// `--audit` was requested.  The rows need the tracer, so every
+    /// non-redaction mode refuses the request.
+    requests_audit: bool,
 }
 
 impl Default for Runner {
@@ -242,6 +253,7 @@ impl Runner {
             verbose: false,
             force_mode: None,
             isolate: None,
+            compose: None,
             secrets: Vec::new(),
             env_overrides: Vec::new(),
             socket: None,
@@ -250,6 +262,8 @@ impl Runner {
             close_on_exec: false,
             allow_argv_secret: false,
             no_dumpable: false,
+            requested: Vec::new(),
+            requests_audit: false,
         }
     }
 
@@ -292,8 +306,33 @@ impl Runner {
     }
 
     /// Run inside fresh namespaces (needs unprivileged user namespaces).
+    /// This is the namespace-only mode: the payload's `/proc` metadata is
+    /// not redacted, and every mask option that needs the tracer is
+    /// reported as not applied.
     pub fn isolate(mut self, iso: Isolate) -> Runner {
         self.isolate = Some(iso);
+        self
+    }
+
+    /// Redact the tree *and* give the payload the namespaces in `iso`:
+    /// the `--redact --isolate` composition.  The redaction path owns the
+    /// tree, and the payload is forked into the requested namespaces
+    /// before its exec.  A set the host cannot grant is reported as a
+    /// counted degradation, never silently replaced by `--unshare`'s
+    /// user+pid+mount set.
+    pub fn redact_with_isolate(mut self, iso: Isolate) -> Runner {
+        self.compose = Some(iso);
+        self
+    }
+
+    /// Record the mask options the caller passed, so the modes that
+    /// cannot apply one can name it in the run report.
+    pub fn requested_options(mut self, opts: &[&'static str]) -> Runner {
+        for o in opts {
+            if !self.requested.contains(o) {
+                self.requested.push(o);
+            }
+        }
         self
     }
 
@@ -353,6 +392,14 @@ impl Runner {
         self
     }
 
+    /// `--audit`: one residue row per tracee.  The redaction mode owns the
+    /// tree the rows describe; every other mode refuses the flag instead
+    /// of printing nothing.
+    pub fn audit(mut self) -> Runner {
+        self.requests_audit = true;
+        self
+    }
+
     pub fn daemon_socket(mut self, p: PathBuf) -> Runner {
         self.socket = Some(p);
         self
@@ -396,19 +443,80 @@ impl Runner {
     }
 
     fn select_with(&self, caps: &Caps) -> Selection {
+        // `--redact --isolate` composes: the redaction path owns the tree
+        // and the payload is forked into the requested namespaces.  When
+        // ptrace is unavailable the namespace half still works, so the
+        // isolate path runs with the probe reason in `mode_reason` rather
+        // than dropping the namespaces the operator asked for.
+        if let Some(iso) = self.compose {
+            if !iso.none {
+                if !caps.userns {
+                    if caps.ptrace {
+                        return Selection {
+                            mode: Mode::Redact,
+                            reason: "isolate_unavailable",
+                        };
+                    }
+                    return Selection {
+                        mode: Mode::Plain,
+                        reason: ptrace_reason(caps),
+                    };
+                }
+                if caps.ptrace {
+                    return Selection {
+                        mode: Mode::Redact,
+                        reason: "",
+                    };
+                }
+                return Selection {
+                    mode: Mode::Isolate,
+                    reason: ptrace_reason(caps),
+                };
+            }
+        }
+        // `--no-redact` means exactly that: never touch /proc metadata.
+        // It does not mean "plain before isolate": a namespace request is
+        // still honourable without a tracer, and dropping it silently is
+        // the defect this ordering used to be (issue 20).  The pair takes
+        // the isolate path when the host grants it and the plain path with
+        // a note otherwise.
+        if self.force_mode == Some(Mode::Plain) {
+            if self.isolate.is_some() && !self.is_none_isolation() && caps.userns {
+                return Selection {
+                    mode: Mode::Isolate,
+                    reason: "forced",
+                };
+            }
+            if self.isolate.is_some() && !self.is_none_isolation() {
+                return Selection {
+                    mode: Mode::Plain,
+                    reason: "isolate_unavailable",
+                };
+            }
+            return Selection {
+                mode: Mode::Plain,
+                reason: "forced",
+            };
+        }
         if let Some(mode) = self.force_mode {
             return Selection {
                 mode,
                 reason: "forced",
             };
         }
+        // `--isolate=none` asks for no isolation, not for a different
+        // mode: the namespace request simply contributes nothing, and the
+        // ordinary ladder decides (redact where ptrace works, plain where
+        // it does not).  Entering the isolation path here would create the
+        // unconditional user/mount/UTS/IPC/cgroup namespaces anyway
+        // (issue 26).
         if !caps.ptrace {
             return Selection {
                 mode: Mode::Plain,
                 reason: ptrace_reason(caps),
             };
         }
-        if self.isolate.is_some() {
+        if self.isolate.is_some() && !self.is_none_isolation() {
             if caps.userns {
                 return Selection {
                     mode: Mode::Isolate,
@@ -426,9 +534,25 @@ impl Runner {
         }
     }
 
+    /// The namespace set the selected mode should apply, if any.  `None`
+    /// when `--isolate` was not given or named `none`.
+    fn iso_set(&self) -> Option<Isolate> {
+        let iso = self.isolate.or(self.compose)?;
+        if iso.none {
+            None
+        } else {
+            Some(iso)
+        }
+    }
+
+    /// True when `--isolate=none` was the request: no isolation at all.
+    fn is_none_isolation(&self) -> bool {
+        self.isolate.is_some_and(|i| i.none) || self.compose.is_some_and(|i| i.none)
+    }
+
     /// True when isolation was asked for and the host refused it.
     pub fn isolate_unavailable(&self) -> bool {
-        self.isolate.is_some() && !Caps::cached().userns
+        self.isolate.is_some() && !self.is_none_isolation() && !Caps::cached().userns
     }
 
     /// Check every secret source against the mode the run will use, and
@@ -539,10 +663,38 @@ impl Runner {
             ));
         }
         let mode_reason = self.mode_reason();
+        // `--audit` describes the tree the tracer owns.  The mode is only
+        // known here, after the probe, so this is where a host that
+        // selects plain mode (no ptrace) refuses the flag; the explicit
+        // `--no-redact`/`--isolate` pair is refused in `main`, before any
+        // secret is read.  Refusing instead of printing nothing keeps the
+        // promise the man page makes (issue 32).
+        if self.requests_audit && mode != Mode::Redact {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--audit needs the redaction mode: the selected mode is {}, which has no \
+                     tracer to describe the tree, so the audit rows would be empty; run where \
+                     ptrace is available, or drop --audit",
+                    mode.as_str()
+                ),
+            ));
+        }
         if self.isolate_unavailable() {
             notes.push(
                 "--isolate was requested but this host has no unprivileged user namespaces; \
                  running without it"
+                    .to_string(),
+            );
+        }
+        // `--isolate=none` asks for no isolation at all: no namespace, no
+        // `no_new_privs` and no Landlock.  The runner honours it by not
+        // entering the isolation path; the note makes the run's mode and
+        // the absence of a namespace report unambiguous (issue 26).
+        if self.is_none_isolation() {
+            notes.push(
+                "--isolate=none: the payload runs with the host's namespaces, no_new_privs \
+                 and filesystem policy unchanged"
                     .to_string(),
             );
         }
@@ -558,14 +710,66 @@ impl Runner {
         }
         // `--no-dumpable` is a redaction-mode treatment: the tracer sets
         // `PR_SET_DUMPABLE=0` at each exec completion.  The other modes do
-        // not change dumpability, so the report's `payload_dumpable`
-        // describes the request and this note says it was not delivered.
+        // not change dumpability, so this note says it was not delivered.
         if self.no_dumpable && mode != Mode::Redact {
             notes.push(format!(
                 "--no-dumpable was not applied: {} mode does not change the payload's \
                  dumpability",
                 mode.as_str()
             ));
+        }
+        // Every other mask option needs the tracer too: the entry swap, the
+        // post-exec rebuild, the window relocation, the seccomp filter, the
+        // image carriers, the session-end policy or the namespace set.  A
+        // mode without a tracer cannot apply any of them, and a silent drop
+        // is a defect (AGENTS.md invariant 13), so each one is named with
+        // the reason.  `--no-dumpable`, the label and `--unshare` are
+        // handled above because their notes say something specific.
+        if mode != Mode::Redact {
+            for opt in &self.requested {
+                if matches!(*opt, "--no-dumpable" | "--audit" | "--isolate") {
+                    continue;
+                }
+                // These are applied by the non-redaction modes themselves:
+                // the environment pairs reach the payload, the scope
+                // re-exec happens before the mode is chosen, and a secret
+                // is delivered on a descriptor in every mode.
+                if matches!(
+                    *opt,
+                    "--env"
+                        | "--env-file"
+                        | "--secret"
+                        | "--socket"
+                        | "--allow-argv-secret"
+                        | "--secret-burn"
+                        | "--secret-close-on-exec"
+                        | "--scope-name"
+                ) {
+                    continue;
+                }
+                // Isolate mode sets PR_SET_NO_NEW_PRIVS in the payload as
+                // part of the isolation, so the option is satisfied there.
+                if *opt == "--no-new-privs" && mode == Mode::Isolate {
+                    continue;
+                }
+                // `--keep-env` asks for the inherited environment to stay
+                // visible; neither mode redacts it, so it is satisfied.
+                if *opt == "--keep-env" {
+                    continue;
+                }
+                // `--no-redact` asks for exactly what these modes do: no
+                // /proc treatment.  It is the reason the mode was chosen,
+                // not a request that was dropped.
+                if *opt == "--no-redact" {
+                    continue;
+                }
+                notes.push(format!(
+                    "{} was not applied: {} mode does not redact the payload's /proc \
+                     metadata, and this option needs the redaction path",
+                    opt,
+                    mode.as_str()
+                ));
+            }
         }
 
         // `--secret-close-on-exec` is enforced by the tracer: it closes the
@@ -686,6 +890,21 @@ impl Runner {
                     }
                 };
                 mask = mask.inherit_fds_with(fds.clone(), cloexec);
+                // `--redact --isolate`: hand the requested namespace set to
+                // the redaction child.  The set is the parsed `Isolate`
+                // value, so `--isolate=net` yields a network namespace and
+                // the host's pid namespace instead of `--unshare`'s
+                // user+pid+mount set (issue 19).
+                if let Some(iso) = self.compose {
+                    if !iso.none {
+                        mask = mask.namespaces(crate::userns::ChildNs {
+                            pid: iso.pid,
+                            net: iso.net,
+                            procfs: iso.pid,
+                            private_tmp: iso.private_tmp,
+                        });
+                    }
+                }
                 // `Mask::env` adds each pair on top of the inherited
                 // environment.  `Mask::envs` would replace it wholesale,
                 // which dropped PATH and HOME from a `--secret` run.
@@ -728,7 +947,7 @@ impl Runner {
                 child.wait()?
             }
             Mode::Isolate => {
-                let iso = self.isolate.unwrap_or_else(Isolate::all);
+                let iso = self.iso_set().unwrap_or_else(Isolate::all);
                 let prog = resolve_program(program.as_ref())?;
                 let mut argv_c: Vec<CString> = Vec::with_capacity(args.len() + 1);
                 argv_c.push(prog.clone());
@@ -785,7 +1004,7 @@ impl Runner {
                     notes.push(format!("could not make the supervisor non-dumpable: {}", e));
                 }
 
-                isolate::run(&iso, &prog, &argv_ptr, &envp_ptr, &fds, cloexec)?
+                isolate::run(&iso, &prog, &argv_ptr, &envp_ptr, &fds, cloexec, self.quiet)?
             }
             Mode::Plain => {
                 let prog = resolve_program(program.as_ref())?;
@@ -808,7 +1027,17 @@ impl Runner {
                         Ok(())
                     });
                 }
-                let status = cmd.status()?;
+                // The plain mode is the one path that runs a program
+                // through `std::process::Command`, whose own error text is
+                // the bare errno ("No such file or directory (os error
+                // 2)").  Name the program the same way the redaction path
+                // does, so a typo is attributable (issue 14 N1).
+                let status = cmd.status().map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("{}: {}", program.as_ref().to_string_lossy(), e),
+                    )
+                })?;
                 use std::os::unix::process::ExitStatusExt;
                 if let Some(sig) = status.signal() {
                     ExitState::plain(128 + sig, Some(sig))
@@ -836,11 +1065,12 @@ impl Runner {
             secrets_delivered: fds.len(),
             notes,
             ptrace,
-            // The child restores dumpability before its readiness byte,
-            // and the redaction mode sets PR_SET_DUMPABLE=0 at each exec
-            // only when `--no-dumpable` is set.  A `--secret` run is
-            // therefore dumpable unless the operator asked otherwise.
-            payload_dumpable: !self.no_dumpable,
+            // The field describes what the payload's `PR_GET_DUMPABLE`
+            // returns, not the flag's name: the redaction mode applies
+            // `--no-dumpable` at each exec, the isolate and plain modes
+            // never change dumpability.  Reporting the request made the
+            // document contradict the payload (issue 21).
+            payload_dumpable: mode != Mode::Redact || !self.no_dumpable,
             hardening,
             secrets: secrets_report,
         })

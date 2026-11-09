@@ -130,19 +130,50 @@ const NEUTRAL_HOSTNAME: &[u8] = b"pmask";
 /// also creates the user, mount, UTS, IPC and cgroup namespaces: a refusal
 /// costs nothing and cannot weaken the payload's view.  The three fields
 /// here are the ones a caller can turn off.
-#[derive(Debug, Clone, Copy)]
+///
+/// `none` is not "every field false": it is the `--isolate=none` spelling
+/// and means no namespace, mount, `no_new_privs` or Landlock at all, so a
+/// caller must not enter [`run`] with it.  Every field false is
+/// [`Isolate::minimal`], which still creates the unconditional set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Isolate {
     pub pid: bool,
     pub net: bool,
     pub private_tmp: bool,
+    /// `--isolate=none`: run the payload with the host's view unchanged.
+    /// [`run`] refuses this value; the runner takes a plain exec instead.
+    pub none: bool,
 }
 
 impl Isolate {
-    pub fn all() -> Isolate {
+    /// A named set of the three switchable namespaces.
+    pub fn new(pid: bool, net: bool, private_tmp: bool) -> Isolate {
         Isolate {
-            pid: true,
-            net: true,
-            private_tmp: true,
+            pid,
+            net,
+            private_tmp,
+            none: false,
+        }
+    }
+
+    pub fn all() -> Isolate {
+        Isolate::new(true, true, true)
+    }
+
+    /// No switchable namespace, but the unconditional user, mount, UTS,
+    /// IPC and cgroup namespaces, the private `/dev` and `/proc`,
+    /// Landlock and `no_new_privs` still apply.
+    pub fn minimal() -> Isolate {
+        Isolate::new(false, false, false)
+    }
+
+    /// `--isolate=none`: no isolation at all.
+    pub fn none() -> Isolate {
+        Isolate {
+            pid: false,
+            net: false,
+            private_tmp: false,
+            none: true,
         }
     }
 
@@ -150,6 +181,9 @@ impl Isolate {
     /// uses.  It names what will be *attempted*; the kernel's answer is in
     /// [`Report`].
     pub fn describe(&self) -> String {
+        if self.none {
+            return "none".to_string();
+        }
         let flag = |on: bool| if on { "" } else { "=off" };
         format!(
             "user,mount,pid{},net{},uts,ipc,cgroup,tmp{},landlock,no_new_privs,dev,proc",
@@ -740,6 +774,31 @@ fn write_file(path: &CStr, bytes: &[u8]) -> bool {
     ok
 }
 
+/// Report the failed exec of `prog` and exit 126, naming the program the
+/// same way the redaction path does (issue 14 N1).  `execve` does not
+/// return on success, so this runs with the errno still valid.  The write
+/// uses a fixed stack buffer: the child has forked and must not allocate.
+fn die_exec(prog: &CStr) -> ! {
+    let mut buf = [0u8; 512];
+    let mut n = 0usize;
+    let put = |buf: &mut [u8; 512], n: &mut usize, bytes: &[u8]| {
+        let take = bytes.len().min(buf.len() - *n - 1);
+        buf[*n..*n + take].copy_from_slice(&bytes[..take]);
+        *n += take;
+    };
+    put(&mut buf, &mut n, b"pmask: ");
+    put(&mut buf, &mut n, prog.to_bytes());
+    put(&mut buf, &mut n, b": ");
+    let text = io::Error::last_os_error().to_string();
+    put(&mut buf, &mut n, text.as_bytes());
+    put(&mut buf, &mut n, b"\n");
+    // SAFETY: one write to fd 2, then exit.
+    unsafe {
+        libc::write(2, buf.as_ptr() as *const libc::c_void, n);
+        libc::_exit(126);
+    }
+}
+
 fn die(what: &str) -> ! {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"pmask: isolation: ");
@@ -1154,7 +1213,7 @@ fn payload_child(
     }
     // SAFETY: the final exec of the payload.
     unsafe { libc::execve(prog.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-    die("execve");
+    die_exec(prog);
 }
 
 /// Write `/proc/<pid>/{setgroups,uid_map,gid_map}` from the parent side.
@@ -1188,8 +1247,10 @@ fn write_id_maps(pid: libc::pid_t) -> io::Result<()> {
     Ok(())
 }
 
-/// Read the status frame, then print the effective isolation.
-fn report_and_print(report_r: libc::c_int) {
+/// Read the status frame, then print the effective isolation unless
+/// `quiet` is set.  The pipe is drained either way: the child blocks on a
+/// full pipe otherwise, and a report nobody reads is a hang, not silence.
+fn report_and_print(report_r: libc::c_int, quiet: bool) {
     let total = FRAME_LEN + 2;
     let mut frame = [0u8; FRAME_LEN + 2];
     let mut got = 0usize;
@@ -1212,6 +1273,9 @@ fn report_and_print(report_r: libc::c_int) {
             break;
         }
         got += n as usize;
+    }
+    if quiet {
+        return;
     }
     if got < FRAME_LEN {
         eprintln!(
@@ -1239,12 +1303,18 @@ fn report_and_print(report_r: libc::c_int) {
 /// because both call sites set the descriptors the same way, in the child
 /// between `fork` and `exec`.
 ///
+/// `quiet` drains the status pipe without printing the effective set or
+/// the degradation lines; the payload's exit status is unaffected.
+///
 /// Every mechanism is independent: a namespace, a mount, the hostname,
 /// `PR_SET_NO_NEW_PRIVS` or the filesystem policy can be refused without
 /// stopping the run.  The kernel's answers are printed on stderr as
 /// `pmask: isolation: <set>` before the payload starts, and each
 /// mechanism that did not take effect gets a `pmask: isolation degraded:`
 /// line of its own.
+///
+/// [`Isolate::none`] is refused: it asks for no isolation at all, and the
+/// runner must take its plain exec path instead of entering here.
 pub fn run(
     iso: &Isolate,
     prog: &CStr,
@@ -1252,7 +1322,14 @@ pub fn run(
     envp: &[*const libc::c_char],
     fds: &[libc::c_int],
     cloexec: bool,
+    quiet: bool,
 ) -> io::Result<ExitState> {
+    if iso.none {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "isolate::run refuses Isolate::none: call the plain exec path instead",
+        ));
+    }
     let mut ready: [libc::c_int; 2] = [-1, -1];
     let mut go: [libc::c_int; 2] = [-1, -1];
     let mut report: [libc::c_int; 2] = [-1, -1];
@@ -1356,7 +1433,7 @@ pub fn run(
         return Err(e);
     }
 
-    report_and_print(report[0]);
+    report_and_print(report[0], quiet);
     // SAFETY: the report pipe has been drained.
     unsafe { libc::close(report[0]) };
 
@@ -1419,12 +1496,7 @@ mod tests {
             s,
             "user,mount,pid,net,uts,ipc,cgroup,tmp,landlock,no_new_privs,dev,proc"
         );
-        let off = Isolate {
-            pid: false,
-            net: false,
-            private_tmp: false,
-        }
-        .describe();
+        let off = Isolate::minimal().describe();
         assert_eq!(
             off,
             "user,mount,pid=off,net=off,uts,ipc,cgroup,tmp=off,landlock,no_new_privs,dev,proc"

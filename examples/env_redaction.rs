@@ -1,5 +1,10 @@
 //! Demonstrate that redacted processes still see their real environment.
 //!
+//! Needs ptrace: `/proc/<pid>/environ` can only be redacted by a ptrace
+//! supervisor.  On a host that refuses ptrace this example dies with
+//! `PermissionDenied`; `pmask probe` says so, and `vm/run.sh` gives a host
+//! that allows it.
+//!
 //! The child prints an environment value that is invisible in
 //! /proc/<pid>/environ while it runs (check with:
 //! `tr '\0' '\n' < /proc/<pid>/environ` while the example sleeps).
