@@ -86,12 +86,20 @@
 //! the three client descriptors as 0, 1 and 2.  The daemon opens
 //! `/dev/null` on any of 0, 1 and 2 that is closed at startup.
 //!
-//! # Timeouts
+//! # Timeouts and shutdown
 //!
-//! The accepted socket has `SO_RCVTIMEO` and `SO_SNDTIMEO` set to
-//! `--io-timeout` seconds (default 30; 0 means none).  A client that
-//! stalls during the request is dropped.  `--job-timeout` limits the job
-//! run time.
+//! `--io-timeout` bounds each wait on a client socket (default 30 s;
+//! 0 means no deadline).  The waits are `poll` calls that also watch a
+//! self-pipe, so `SIGTERM` returns from them at once and the shutdown
+//! flag is checked before and after every one.  A daemon that has
+//! accepted a connection therefore stops on `SIGTERM` even when the
+//! client has sent nothing and `--io-timeout 0` left the read with no
+//! deadline of its own.  `--job-timeout` limits the job run time.
+//!
+//! A signal cannot be the only wake: `SA_RESTART` is set on the handler
+//! because a tracer thread must not see `EINTR` from `waitpid`, and the
+//! same flag keeps a blocked `poll` from returning.  The pipe is what
+//! makes the signal visible; the flag is what it means.
 //!
 //! # Socket path
 //!
@@ -181,7 +189,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Which label the client asks for.
@@ -482,6 +490,18 @@ pub const REDACTION_MARGIN: usize = 64 << 10;
 const CLIENT_FDS: usize = 3;
 /// Response code for a refused or failed request.
 const CODE_REFUSED: i32 = 255;
+
+/// The largest accepted `--job-timeout` and `--io-timeout`, in seconds:
+/// ten years.
+///
+/// The deadline is `Instant::now() + Duration`, which panics on overflow.
+/// A ten-year cap is far past any real job and keeps the arithmetic away
+/// from the edge of the clock on every architecture.  `u64::MAX` seconds
+/// is about 5.8e11 years, so the value the operator can type has to be
+/// bounded before the addition, not after it.  `checked_add` in
+/// [`wait_job`] is the second guard, for a value that reaches the config
+/// by another route.
+pub const MAX_TIMEOUT_SECS: u64 = 10 * 365 * 24 * 60 * 60;
 
 const LABEL_DEFAULT: u8 = 0;
 const LABEL_EMPTY: u8 = 1;
@@ -1394,14 +1414,336 @@ pub fn ensure_stdio_open() -> io::Result<()> {
 /// Set by `SIGTERM` and `SIGINT`.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Read end of the self-pipe the signal handler writes to.
+static WAKE_READ: AtomicI32 = AtomicI32::new(-1);
+/// Write end of the self-pipe.
+static WAKE_WRITE: AtomicI32 = AtomicI32::new(-1);
+
 extern "C" fn on_signal(_sig: libc::c_int) {
     SHUTDOWN.store(true, Ordering::SeqCst);
+    wake_notify();
+}
+
+/// Create the self-pipe that wakes a blocked `poll`.
+///
+/// A signal that arrives while the daemon waits in `poll` or in a
+/// connection read has to wake it.  `SA_RESTART` is set because a tracer
+/// thread must not see `EINTR` from `waitpid`, and it also keeps `poll`
+/// from returning on a signal that the kernel restarts — so the flag alone
+/// is not enough, and a client that never sends its request supplies no
+/// other event.  The pipe carries the wake.
+///
+/// Both ends are `O_CLOEXEC` so a job never inherits them, and
+/// `O_NONBLOCK` so the handler can never block: a full pipe means a byte
+/// is already pending, which is all the reader needs.
+fn install_wake_pipe() -> io::Result<()> {
+    if WAKE_READ.load(Ordering::SeqCst) >= 0 {
+        return Ok(());
+    }
+    let mut fds = [0 as RawFd; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe2 fills.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // A fork inherits both descriptors with the same numbers, so a worker
+    // process sees the pipe its own handler writes to.
+    WAKE_READ.store(fds[0], Ordering::SeqCst);
+    WAKE_WRITE.store(fds[1], Ordering::SeqCst);
+    Ok(())
+}
+
+/// The read end, or -1 when the pipe was never installed.
+fn wake_fd() -> RawFd {
+    WAKE_READ.load(Ordering::SeqCst)
+}
+
+/// Wake every `poll` in this process.  Async-signal-safe: one non-blocking
+/// `write` of one byte, and `EAGAIN` is ignored.
+fn wake_notify() {
+    let fd = WAKE_WRITE.load(Ordering::SeqCst);
+    if fd < 0 {
+        return;
+    }
+    let byte = 1u8;
+    // SAFETY: a single write to a descriptor this process owns, from a
+    // buffer that lives for the call.  The descriptor is non-blocking.
+    unsafe {
+        libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+    }
+}
+
+/// Consume the pending wake bytes so the next `poll` waits again.
+fn wake_drain() {
+    let fd = wake_fd();
+    if fd >= 0 {
+        drain_fd(fd);
+    }
+}
+
+/// Read `fd` dry.  Split out so the drain can be tested on a pipe the test
+/// owns, without touching the process-wide one.
+fn drain_fd(fd: RawFd) {
+    let mut buf = [0u8; 64];
+    loop {
+        // SAFETY: a non-blocking read into a local buffer.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            break;
+        }
+    }
+}
+
+/// The error a connection operation returns once the daemon is stopping.
+///
+/// Not `ErrorKind::Interrupted`: `read_exact` retries that kind, so a
+/// shutdown reported that way would be invisible to the caller.
+fn shutdown_error() -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionAborted, "daemon is shutting down")
+}
+
+/// Block until `fd` is readable, the wake pipe fires, or `timeout` passes.
+///
+/// `None` means no timeout.  The wait is a `poll` on both descriptors, so
+/// `SIGTERM` returns from it at once whatever the socket is doing, and the
+/// flag is checked before and after every wait.
+fn wait_readable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
+    wait_readable_on(fd, timeout, wake_fd())
+}
+
+/// [`wait_readable`] with the wake descriptor passed in, so the mechanism
+/// can be tested on a pipe the test owns.  The process-wide pipe is shared
+/// with every daemon in the process, and a test that asserted on it would
+/// race the daemon another test started.
+fn wait_readable_on(fd: RawFd, timeout: Option<Duration>, wfd: RawFd) -> io::Result<()> {
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    loop {
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        let mut pfd = [
+            libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let n: libc::nfds_t = if wfd >= 0 { 2 } else { 1 };
+        let timeout_ms = match deadline {
+            None => -1 as libc::c_int,
+            Some(d) => {
+                let now = Instant::now();
+                match d.checked_duration_since(now) {
+                    Some(left) => left.as_millis().min(i32::MAX as u128) as libc::c_int,
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "the client did not send its request in time",
+                        ))
+                    }
+                }
+            }
+        };
+        // SAFETY: `pfd` has `n` initialised entries.
+        let rc = unsafe { libc::poll(pfd.as_mut_ptr(), n, timeout_ms) };
+        if rc < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if rc == 0 {
+            // The deadline, if any, is reported at the top of the loop.
+            continue;
+        }
+        if n == 2 && pfd[1].revents != 0 {
+            // A wake means "look again": the caller re-checks the
+            // shutdown flag and then comes back here.  Returning is what
+            // makes a signal visible to a wait that has no timeout; the
+            // flag check at the top of the next call is what turns it
+            // into a shutdown.
+            drain_fd(wfd);
+            return Ok(());
+        }
+        if pfd[0].revents != 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// True when the wake pipe in a two-entry poll set has data.
+///
+/// `nfd` is the number of entries poll was given, so a one-entry set
+/// (no wake pipe) never reads past the array.
+fn wake_pending(pfd: &[libc::pollfd; 2], nfd: libc::nfds_t) -> bool {
+    nfd >= 2 && pfd[1].revents != 0
+}
+
+/// A connection whose reads and writes wake on `SIGTERM`.
+///
+/// The socket is non-blocking and every operation first waits in
+/// [`wait_readable`], which polls the wake pipe as well.  That is what
+/// makes `--io-timeout 0` stop being an unbounded block: the read timeout
+/// is `None`, so there is no deadline, but a signal still returns from the
+/// wait.  `SO_RCVTIMEO` is deliberately not used: it has no effect on a
+/// non-blocking socket, and it cannot be armed on the wake pipe.
+struct Conn {
+    stream: UnixStream,
+    read_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+}
+
+impl Conn {
+    fn new(stream: UnixStream, timeout: Option<Duration>) -> Conn {
+        Conn {
+            stream,
+            read_timeout: timeout,
+            write_timeout: timeout,
+        }
+    }
+
+    fn fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.read_timeout = timeout;
+    }
+
+    fn shutdown_write(&self) {
+        // SAFETY: shutdown(2) on a descriptor this process owns.
+        unsafe { libc::shutdown(self.fd(), libc::SHUT_WR) };
+    }
+
+    /// Wait for the socket to be readable and return one `recvmsg`, used
+    /// by the first message so the received descriptors come with it.
+    fn recvmsg_first(&mut self, max: usize) -> io::Result<FirstMessage> {
+        loop {
+            wait_readable(self.fd(), self.read_timeout)?;
+            match recv_first(self.fd(), max) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                other => return other,
+            }
+        }
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            wait_readable(self.fd(), self.read_timeout)?;
+            // SAFETY: one read into the caller's buffer through a
+            // descriptor this process owns.
+            let n =
+                unsafe { libc::read(self.fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            return Ok(n as usize);
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        loop {
+            // SAFETY: one write from the caller's buffer.
+            let n =
+                unsafe { libc::write(self.fd(), buf.as_ptr() as *const libc::c_void, buf.len()) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    wait_writable(self.fd(), self.write_timeout)?;
+                    continue;
+                }
+                return Err(e);
+            }
+            return Ok(n as usize);
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Block until `fd` is writable, the wake pipe fires, or `timeout` passes.
+fn wait_writable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
+    wait_writable_on(fd, timeout, wake_fd())
+}
+
+/// [`wait_writable`] with the wake descriptor passed in; see
+/// [`wait_readable_on`].
+fn wait_writable_on(fd: RawFd, timeout: Option<Duration>, wfd: RawFd) -> io::Result<()> {
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    loop {
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        let mut pfd = [
+            libc::pollfd {
+                fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let n: libc::nfds_t = if wfd >= 0 { 2 } else { 1 };
+        let timeout_ms = match deadline {
+            None => -1 as libc::c_int,
+            Some(d) => match d.checked_duration_since(Instant::now()) {
+                Some(left) => left.as_millis().min(i32::MAX as u128) as libc::c_int,
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "the client did not read its answer in time",
+                    ))
+                }
+            },
+        };
+        // SAFETY: `pfd` has `n` initialised entries.
+        let rc = unsafe { libc::poll(pfd.as_mut_ptr(), n, timeout_ms) };
+        if rc < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if rc == 0 {
+            continue;
+        }
+        if n == 2 && pfd[1].revents != 0 {
+            drain_fd(wfd);
+            return Ok(());
+        }
+        if pfd[0].revents != 0 {
+            return Ok(());
+        }
+    }
 }
 
 /// Install the shutdown handler without `SA_RESTART` for `poll` (poll never
 /// restarts) and with it for everything else, so a tracer thread that
 /// receives the signal does not see `EINTR` from `waitpid`.
 fn install_signal_handlers() -> io::Result<()> {
+    install_wake_pipe()?;
     for sig in [libc::SIGTERM, libc::SIGINT] {
         let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
         sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -1739,16 +2081,29 @@ fn accept_loop(
     while !SHUTDOWN.load(Ordering::SeqCst) {
         reap_workers(&mut workers);
         let full = cfg.jobs > 1 && workers.len() >= cfg.jobs;
-        let mut pfd = libc::pollfd {
-            fd: lfd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let rc = if full {
-            unsafe { libc::poll(&mut pfd, 0, 200) }
+        // The wake pipe is in the same poll as the listener, so SIGTERM
+        // returns from this wait at once even when nothing connects.
+        let wfd = wake_fd();
+        let mut pfd = [
+            libc::pollfd {
+                fd: lfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let nfd: libc::nfds_t = if full {
+            0
+        } else if wfd >= 0 {
+            2
         } else {
-            unsafe { libc::poll(&mut pfd, 1, 500) }
+            1
         };
+        let rc = unsafe { libc::poll(pfd.as_mut_ptr(), nfd, if full { 200 } else { 500 }) };
         if rc < 0 {
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
@@ -1757,7 +2112,14 @@ fn accept_loop(
             }
             continue;
         }
-        if rc == 0 || full {
+        if rc == 0 {
+            continue;
+        }
+        if wake_pending(&pfd, nfd) {
+            wake_drain();
+            continue;
+        }
+        if full {
             continue;
         }
         let stream = match listener.accept() {
@@ -1784,8 +2146,13 @@ fn accept_loop(
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             log_line(cfg, &format!("fork: {}", io::Error::last_os_error()));
-            let mut stream = stream;
-            reject(&mut stream, "pmaskd: cannot start a worker");
+            // The wake pipe may be shared with the other workers; the
+            // refusal is written with the plain stream, which is still
+            // blocking here.
+            let stream = stream;
+            let _ = stream.set_nonblocking(false);
+            let mut conn = Conn::new(stream, None);
+            reject(&mut conn, "pmaskd: cannot start a worker");
             continue;
         }
         if pid == 0 {
@@ -1900,18 +2267,22 @@ pub fn escape_for_log(text: &str, limit: usize) -> String {
 /// Send a refusal and close the connection.  The daemon half-closes and
 /// reads what the client still sends, so the client reads the refusal
 /// instead of a connection reset.
-fn reject(stream: &mut UnixStream, msg: &str) {
-    let _ = write_response(stream, ExitState::plain(CODE_REFUSED, None), msg);
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+fn reject(conn: &mut Conn, msg: &str) {
+    let _ = write_response(conn, ExitState::plain(CODE_REFUSED, None), msg);
+    conn.shutdown_write();
+    // Bounded by the same wake-aware wait: a client that never drains its
+    // own input must not keep the daemon in `reject` either.
+    let saved = conn.read_timeout;
+    conn.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = [0u8; 8192];
     let mut total = 0usize;
     while total < MAX_REQUEST {
-        match stream.read(&mut buf) {
+        match conn.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => total += n,
         }
     }
+    conn.set_read_timeout(saved);
 }
 
 fn close_all(fds: &[RawFd]) {
@@ -1953,7 +2324,7 @@ fn check_job_size(cfg: &DaemonConfig, label: &str, argv: &[OsString]) -> Result<
 
 fn handle_conn(
     cfg: &DaemonConfig,
-    mut stream: UnixStream,
+    stream: UnixStream,
     daemon_uid: u32,
     peer_method: PeerMethod,
 ) -> io::Result<()> {
@@ -1963,14 +2334,18 @@ fn handle_conn(
     } else {
         Some(Duration::from_secs(cfg.io_timeout_secs))
     };
-    stream.set_read_timeout(timeout)?;
-    stream.set_write_timeout(timeout)?;
+    // The socket is non-blocking from here on.  `SO_RCVTIMEO` would not
+    // fire on a non-blocking descriptor, and it cannot be armed on the
+    // wake pipe either, so every wait goes through `wait_readable`, which
+    // watches the socket and the pipe together.
+    stream.set_nonblocking(true)?;
+    let mut conn = Conn::new(stream, timeout);
 
     // Invariant 11: the uid check comes before the request is read.
     let (uid, gid, pid) = peer_cred_full(fd)?;
     let allowed = uid == daemon_uid || uid == 0 || cfg.allow_uids.contains(&uid);
     if !allowed {
-        reject(&mut stream, &format!("pmaskd: uid {} is not allowed", uid));
+        reject(&mut conn, &format!("pmaskd: uid {} is not allowed", uid));
         return Ok(());
     }
     // The pid the kernel recorded at connect is pinned here, and the pin
@@ -1978,7 +2353,7 @@ fn handle_conn(
     let mut pin = PeerPin::take(fd, pid);
     pin.settle();
 
-    let first = recv_first(fd, CLIENT_FDS)?;
+    let first = conn.recvmsg_first(CLIENT_FDS)?;
     if first.version != PROTOCOL_VERSION {
         close_all(&first.fds);
         let msg = if first.version == OLD_BANNER {
@@ -1992,13 +2367,13 @@ fn handle_conn(
                 first.version, PROTOCOL_VERSION
             )
         };
-        reject(&mut stream, &msg);
+        reject(&mut conn, &msg);
         return Ok(());
     }
     if first.truncated {
         close_all(&first.fds);
         reject(
-            &mut stream,
+            &mut conn,
             "pmaskd: too many file descriptors (control data truncated); send exactly 3",
         );
         return Ok(());
@@ -2007,22 +2382,26 @@ fn handle_conn(
         let got = first.fds.len();
         close_all(&first.fds);
         reject(
-            &mut stream,
+            &mut conn,
             &format!("pmaskd: expected exactly 3 file descriptors, got {}", got),
         );
         return Ok(());
     }
 
-    let (label, argv) = match read_any_request(&mut stream) {
+    let (label, argv) = match read_any_request(&mut conn) {
         Ok(Request::Ping) => {
             close_all(&first.fds);
             let status = daemon_status(cfg, uid, daemon_uid, peer_method);
-            return write_response(&mut stream, ExitState::plain(0, None), &status.to_text());
+            return write_response(&mut conn, ExitState::plain(0, None), &status.to_text());
         }
         Ok(Request::Job(label, argv)) => (label, argv),
         Err(e) => {
             close_all(&first.fds);
-            reject(&mut stream, &format!("pmaskd: bad request: {}", e));
+            // A shutdown is not a malformed request: say which it was.
+            if e.kind() == io::ErrorKind::ConnectionAborted {
+                return Ok(());
+            }
+            reject(&mut conn, &format!("pmaskd: bad request: {}", e));
             return Ok(());
         }
     };
@@ -2033,7 +2412,7 @@ fn handle_conn(
     };
     if let Err(why) = check_job_size(cfg, &label_text, &argv) {
         close_all(&first.fds);
-        reject(&mut stream, &format!("pmaskd: job refused: {}", why));
+        reject(&mut conn, &format!("pmaskd: job refused: {}", why));
         return Ok(());
     }
 
@@ -2054,15 +2433,15 @@ fn handle_conn(
     // have been recycled.
     if let Err(e) = pin.revalidate() {
         close_all(&first.fds);
-        reject(&mut stream, &format!("pmaskd: {}", e));
+        reject(&mut conn, &format!("pmaskd: {}", e));
         return Ok(());
     }
 
     match run_job(cfg, uid, gid, &label_text, &argv, &first.fds) {
-        Ok((state, msg)) => write_response(&mut stream, state, &msg),
+        Ok((state, msg)) => write_response(&mut conn, state, &msg),
         Err(e) => {
             let msg = format!("pmaskd: {}", e);
-            write_response(&mut stream, ExitState::plain(CODE_REFUSED, None), &msg)
+            write_response(&mut conn, ExitState::plain(CODE_REFUSED, None), &msg)
         }
     }
 }
@@ -2178,10 +2557,26 @@ fn run_job(
 /// Wait for the job.  Kills the whole tree at `--job-timeout` and at
 /// daemon shutdown.
 fn wait_job(cfg: &DaemonConfig, mut child: MaskedChild) -> io::Result<(ExitState, String)> {
-    let deadline = if cfg.job_timeout_secs == 0 {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_secs(cfg.job_timeout_secs))
+    // `Instant::now() + Duration` panics on overflow, and the panic takes
+    // the daemon down with it (issue 18).  The parse-time cap in
+    // `pmaskd` keeps the operator's number away from that edge; this is
+    // the guard for a caller that sets the field directly.  A deadline
+    // that cannot be represented is treated as "no timeout", with one
+    // warning, because refusing the job after it started is worse than
+    // running it without a limit.
+    let deadline = match job_deadline(Instant::now(), cfg.job_timeout_secs) {
+        Ok(d) => d,
+        Err(secs) => {
+            log_line(
+                cfg,
+                &format!(
+                    "warning: --job-timeout {} s does not fit the clock; the job runs with no \
+                     timeout (the limit is {} s)",
+                    secs, MAX_TIMEOUT_SECS
+                ),
+            );
+            None
+        }
     };
     loop {
         if let Some(state) = child.wait_timeout(Duration::from_millis(250))? {
@@ -2203,6 +2598,22 @@ fn wait_job(cfg: &DaemonConfig, mut child: MaskedChild) -> io::Result<(ExitState
             return Ok((ExitState::plain(137, Some(libc::SIGKILL)), msg));
         }
     }
+}
+
+/// The deadline `secs` seconds after `start`, or the value back when the
+/// addition would overflow.
+///
+/// Split out so the overflow path is testable without waiting for a job:
+/// `Instant::now() + Duration::from_secs(u64::MAX)` panics, and a test
+/// cannot catch a panic that ends the process under test.
+fn job_deadline(start: Instant, secs: u64) -> Result<Option<Instant>, u64> {
+    if secs == 0 {
+        return Ok(None);
+    }
+    start
+        .checked_add(Duration::from_secs(secs))
+        .map(Some)
+        .ok_or(secs)
 }
 
 /// Build the job environment.  With `inherit` the daemon's own
@@ -2676,5 +3087,171 @@ mod tests {
         );
         let e = parse_text_file("emptykey", b"=v\n").unwrap_err();
         assert!(e.to_string().contains("expected KEY=VALUE"), "{}", e);
+    }
+
+    // ------------------------------------------------ job deadlines --
+
+    #[test]
+    fn a_job_timeout_of_zero_means_no_deadline() {
+        assert_eq!(job_deadline(Instant::now(), 0), Ok(None));
+    }
+
+    #[test]
+    fn a_deadline_that_would_overflow_is_reported_not_panicked() {
+        // Issue 18: `Instant::now() + Duration::from_secs(u64::MAX)`
+        // panics, and the panic kills the daemon on its first job.  The
+        // guard has to return the value instead of reaching the add.
+        for secs in [u64::MAX, u64::MAX - 1, 1u64 << 63, (1u64 << 63) + 1] {
+            let got = job_deadline(Instant::now(), secs);
+            assert_eq!(got, Err(secs), "{} s was not refused", secs);
+        }
+    }
+
+    #[test]
+    fn a_deadline_inside_the_clock_is_the_instant_we_asked_for() {
+        let start = Instant::now();
+        let got = job_deadline(start, 60)
+            .expect("60 s must fit")
+            .expect("a deadline");
+        let delta = got.duration_since(start);
+        assert_eq!(delta, Duration::from_secs(60));
+        // The ten-year cap the parser enforces is comfortably inside the
+        // clock, so an accepted value never reaches the overflow path.
+        let cap = job_deadline(start, MAX_TIMEOUT_SECS);
+        assert!(cap.is_ok(), "the accepted cap must not overflow");
+    }
+
+    // ------------------------------------------------ wake ups --
+
+    /// A pipe this test owns, so the assertions do not race the daemon
+    /// another test started (the process-wide pipe is shared with it).
+    fn test_wake_pipe() -> (RawFd, RawFd) {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: `fds` has room for the two descriptors pipe2 fills.
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+            0
+        );
+        (fds[0], fds[1])
+    }
+
+    fn close_pair(p: (RawFd, RawFd)) {
+        // SAFETY: both descriptors belong to this test.
+        unsafe {
+            libc::close(p.0);
+            libc::close(p.1);
+        }
+    }
+
+    #[test]
+    fn a_wake_returns_from_a_wait_that_has_no_timeout() {
+        // Issue 22 in miniature: with `--io-timeout 0` the wait has no
+        // deadline, so nothing but the wake pipe can return from it.  The
+        // pipe is this test's own, so a concurrent daemon cannot drain the
+        // byte first.
+        let (rfd, wfd) = test_wake_pipe();
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let fd = a.as_raw_fd();
+        let waker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let byte = 1u8;
+            // SAFETY: one write to the pipe this test owns.
+            unsafe { libc::write(wfd, &byte as *const u8 as *const libc::c_void, 1) };
+        });
+        let start = Instant::now();
+        let r = wait_readable_on(fd, None, rfd);
+        let elapsed = start.elapsed();
+        waker.join().unwrap();
+        close_pair((rfd, wfd));
+        assert!(r.is_ok(), "{:?}", r);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the wait took {:?}, so the wake did not reach it",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn a_wake_pipe_byte_is_consumed_by_the_drain() {
+        // A leftover byte would make the next poll return at once in a
+        // tight loop, which is a busy wait rather than a wake.
+        let (rfd, wfd) = test_wake_pipe();
+        let byte = 1u8;
+        // SAFETY: one write to a pipe this test owns.
+        assert_eq!(
+            unsafe { libc::write(wfd, &byte as *const u8 as *const libc::c_void, 1) },
+            1
+        );
+        drain_fd(rfd);
+        let mut buf = [0u8; 1];
+        // SAFETY: one non-blocking read from the pipe this test owns.
+        let n = unsafe { libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        close_pair((rfd, wfd));
+        assert_eq!(n, -1, "the drain left a byte behind");
+    }
+
+    #[test]
+    fn a_read_timeout_still_expires_with_the_wake_pipe_in_place() {
+        // The timeout must not be lost when the wake pipe is added to the
+        // poll set.  `--io-timeout 2` depends on this.
+        let (rfd, wfd) = test_wake_pipe();
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let start = Instant::now();
+        let r = wait_readable_on(a.as_raw_fd(), Some(Duration::from_millis(80)), rfd);
+        let elapsed = start.elapsed();
+        close_pair((rfd, wfd));
+        match r {
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{:?}", e),
+            Ok(()) => panic!("a silent socket reported readable"),
+        }
+        assert!(elapsed >= Duration::from_millis(70), "{:?}", elapsed);
+    }
+
+    #[test]
+    fn every_deadline_arithmetic_in_the_daemon_is_guarded() {
+        // The class of defect, not one call site.  Issue 18 was
+        // `Instant::now() + Duration::from_secs(cfg.job_timeout_secs)`,
+        // which panics on the first job when the operator passes a huge
+        // number.  A bare `+` is safe only when its right-hand side is a
+        // compile-time constant: a constant cannot overflow, a config
+        // value can.  The filter is a source scan because the property is
+        // about a shape, and it names every line it rejects so the
+        // failure points at the caller rather than at this test.
+        //
+        // Only production code is scanned: this test's own needle and
+        // messages live after the `#[cfg(test)]` marker.
+        let src = include_str!("daemon.rs");
+        let production = src
+            .split_once("#[cfg(test)]\nmod tests")
+            .map(|(a, _)| a)
+            .unwrap_or(src);
+        // The needle is assembled so this function's own text cannot
+        // match it.
+        let needle = format!("Instant::now() {}", '+');
+        let mut bare: Vec<&str> = Vec::new();
+        for line in production.lines() {
+            let code = match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            };
+            let Some((_, rhs)) = code.split_once(needle.as_str()) else {
+                continue;
+            };
+            let rhs = rhs.trim().trim_end_matches(';').trim();
+            let is_const = !rhs.is_empty()
+                && rhs
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit());
+            if !is_const {
+                bare.push(line.trim());
+            }
+        }
+        assert!(
+            bare.is_empty(),
+            "a non-constant duration reaches the deadline addition: {:?}",
+            bare
+        );
     }
 }

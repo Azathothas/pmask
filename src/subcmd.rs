@@ -66,7 +66,9 @@ Commands (the secret side; these work even where ptrace is refused):
   run [OPTIONS] [--] CMD  run a command; accepts every mask option, plus:
       --secret N=SRC        deliver a secret on descriptor 3, 4, ...; SRC is
                             file:PATH | env:VAR | agent:NAME | stdin | literal:VAL
-                            (repeatable; PMASK_SECRET_<N> names the descriptor)
+                            (repeatable; PMASK_SECRET_<N> names the descriptor).
+                            An unknown 'word:' scheme is delivered as a literal
+                            with one warning naming it
       --socket PATH         secret-agent socket for agent:NAME sources
       --isolate[=LIST]      private namespaces: pid,net,tmp | all | none
       --no-redact           never touch /proc metadata, even where ptrace works
@@ -82,9 +84,11 @@ Commands (the secret side; these work even where ptrace is refused):
   doctor [--json] [--require LIST]
                         the store, the agent and the verdict, in one report.
                         Exit 0 when every requested guarantee is active, 3
-                        when one is degraded, 4 when one is unavailable.
-                        LIST is any of redact, exact, isolate, secret-mem,
-                        mlock, no-new-privs, non-dumpable, landlock.
+                        when one is degraded, 4 when one is unavailable, and
+                        255 for a usage error (an empty --require list is one:
+                        it asserts nothing).  LIST is any of redact, exact,
+                        isolate, secret-mem, mlock, no-new-privs,
+                        non-dumpable, landlock.
 ";
 
 // ------------------------------------------------------------------ probe
@@ -133,7 +137,9 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
             b"--json" => json = true,
             b"-h" | b"--help" => {
                 println!(
-                    "pmask doctor [--json] [--require redact,isolate,exact,secret-mem,mlock,no-new-privs,non-dumpable,landlock]"
+                    "pmask doctor [--json] [--require redact,isolate,exact,secret-mem,mlock,no-new-privs,non-dumpable,landlock]\n\
+                     exit 0 = every requested guarantee is active, 3 = one is degraded,\n\
+                     4 = one is unavailable, 255 = usage error (--require needs a name)"
                 );
                 return 0;
             }

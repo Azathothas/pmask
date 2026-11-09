@@ -158,6 +158,10 @@ Environment: PMASK_NO_SELFMASK=1 disables the redaction of pmask's own
 Secret side (works even where ptrace is refused):
   --secret N=SRC       deliver a secret on descriptor 3, 4, ...  SRC is
                        file:PATH | env:VAR | agent:NAME | stdin | literal:VAL.
+                       A SRC that starts with 'word:' where word is not one
+                       of those schemes is delivered whole as a literal and
+                       one warning names the word; a bare value
+                       (--secret T=abc) is a literal with no warning.
                        Repeatable; PMASK_SECRET_<N> names the descriptor in
                        the child, and `pmask read NAME` prints it there.
   --socket PATH        secret-agent socket for agent:NAME sources.
