@@ -1451,12 +1451,19 @@ fn shutdown_error() -> io::Error {
 /// `SIGTERM` returns from it at once whatever the socket is doing, and the
 /// flag is checked before and after every wait.
 fn wait_readable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
+    wait_readable_on(fd, timeout, wake_fd())
+}
+
+/// [`wait_readable`] with the wake descriptor passed in, so the mechanism
+/// can be tested on a pipe the test owns.  The process-wide pipe is shared
+/// with every daemon in the process, and a test that asserted on it would
+/// race the daemon another test started.
+fn wait_readable_on(fd: RawFd, timeout: Option<Duration>, wfd: RawFd) -> io::Result<()> {
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     loop {
         if SHUTDOWN.load(Ordering::SeqCst) {
             return Err(shutdown_error());
         }
-        let wfd = wake_fd();
         let mut pfd = [
             libc::pollfd {
                 fd,
@@ -1499,12 +1506,12 @@ fn wait_readable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
             continue;
         }
         if n == 2 && pfd[1].revents != 0 {
-            wake_drain();
             // A wake means "look again": the caller re-checks the
             // shutdown flag and then comes back here.  Returning is what
             // makes a signal visible to a wait that has no timeout; the
             // flag check at the top of the next call is what turns it
             // into a shutdown.
+            drain_fd(wfd);
             return Ok(());
         }
         if pfd[0].revents != 0 {
@@ -1618,12 +1625,17 @@ impl Write for Conn {
 
 /// Block until `fd` is writable, the wake pipe fires, or `timeout` passes.
 fn wait_writable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
+    wait_writable_on(fd, timeout, wake_fd())
+}
+
+/// [`wait_writable`] with the wake descriptor passed in; see
+/// [`wait_readable_on`].
+fn wait_writable_on(fd: RawFd, timeout: Option<Duration>, wfd: RawFd) -> io::Result<()> {
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     loop {
         if SHUTDOWN.load(Ordering::SeqCst) {
             return Err(shutdown_error());
         }
-        let wfd = wake_fd();
         let mut pfd = [
             libc::pollfd {
                 fd,
@@ -1662,7 +1674,7 @@ fn wait_writable(fd: RawFd, timeout: Option<Duration>) -> io::Result<()> {
             continue;
         }
         if n == 2 && pfd[1].revents != 0 {
-            wake_drain();
+            drain_fd(wfd);
             return Ok(());
         }
         if pfd[0].revents != 0 {
@@ -2953,36 +2965,47 @@ mod tests {
 
     // ------------------------------------------------ wake ups --
 
-    /// The wake pipe is process-wide, so the tests that use it must not
-    /// run at the same time: one test's drain would eat another's byte.
-    /// (`serve`'s own poll competes for the same pipe, which is exactly
-    /// the production behaviour; the tests below never assert on a count
-    /// that a concurrent daemon could change.)
-    static WAKE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// A pipe this test owns, so the assertions do not race the daemon
+    /// another test started (the process-wide pipe is shared with it).
+    fn test_wake_pipe() -> (RawFd, RawFd) {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: `fds` has room for the two descriptors pipe2 fills.
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+            0
+        );
+        (fds[0], fds[1])
+    }
 
-    fn wake_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        WAKE_TEST.lock().unwrap_or_else(|e| e.into_inner())
+    fn close_pair(p: (RawFd, RawFd)) {
+        // SAFETY: both descriptors belong to this test.
+        unsafe {
+            libc::close(p.0);
+            libc::close(p.1);
+        }
     }
 
     #[test]
     fn a_wake_returns_from_a_wait_that_has_no_timeout() {
         // Issue 22 in miniature: with `--io-timeout 0` the wait has no
-        // deadline, so nothing but the wake pipe can return from it.
-        let _guard = wake_test_lock();
-        install_wake_pipe().expect("pipe2");
-        wake_drain();
+        // deadline, so nothing but the wake pipe can return from it.  The
+        // pipe is this test's own, so a concurrent daemon cannot drain the
+        // byte first.
+        let (rfd, wfd) = test_wake_pipe();
         let (a, _b) = UnixStream::pair().unwrap();
         a.set_nonblocking(true).unwrap();
         let fd = a.as_raw_fd();
-        let waker = std::thread::spawn(|| {
+        let waker = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
-            wake_notify();
+            let byte = 1u8;
+            // SAFETY: one write to the pipe this test owns.
+            unsafe { libc::write(wfd, &byte as *const u8 as *const libc::c_void, 1) };
         });
         let start = Instant::now();
-        let r = wait_readable(fd, None);
+        let r = wait_readable_on(fd, None, rfd);
         let elapsed = start.elapsed();
         waker.join().unwrap();
-        wake_drain();
+        close_pair((rfd, wfd));
         assert!(r.is_ok(), "{:?}", r);
         assert!(
             elapsed < Duration::from_secs(5),
@@ -2994,29 +3017,19 @@ mod tests {
     #[test]
     fn a_wake_pipe_byte_is_consumed_by_the_drain() {
         // A leftover byte would make the next poll return at once in a
-        // tight loop, which is a busy wait rather than a wake.  The test
-        // owns its pipe so a concurrent daemon cannot change the count.
-        let mut fds = [0 as RawFd; 2];
-        // SAFETY: `fds` has room for the two descriptors pipe2 fills.
-        assert_eq!(
-            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
-            0
-        );
+        // tight loop, which is a busy wait rather than a wake.
+        let (rfd, wfd) = test_wake_pipe();
         let byte = 1u8;
         // SAFETY: one write to a pipe this test owns.
         assert_eq!(
-            unsafe { libc::write(fds[1], &byte as *const u8 as *const libc::c_void, 1) },
+            unsafe { libc::write(wfd, &byte as *const u8 as *const libc::c_void, 1) },
             1
         );
-        drain_fd(fds[0]);
+        drain_fd(rfd);
         let mut buf = [0u8; 1];
         // SAFETY: one non-blocking read from the pipe this test owns.
-        let n = unsafe { libc::read(fds[0], buf.as_mut_ptr() as *mut libc::c_void, 1) };
-        // SAFETY: both descriptors belong to this test.
-        unsafe {
-            libc::close(fds[0]);
-            libc::close(fds[1]);
-        }
+        let n = unsafe { libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        close_pair((rfd, wfd));
         assert_eq!(n, -1, "the drain left a byte behind");
     }
 
@@ -3024,14 +3037,13 @@ mod tests {
     fn a_read_timeout_still_expires_with_the_wake_pipe_in_place() {
         // The timeout must not be lost when the wake pipe is added to the
         // poll set.  `--io-timeout 2` depends on this.
-        let _guard = wake_test_lock();
-        install_wake_pipe().expect("pipe2");
-        wake_drain();
+        let (rfd, wfd) = test_wake_pipe();
         let (a, _b) = UnixStream::pair().unwrap();
         a.set_nonblocking(true).unwrap();
         let start = Instant::now();
-        let r = wait_readable(a.as_raw_fd(), Some(Duration::from_millis(80)));
+        let r = wait_readable_on(a.as_raw_fd(), Some(Duration::from_millis(80)), rfd);
         let elapsed = start.elapsed();
+        close_pair((rfd, wfd));
         match r {
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{:?}", e),
             Ok(()) => panic!("a silent socket reported readable"),
