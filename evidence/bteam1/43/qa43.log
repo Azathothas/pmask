@@ -2,8 +2,8 @@
 PASS a1-control-plain-execfn-is-the-real-path (/workspace/wt/bteam1/tests/testcases)
 PASS a1b-control-plain-execfn-equals-env-end
 PASS a2-auxv-serves-the-label (qa43)
-PASS a3-execfn-equals-env-end (ptr=140037055426568 env_end=140037055426568)
-PASS a4-execfn-differs-from-arg-start (ptr=140037055426568 arg_start=140037055426560)
+PASS a3-execfn-equals-env-end (ptr=140048994246664 env_end=140048994246664)
+PASS a4-execfn-differs-from-arg-start (ptr=140048994246664 arg_start=140048994246656)
 PASS a7-second-copy-offset (offset=8 = 1+label+argc)
 PASS a5-payload-getauxval-real-path (/workspace/wt/bteam1/tests/testcases)
 PASS a6-served-and-in-payload-disagree (served=qa43 real=/workspace/wt/bteam1/tests/testcases)
@@ -11,5 +11,5 @@ PASS a8-exe-still-names-the-real-binary (/workspace/wt/bteam1/tests/testcases)
 PASS a9-layout-label-4 (execfn==env_end)
 PASS a9-layout-label-12 (execfn==env_end)
 PASS a10-no-exact-does-not-rewrite-auxv (both views agree: /workspace/wt/bteam1/tests/testcases)
-PASS a11-keep-env-moves-execfn-off-env-end (ptr=139806336155656 env_end=140735172632531)
+PASS a11-keep-env-moves-execfn-off-env-end (ptr=140122918608904 env_end=140734618144723)
 == QA43: PASS
