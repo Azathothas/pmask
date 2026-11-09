@@ -980,8 +980,9 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
     // there.  The mount point has to exist in the fresh tmpfs first.
     // SAFETY: creating a directory inside our own tmpfs.
     let mkdir_rc = unsafe { libc::mkdir(DEV_SHM.as_ptr(), 0o1777 as libc::mode_t) };
-    if mkdir_rc == 0 || last_errno() == libc::EEXIST {
-        if mount_checked(
+    let shm_dir = mkdir_rc == 0 || last_errno() == libc::EEXIST;
+    if shm_dir
+        && mount_checked(
             c"tmpfs".as_ptr(),
             DEV_SHM.as_ptr(),
             c"tmpfs".as_ptr(),
@@ -989,9 +990,8 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
             c"mode=1777".as_ptr() as *const libc::c_void,
         )
         .is_ok()
-        {
-            out.extra |= DE_SHM;
-        }
+    {
+        out.extra |= DE_SHM;
     }
     // Paths that resolve through /proc, so a payload written for a normal
     // /dev keeps working.  A host that already had them is not the case
