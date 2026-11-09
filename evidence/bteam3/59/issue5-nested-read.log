@@ -1,0 +1,14 @@
+$ /workspace/wt/bteam3/target/release/pmask -q -l n1 --secret T=literal:VAL-123 -- /bin/sh -c '/workspace/wt/bteam3/target/release/pmask read T'
+exit=255
+stdout bytes=0
+stderr first line: 
+stderr bytes=11496
+
+$ /workspace/wt/bteam3/target/release/pmask --version (unmasked control)
+pmask 0.1.0-beta.1 (unknown)
+exit=0
+
+# with --detach the nested read works:
+$ /workspace/wt/bteam3/target/release/pmask -q -l n1 --secret T=literal:VAL-123 --detach -- /bin/sh -c '/workspace/wt/bteam3/target/release/pmask read T'
+VAL-123
+exit=0

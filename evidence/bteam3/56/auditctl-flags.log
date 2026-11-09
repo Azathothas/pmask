@@ -1,0 +1,10 @@
+== auditctl -s
+exit=0
+== auditctl -l
+The audit system is disabled
+The audit system is disabled
+exit=0
+== auditctl -e
+Option -e is invalid
+There was an error while processing parameters
+exit=255

@@ -1,0 +1,9 @@
+=== 32-bit payload ===
+sup=57960
+child=57963 comm=testcases32 cmdline=./tests/testcases32|sleeper|MK49C-57959|20| tracer=57962
+exe=/workspace/wt/bteam3/tests/testcases32
+
+=== stderr of the same run ===
+pmask: warning: pid 57996: 32-bit (foreign ABI) program is not redacted
+arg0=[./tests/testcases32] arg1=[echoargs] arg2=[MK49C-MSG] env=[ok]
+pmask: 1 of 1 execs degraded (foreign-arch)

@@ -1,0 +1,12 @@
+--- payload's own PR_GET_DUMPABLE, measured with a C probe ---
+built
+== flags=[]
+PR_GET_DUMPABLE=1
+== flags=[--no-dumpable]
+PR_GET_DUMPABLE=0
+== flags=[--unshare]
+PR_GET_DUMPABLE=1
+== flags=[--unshare --no-dumpable]
+PR_GET_DUMPABLE=0
+== flags=[--no-redact --no-dumpable]
+PR_GET_DUMPABLE=1

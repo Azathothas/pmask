@@ -1,0 +1,7 @@
+leaf=69563 comm=qa49f-69557
+  NSpid: 69563	1
+  mountinfo hidepid: 1
+  mountinfo line: 1859 903 0:131 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=invisible
+  nsenter self-view: Pid:	3 PPid:	2 NSpid:	3 
+  nsenter /proc/1/cmdline: [qa49f-69557 ]
+  host cmdline: [qa49f-69557|]

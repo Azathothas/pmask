@@ -1,0 +1,33 @@
+=== no-dumpable ===
+flag=[--no-dumpable] sup=56149 pay=56152
+environ open=denied (head: cannot open '/proc/56152/environ' for reading: Permission denied)
+maps open=denied (head: cannot open '/proc/56152/maps' for reading: Permission denied)
+auxv open=denied (head: cannot open '/proc/56152/auxv' for reading: Permission denied)
+exe open=denied (head: cannot open '/proc/56152/exe' for reading: Permission denied)
+fd open=denied (ls: cannot open directory '/proc/56152/fd': Permission denied)
+environ access=no
+maps access=yes
+auxv access=no
+exe access=no
+fd access=no
+stat48_51=0 0 0 0
+cmdline=qa44b-56148|
+comm=qa44b-56148
+status_state=S (sleeping)
+
+=== control (no flag) ===
+flag=[] sup=56204 pay=56207
+environ open=ok
+maps open=ok
+auxv open=ok
+exe open=ok
+fd open=ok
+environ access=yes
+maps access=yes
+auxv access=yes
+exe access=yes
+fd access=yes
+stat48_51=140415853076480 140415853076492 140415853076494 140415853076494
+cmdline=qa44b-56203|
+comm=qa44b-56203
+status_state=S (sleeping)

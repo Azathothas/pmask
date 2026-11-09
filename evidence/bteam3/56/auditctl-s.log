@@ -1,0 +1,3 @@
+$ auditctl -s
+You must be root to run this program.
+exit=4
