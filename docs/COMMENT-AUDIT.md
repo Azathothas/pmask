@@ -68,7 +68,31 @@ match on the quoted text, not the number.
   (issue 24, `qa/fix3` commit `a487a5a`, and `man/pmaskd.8`).
   The heading is the only "ownership" claim; the prose itself is correct.
 
-### 6. `read_main` exit status is incomplete
+### 6. `--no-dumpable` claims a false report field
+
+- File: `src/run.rs`, lines 348 and 349
+- Current:
+  ``/// (`--no-dumpable`), so the report's `payload_dumpable` is false.``
+- Replacement:
+  ``/// (`--no-dumpable`). The redaction mode makes the report field false;``
+  ``/// isolate and plain mode leave the payload dumpable and say so.``
+- Why: `qa/fix2` changes the field to
+  `payload_dumpable: mode != Mode::Redact || !self.no_dumpable`
+  (`src/run.rs:1104` in that branch). In isolate or plain mode the field is
+  true even when `--no-dumpable` was requested, so the first line is wrong.
+  The two lines that follow it are already correct.
+
+### 7. Same claim at the outcome
+
+- File: `src/run.rs`, line 841
+- Current:
+  `// therefore dumpable unless the operator asked otherwise.`
+- Replacement:
+  `// therefore dumpable in isolate and plain mode, and dumpable in`
+  `// redaction mode unless the operator asked otherwise.`
+- Why: same field and same `qa/fix2` change as item 6.
+
+### 8. `read_main` exit status is incomplete
 
 - File: `src/secret.rs`, line 719
 - Current:
@@ -86,7 +110,7 @@ match on the quoted text, not the number.
 These comments are wrong in `qa-base` and already deleted by `qa/fix1`.
 Listed so the reconciler does not restore them while resolving conflicts.
 
-### 7. `SIGSTOP` handshake
+### 9. `SIGSTOP` handshake
 
 - File: `src/tracer.rs`, lines 360 to 362
 - Current:
@@ -95,7 +119,7 @@ Listed so the reconciler does not restore them while resolving conflicts.
 - State after merge: the whole paragraph is replaced by the
   `PTRACE_INTERRUPT` description in `qa/fix1` commit `d0cadd7`.
 
-### 8. Second `SIGSTOP` mention
+### 10. Second `SIGSTOP` mention
 
 - File: `src/tracer.rs`, line 484
 - Current:
@@ -110,11 +134,6 @@ Listed so the reconciler does not restore them while resolving conflicts.
   `src/mask.rs:1042`, `.name("pmask-tracer".into())`. No comment claims a
   different name, and no fix branch renames the thread. Issue 38 is a
   research finding, not a documentation defect.
-- `--no-dumpable` and `payload_dumpable`: the comments at
-  `src/run.rs:559` and `src/run.rs:841` describe the request; after
-  `qa/fix2` the report field is computed from the selected mode, and the
-  comments there are updated in that branch. No stale copy remains in
-  `qa-base` other than the two rename claims above.
 - Test counts: I found no comment in `src/` that states a test or case
   count. The suite counts live in `tests/` and `evidence/`, not in source
   comments.
@@ -125,7 +144,7 @@ Listed so the reconciler does not restore them while resolving conflicts.
   `--memfd-name` flag; if that branch is dropped, the comments are already
   correct and the two replacements must not be applied.
 - Whether the reconciler keeps the `qa/fix1` handshake hunk verbatim. Items
-  7 and 8 are correct only if that hunk survives the merge.
+  9 and 10 are correct only if that hunk survives the merge.
 
 ## Evidence
 
