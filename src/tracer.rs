@@ -532,13 +532,18 @@ impl Tracer {
         let status = match wait_master_stop(master) {
             Ok(s) => s,
             Err(e) => {
-                // SAFETY: the descriptor and the pipe end are owned by
-                // this call.
+                // The master is seized and stopped or running, and the
+                // table does not own it yet.  Invariant 5: never leave a
+                // stopped-and-forgotten tracee, so kill and reap it here.
+                // SAFETY: the descriptor, the pipe end and our own child.
                 unsafe {
                     libc::close(go_fd);
                     if report_fd >= 0 {
                         libc::close(report_fd);
                     }
+                    libc::kill(master, libc::SIGKILL);
+                    let mut st = 0i32;
+                    libc::waitpid(master, &mut st, libc::__WALL);
                 }
                 return Err(e);
             }
