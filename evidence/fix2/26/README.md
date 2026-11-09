@@ -27,3 +27,12 @@ Commit: `b6822b1 fix: compose redaction with the requested namespaces`.
 ./target/release/pmask --isolate=none -- /bin/sh -c 'grep ^NoNewPrivs /proc/self/status; readlink /proc/self/ns/user'
 sh tests/qa.d/26.sh    # exit 0, FAIL=0
 ```
+
+## Suite change
+
+`tests/isolation.sh` I1 asserted `--isolate=none` still produced the
+unconditional namespace report (`pid=off,net=off,tmp=off`). That assertion
+encoded the defect, so it now runs `--isolate=pid` for the off-switch case
+and adds `i1-none-means-no-isolation` (no report, `NoNewPrivs=0`). The I4
+comment that said `--isolate=none` still creates a UTS namespace is
+corrected.
