@@ -1,0 +1,20 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa14-n1-control-redact-names-the-program
+FAIL qa14-n1-plain-names-the-program (err=pmask: No such file or directory (os error 2)|)
+FAIL qa14-n1-isolate-names-the-program (err=pmask: isolation: execve: No such file or directory (os error 2)|pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2|)
+PASS qa14-n2-long-comm-refused-redact
+FAIL qa14-n2-long-comm-refused-plain (rc=0 err=)
+FAIL qa14-n2-long-comm-refused-isolate (rc=0 err=pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2|)
+FAIL qa14-n3-keep-env-space-form-before-a-command-is-refused (rc=127 err=pmask: cannot exec 'PATH': 2|)
+PASS qa14-n3-control-bare-keep-env-keeps-everything
+PASS qa14-n3-control-inline-form-keeps-one-name
+FAIL qa14-n4-args-from-fd-names-the-value (rc=255 err=pmask: --args-from-fd needs a file descriptor number|)
+FAIL qa14-n4-image-from-fd-names-the-value (rc=255 err=pmask: --image-from-fd needs a file descriptor number|)
+FAIL qa14-n5-help-short-is-smaller (short=11496 full=11496)
+PASS qa14-n5-help-short-lists-the-options
+PASS qa14-n5-help-topic-isolate
+FAIL qa14-n5-unknown-topic-is-refused (rc=0)
+FAIL qa14-n6-examples-name-ptrace (no ptrace note: basic_mask env_redaction supervise)
+FAIL qa14-n7-verbose-lines-carry-a-timestamp ([pmask 3790272] pid 3790276: entry pointer-swap (ELF) argc=1 envc=39)
+FAIL qa14-n8-vm-run-builds-offline (no --locked --offline in the build line)
+== VERDICT: FAIL=12 ==

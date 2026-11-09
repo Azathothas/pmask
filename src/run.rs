@@ -698,6 +698,19 @@ impl Runner {
                     .to_string(),
             );
         }
+        // `--no-redact --isolate`: the pair used to select plain mode
+        // before the namespace request was read, so the isolation vanished
+        // (issue 20).  It now runs the isolation path; say that the
+        // redaction half was the operator's choice and the namespace half
+        // was delivered, so neither is inferred from an absence.
+        if self.force_mode == Some(Mode::Plain) && mode == Mode::Isolate && self.isolate.is_some() {
+            notes.push(
+                "--no-redact was honoured and --isolate still applies: isolation does not \
+                 need ptrace, so the payload gets its namespaces and its /proc metadata \
+                 stays visible"
+                    .to_string(),
+            );
+        }
         // A label is a /proc presentation, so it exists only where /proc is
         // redacted.  The isolate and plain modes cannot apply it to the
         // payload; say so instead of dropping it silently.

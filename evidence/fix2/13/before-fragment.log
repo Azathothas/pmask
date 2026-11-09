@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa13-probe-with-denied-ptrace-exits-zero
+FAIL qa13-exact-row-is-na (row=[  exact cmdline window     active       ])
+FAIL qa13-exact-row-explains (row=[  exact cmdline window     active       ])
+PASS qa13-exact-row-is-present
+FAIL qa13-doctor-exact-degraded (rc=0 out=pmask capability report|  arch=x86_64 kernel=6.12.113+deb13-amd64 tier=sealed-fds||  secret fds               active       |  memfd_secret             active       |  mlock                    active       |  non-dumpable             active       |  metadata redaction       unavailable  ptrace is ban)
+FAIL qa13-doctor-exact-json (rc=0 json exit=[0])
+PASS qa13-control-redaction-active-keeps-the-row [  exact cmdline window     active       ]
+PASS qa13-control-doctor-exact-ok (exit 0)
+== VERDICT: FAIL=4 ==

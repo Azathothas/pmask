@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa9-control-stdout-carries-the-payload-first
+PASS qa9-control-interleaving-breaks-json
+PASS qa9-report-file-run-exits-zero
+PASS qa9-report-file-parses
+PASS qa9-report-file-keeps-payload
+PASS qa9-report-file-carries-the-mode
+PASS qa9-report-fd-run-exits-zero
+PASS qa9-report-fd-parses
+PASS qa9-report-fd-keeps-payload
+PASS qa9-bad-path-refused
+PASS qa9-bad-fd-refused
+PASS qa9-no-report-without-flag
+== VERDICT: FAIL=0 ==

@@ -167,6 +167,13 @@ Implies
 .TP
 .BI \-\-image\-from\-fd " N"
 Read the program bytes from descriptor N.
+The payload's
+.B argv[0]
+is the placeholder
+.B "<fd image>"
+unless
+.B \-\-argv0
+gives one, because a descriptor has no path to name.
 Implies
 .BR \-\-rexec .
 .TP
@@ -213,11 +220,12 @@ refused, except
 .BR \-\-secret\-close\-on\-exec ,
 which needs the tracer and is refused in plain and isolate modes.
 .TP
-.BI \-\-secret " N=SRC"
+.BI \-\-secret " NAME=SRC"
 Deliver a secret on descriptor 3, 4, ...; the child's environment
 variable
-.B PMASK_SECRET_<NAME>=<fd>
-holds the descriptor number.
+.B PMASK_SECRET_<NAME>
+holds the descriptor number, where NAME is the secret name upper-cased
+with every non-alphanumeric byte turned into an underscore.
 SRC is one of
 .BR file: PATH ,
 .BR env: VAR ,
@@ -250,14 +258,22 @@ Run the payload in fresh namespaces:
 |
 .B none
 (default all).
+.B none
+means no isolation at all: no namespace is created, and the payload
+runs without
+.B no_new_privs
+and without a Landlock policy.
+A host that cannot create user namespaces runs the plain path and says
+so.
 .TP
 .B \-\-redact
 Ask for /proc redaction explicitly (the default).
 With
 .B \-\-isolate
-it is the composed spelling of
-.BR \-\-unshare :
-the label and a private pid namespace and procfs in one run.
+it composes: the tree is redacted and the payload gets exactly the
+namespaces LIST names, in one run.
+A LIST the host cannot grant is reported as a degradation, never
+replaced by a different set.
 .TP
 .B \-\-no\-redact
 Never touch /proc metadata, even where ptrace works.
@@ -302,11 +318,19 @@ never a zero.
 Needs the redaction mode; a plain or isolate run refuses the flag.
 .TP
 .BI \-\-report " json"
-Print the run as one JSON object on stdout.
+Print the run as one JSON object on stdout, after the payload has
+exited; a payload that writes to stdout shares fd 1 with it, so use
+.B \-\-report\-file
+or
+.B \-\-report\-fd
+when a consumer has to parse the document.
 .B text
 and
 .B plain
-select the default human-readable output.
+are refused with exit status 255: the human-readable form is the
+default
+.B "pmask: mode=..."
+summary on stderr.
 The report is produced by the secret-side runner, so it needs
 .BR \-\-secret ,
 .B \-\-isolate
@@ -315,6 +339,22 @@ or
 A plain mask run and a
 .B \-\-daemon
 job refuse the flag with exit status 255.
+.TP
+.BI \-\-report\-file " PATH"
+Write the
+.B \-\-report
+document to PATH instead of stdout, so the payload keeps fd 1 to itself.
+The file is opened before the payload runs; a path that cannot be
+written is a usage error and the payload does not start.
+.TP
+.BI \-\-report\-fd " N"
+Write the
+.B \-\-report
+document to descriptor N, which is inherited by
+.B pmask
+and closed afterwards.
+A descriptor that is not open is a usage error and the payload does not
+start.
 .SH SUBCOMMANDS
 .TP
 .B run " [OPTIONS] [--] CMD"
@@ -343,6 +383,9 @@ and, for
 .BR "set" ,
 .BI \-\-from\-file " P"
 (the value then comes from P instead of stdin).
+Exit status: 0 on success, 1 when the store holds no secret under the
+requested name, and 255 for a usage error, an unreadable store or a
+wrong passphrase, the same convention the supervised run uses.
 .TP
 .B agent " [OPTIONS]"
 Hold the store unlocked and serve it over a socket.
@@ -443,9 +486,10 @@ and
 .B \-\-label\-empty
 have no effect there and produce a warning.
 .BR \-\-secret ,
-.B \-\-isolate
-and
+.BR \-\-isolate ,
 .B \-\-no\-redact
+and
+.B \-\-image
 are refused with exit status 255, because the daemon cannot honour
 them.
 .B \-\-report

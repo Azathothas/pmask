@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.05s
+PASS qa21-plain-run-exits-zero
+FAIL qa21-plain-reports-dumpable (report says [false], the payload is dumpable in plain mode)
+PASS qa21-note-says-not-applied
+PASS qa21-plain-payload-is-dumpable (PR_GET_DUMPABLE=1)
+PASS qa21-redact-honours-the-request (payload_dumpable=false)
+PASS qa21-redact-payload-is-not-dumpable (PR_GET_DUMPABLE=0)
+== VERDICT: FAIL=1 ==

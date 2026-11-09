@@ -1,0 +1,15 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa9-control-stdout-carries-the-payload-first
+PASS qa9-control-interleaving-breaks-json
+FAIL qa9-report-file-run-exits-zero (rc=255 err=pmask: unknown option --report-file|)
+FAIL qa9-report-file-parses ()
+FAIL qa9-report-file-keeps-payload (stdout=[])
+sed: can't read /tmp/qa9.3788172/rep.json: No such file or directory
+FAIL qa9-report-file-carries-the-mode (mode=[])
+FAIL qa9-report-fd-run-exits-zero (rc=255 err=pmask: unknown option --report-fd|)
+FAIL qa9-report-fd-parses ()
+FAIL qa9-report-fd-keeps-payload (stdout=[])
+PASS qa9-bad-path-refused
+PASS qa9-bad-fd-refused
+PASS qa9-no-report-without-flag
+== VERDICT: FAIL=7 ==

@@ -113,7 +113,9 @@ Options:
                        an interpreter that opens a path.  Implies --rexec.
       --image-from-fd N
                        Read the program bytes from descriptor N.  Implies
-                       --rexec.
+                       --rexec.  The payload's argv[0] is the placeholder
+                       '<fd image>' unless --argv0 gives one, because a
+                       descriptor has no path to name.
       --exec-once      Reuse one sealed image per distinct program, keyed
                        by the resolved path and its mtime, across the
                        execs of the session.  Later execs use a guarded
@@ -380,6 +382,33 @@ fn parse_on_exit(v: &[u8]) -> SessionEnd {
     }
 }
 
+/// True when `s` is a plausible `--keep-env` name list: one or more
+/// non-empty names of `[A-Za-z0-9_]`, separated by commas.  Used only to
+/// explain a command line that almost certainly meant the inline form.
+fn looks_like_env_names(s: &[u8]) -> bool {
+    !s.is_empty()
+        && s.split(|&b| b == b',').all(|n| {
+            !n.is_empty()
+                && n.iter()
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.')
+        })
+}
+
+/// Check a `comm` name the way `Mask::validate` does, at parse time.
+///
+/// `--no-redact` and `--isolate` never build a `Mask`, so the mask's own
+/// validation never runs in those modes: `--comm` over 15 bytes was
+/// accepted by plain mode and refused by redaction mode (issues 14 N2 and
+/// 33).  The parser is the one place every mode shares.
+fn check_comm(comm: &str) {
+    if comm.len() > pmask::COMM_MAX {
+        die("comm must be at most 15 bytes");
+    }
+    if comm.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+        die("comm must not contain NUL, LF or CR bytes");
+    }
+}
+
 fn note_opt(list: &mut Vec<&'static str>, name: &'static str) {
     if !list.contains(&name) {
         list.push(name);
@@ -467,12 +496,38 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "comm" => {
                     let v = take_value("--comm", inline, &argv, &mut i);
-                    mask = mask.comm(label_from(&v));
+                    let c = label_from(&v);
+                    check_comm(&c);
+                    mask = mask.comm(c);
                     note_opt(&mut mask_opts, "--comm");
                 }
                 "keep-env" => {
                     match inline {
-                        None => mask = mask.keep_environ_visible(),
+                        None => {
+                            // `--keep-env PATH` (the space form) keeps the
+                            // whole environment and makes PATH the program.
+                            // When the word after the value is the `--`
+                            // separator and a command follows it, the
+                            // value cannot be the program the operator
+                            // meant: they wrote the inline form with a
+                            // space, and the run would fail on a name that
+                            // looks like a program (issue 14 N3).  Name the
+                            // spelling rather than guess.
+                            if let (Some(next), Some(after)) = (argv.get(i + 1), argv.get(i + 2)) {
+                                if after.as_bytes() == b"--"
+                                    && argv.len() > i + 3
+                                    && looks_like_env_names(next.as_bytes())
+                                {
+                                    die(&format!(
+                                        "--keep-env takes no value; did you mean \
+                                         --keep-env={}?  The space form keeps the whole \
+                                         environment and treats the next word as the program",
+                                        next.to_string_lossy()
+                                    ));
+                                }
+                            }
+                            mask = mask.keep_environ_visible();
+                        }
                         Some(list) => {
                             let names: Vec<String> = list
                                 .split(|&b| b == b',')

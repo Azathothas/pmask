@@ -1,0 +1,7 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa20-run-exits-zero
+PASS qa20-mode-is-isolate
+PASS qa20-user-namespace-private (inside=user:[4026533050] host=user:[4026532593])
+PASS qa20-note-names-the-pair
+PASS qa20-control-plain-keeps-the-host-user-ns (user:[4026532593])
+== VERDICT: FAIL=0 ==

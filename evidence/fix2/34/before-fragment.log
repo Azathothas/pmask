@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+INFO qa34-wrapper: real seccomp filter
+PASS qa34-session-still-fails (exit 255)
+FAIL qa34-error-names-the-reason (err=pmask: session error: Operation not permitted (os error 1)|)
+FAIL qa34-error-points-at-secret (err=pmask: session error: Operation not permitted (os error 1)|)
+PASS qa34-keeps-the-session-error-line
+PASS qa34-secret-run-still-works (the advice is true)
+PASS qa34-control-the-unfiltered-host-redacts
+== VERDICT: FAIL=2 ==
