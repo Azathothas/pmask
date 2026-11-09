@@ -125,13 +125,20 @@ Options that matter most:
 | `--secret-burn` | let a cooperating reader truncate the value once and never grow it back |
 | `--secret-close-on-exec` | close the descriptor in each direct child of the payload at its fork, not in the payload; needs the ptrace supervisor, so plain and isolate modes refuse it |
 | `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
-| `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
+| `--report=json` | print the run as one JSON object, including `mode` and `mode_reason`, after the payload exits; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
 | `--audit` | print one residue row per tracee at each exec completion, then a residue count naming the interfaces the tree still discloses; needs the redaction mode |
 
 `--args-from-fd` matters for shell history as well: a command read from
 a descriptor never appears in `ps` or in `.bash_history`. How the
 descriptor is filled is the caller's business. `man pmask.1` has the full
 option list.
+
+`--report=json` writes its document to standard output after the payload
+has exited, so a payload that writes to standard output shares fd 1 with
+the report. A consumer that parses the stream sees the payload's bytes
+first, and a `| tee` keeps both. Send the payload's own output somewhere
+else, or read the final JSON object, when a parser must have the document
+alone.
 
 ### 2. Library: supervise from your own program
 
