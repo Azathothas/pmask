@@ -22,6 +22,21 @@ TESTS_DIR=$(pwd)
 FAIL=0
 N=0
 
+# The fragments assert what a *same-uid* observer can and cannot see: an
+# EACCES set, four zeroed stat fields, a refused `/proc/<pid>/mem`.  Root
+# with CAP_SYS_PTRACE reads all of it, so those rows cannot be decided as
+# root, and a suite that "fails" there is reporting the observer, not the
+# code.  The project's own suites skip the same cases per row (#35); this
+# dispatcher skips the whole batch once, with the reason, and the
+# unprivileged run is the one that decides them.
+if [ -r ./lib.sh ]; then
+    . ./lib.sh
+    if root_peer_observer; then
+        echo "SKIP qa fragments ($ROOT_PEER_REASON)"
+        exit 0
+    fi
+fi
+
 # live_tree_procs: pids whose argv names this tree's testcases binary.
 live_tree_procs() {
     for d in /proc/[0-9]*; do
