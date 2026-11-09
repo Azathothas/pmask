@@ -1,0 +1,9 @@
+PASS qa11-typo-warns (pmask: warning: --secret TOK: 'flie:' is not a known secret scheme (literal:, file:, env:, agent:, daemon:); the value is delivered as a literal)
+PASS qa11-typo-warning-names-known
+PASS qa11-typo-still-delivers (flie:/x)
+PASS qa11-bare-value-silent
+PASS qa11-bare-path-silent
+PASS qa11-known-scheme-silent
+PASS qa11-quiet-suppresses
+PASS qa11-refusal-names-the-run (rc=255)
+== VERDICT: 0 failure(s) ==

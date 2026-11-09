@@ -357,6 +357,11 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut args_fd: Option<libc::c_int> = None;
     let mut env_overrides: Vec<(OsString, OsString)> = Vec::new();
     let mut secrets: Vec<(String, Source)> = Vec::new();
+    // `(secret name, scheme word)` for every `--secret` whose source
+    // looked like it named a scheme this build does not know.  The
+    // warning is printed after the whole vector is parsed, so the last
+    // `-q` in the command line decides whether it appears.
+    let mut unknown_schemes: Vec<(String, String)> = Vec::new();
     let mut agent_socket: Option<PathBuf> = None;
     let mut allow_argv_secret = false;
     let mut secret_burn = false;
@@ -572,8 +577,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "secret" => {
                     let v = take_value("--secret", inline, &argv, &mut i);
-                    match Source::parse(&String::from_utf8_lossy(&v)) {
-                        Ok(pair) => secrets.push(pair),
+                    match Source::parse_spec(&String::from_utf8_lossy(&v)) {
+                        Ok((name, source, unknown)) => {
+                            if let Some(scheme) = unknown {
+                                unknown_schemes.push((name.clone(), scheme));
+                            }
+                            secrets.push((name, source));
+                        }
                         Err(e) => die(&format!("--secret: {}", e)),
                     }
                 }
@@ -709,6 +719,20 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
 
     if image_program.is_some() && args_fd.is_some() {
         die("--image and --args-from-fd are exclusive");
+    }
+
+    // A typo'd scheme is delivered as a literal, which is data, not an
+    // error: `--secret TOK=flie:/etc/passwd` must not fail a run that
+    // would otherwise work.  Invariant 13 still applies, so it is said
+    // out loud, and the message names the word and the schemes that do
+    // exist.
+    if !quiet {
+        for (name, scheme) in &unknown_schemes {
+            eprintln!(
+                "pmask: {}",
+                pmask::secret::unknown_scheme_warning(name, scheme)
+            );
+        }
     }
 
     let reexec_argv: Vec<OsString> = argv
