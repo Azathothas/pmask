@@ -1,0 +1,11 @@
+PASS qa18-huge-timeout-refused (rc=255, pmaskd: --job-timeout is 9223372036854775807 s; the limit is 315360000)
+PASS qa18-huge-timeout-daemon-survives (the value is refused, so no job can reach the deadline)
+PASS qa18-client-sees-a-status (no daemon accepted the value, so no client can be left waiting)
+PASS qa18-refusal-names-the-flag (pmaskd: --job-timeout is 9223372036854775807 s; the limit is 315360000)
+PASS qa18-no-socket-left
+PASS qa18-huge-io-timeout-refused (rc=255)
+PASS qa18-boundary-accepted (315360000 s starts and serves, rc=3)
+PASS qa18-just-over-refused (rc=255)
+PASS qa18-control-normal-timeout (rc=7 passes through)
+PASS qa18-socket-removed-on-shutdown
+== VERDICT: 0 failure(s) ==

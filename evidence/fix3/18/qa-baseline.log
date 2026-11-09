@@ -1,0 +1,11 @@
+FAIL qa18-huge-timeout-refused (the daemon bound a socket, so the value was accepted)
+FAIL qa18-huge-timeout-daemon-survives (rc=255, alive=0, err=pmask: daemon /tmp/pmask-qa18.Hpav60/j.sock: failed to fill whole buffer)
+FAIL qa18-client-sees-a-status (the client reported the truncated-response error)
+FAIL qa18-refusal-names-the-flag ()
+FAIL qa18-no-socket-left (/tmp/pmask-qa18.Hpav60/j.sock exists after a refused start)
+FAIL qa18-huge-io-timeout-refused (the daemon bound a socket)
+PASS qa18-boundary-accepted (315360000 s starts and serves, rc=3)
+FAIL qa18-just-over-refused (the daemon bound a socket at 315360001 s)
+PASS qa18-control-normal-timeout (rc=7 passes through)
+PASS qa18-socket-removed-on-shutdown
+== VERDICT: 7 failure(s) ==

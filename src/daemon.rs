@@ -427,6 +427,18 @@ const CLIENT_FDS: usize = 3;
 /// Response code for a refused or failed request.
 const CODE_REFUSED: i32 = 255;
 
+/// The largest accepted `--job-timeout` and `--io-timeout`, in seconds:
+/// ten years.
+///
+/// The deadline is `Instant::now() + Duration`, which panics on overflow.
+/// A ten-year cap is far past any real job and keeps the arithmetic away
+/// from the edge of the clock on every architecture.  `u64::MAX` seconds
+/// is about 5.8e11 years, so the value the operator can type has to be
+/// bounded before the addition, not after it.  `checked_add` in
+/// [`wait_job`] is the second guard, for a value that reaches the config
+/// by another route.
+pub const MAX_TIMEOUT_SECS: u64 = 10 * 365 * 24 * 60 * 60;
+
 const LABEL_DEFAULT: u8 = 0;
 const LABEL_EMPTY: u8 = 1;
 const LABEL_TEXT: u8 = 2;
@@ -2107,10 +2119,26 @@ fn run_job(
 /// Wait for the job.  Kills the whole tree at `--job-timeout` and at
 /// daemon shutdown.
 fn wait_job(cfg: &DaemonConfig, mut child: MaskedChild) -> io::Result<(ExitState, String)> {
-    let deadline = if cfg.job_timeout_secs == 0 {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_secs(cfg.job_timeout_secs))
+    // `Instant::now() + Duration` panics on overflow, and the panic takes
+    // the daemon down with it (issue 18).  The parse-time cap in
+    // `pmaskd` keeps the operator's number away from that edge; this is
+    // the guard for a caller that sets the field directly.  A deadline
+    // that cannot be represented is treated as "no timeout", with one
+    // warning, because refusing the job after it started is worse than
+    // running it without a limit.
+    let deadline = match job_deadline(Instant::now(), cfg.job_timeout_secs) {
+        Ok(d) => d,
+        Err(secs) => {
+            log_line(
+                cfg,
+                &format!(
+                    "warning: --job-timeout {} s does not fit the clock; the job runs with no \
+                     timeout (the limit is {} s)",
+                    secs, MAX_TIMEOUT_SECS
+                ),
+            );
+            None
+        }
     };
     loop {
         if let Some(state) = child.wait_timeout(Duration::from_millis(250))? {
@@ -2132,6 +2160,22 @@ fn wait_job(cfg: &DaemonConfig, mut child: MaskedChild) -> io::Result<(ExitState
             return Ok((ExitState::plain(137, Some(libc::SIGKILL)), msg));
         }
     }
+}
+
+/// The deadline `secs` seconds after `start`, or the value back when the
+/// addition would overflow.
+///
+/// Split out so the overflow path is testable without waiting for a job:
+/// `Instant::now() + Duration::from_secs(u64::MAX)` panics, and a test
+/// cannot catch a panic that ends the process under test.
+fn job_deadline(start: Instant, secs: u64) -> Result<Option<Instant>, u64> {
+    if secs == 0 {
+        return Ok(None);
+    }
+    start
+        .checked_add(Duration::from_secs(secs))
+        .map(Some)
+        .ok_or(secs)
 }
 
 /// Build the job environment.  With `inherit` the daemon's own
@@ -2518,5 +2562,83 @@ mod tests {
         );
         let e = parse_text_file("emptykey", b"=v\n").unwrap_err();
         assert!(e.to_string().contains("expected KEY=VALUE"), "{}", e);
+    }
+
+    // ------------------------------------------------ job deadlines --
+
+    #[test]
+    fn a_job_timeout_of_zero_means_no_deadline() {
+        assert_eq!(job_deadline(Instant::now(), 0), Ok(None));
+    }
+
+    #[test]
+    fn a_deadline_that_would_overflow_is_reported_not_panicked() {
+        // Issue 18: `Instant::now() + Duration::from_secs(u64::MAX)`
+        // panics, and the panic kills the daemon on its first job.  The
+        // guard has to return the value instead of reaching the add.
+        for secs in [u64::MAX, u64::MAX - 1, 1u64 << 63, (1u64 << 63) + 1] {
+            let got = job_deadline(Instant::now(), secs);
+            assert_eq!(got, Err(secs), "{} s was not refused", secs);
+        }
+    }
+
+    #[test]
+    fn a_deadline_inside_the_clock_is_the_instant_we_asked_for() {
+        let start = Instant::now();
+        let got = job_deadline(start, 60)
+            .expect("60 s must fit")
+            .expect("a deadline");
+        let delta = got.duration_since(start);
+        assert_eq!(delta, Duration::from_secs(60));
+        // The ten-year cap the parser enforces is comfortably inside the
+        // clock, so an accepted value never reaches the overflow path.
+        let cap = job_deadline(start, MAX_TIMEOUT_SECS);
+        assert!(cap.is_ok(), "the accepted cap must not overflow");
+    }
+
+    #[test]
+    fn every_deadline_arithmetic_in_the_daemon_is_guarded() {
+        // The class of defect, not one call site.  Issue 18 was
+        // `Instant::now() + Duration::from_secs(cfg.job_timeout_secs)`,
+        // which panics on the first job when the operator passes a huge
+        // number.  A bare `+` is safe only when its right-hand side is a
+        // compile-time constant: a constant cannot overflow, a config
+        // value can.  The filter is a source scan because the property is
+        // about a shape, and it names every line it rejects so the
+        // failure points at the caller rather than at this test.
+        //
+        // Only production code is scanned: this test's own needle and
+        // messages live after the `#[cfg(test)]` marker.
+        let src = include_str!("daemon.rs");
+        let production = src
+            .split_once("#[cfg(test)]\nmod tests")
+            .map(|(a, _)| a)
+            .unwrap_or(src);
+        // The needle is assembled so this function's own text cannot
+        // match it.
+        let needle = format!("Instant::now() {}", '+');
+        let mut bare: Vec<&str> = Vec::new();
+        for line in production.lines() {
+            let code = match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            };
+            let Some((_, rhs)) = code.split_once(needle.as_str()) else {
+                continue;
+            };
+            let rhs = rhs.trim().trim_end_matches(';').trim();
+            let is_const = !rhs.is_empty()
+                && rhs
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit());
+            if !is_const {
+                bare.push(line.trim());
+            }
+        }
+        assert!(
+            bare.is_empty(),
+            "a non-constant duration reaches the deadline addition: {:?}",
+            bare
+        );
     }
 }
