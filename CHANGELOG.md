@@ -113,6 +113,8 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Documentation
 
+- docs: add the landing instructions and the verify script (`4a21569`)
+- docs: name the guard for the issues without a fragment (`64e3a92`)
 - docs: regenerate the closure table for the final tree (`2ecca23`)
 - docs: date the pre-38 tracer captures (`babede3`)
 - docs: name the report flag and the image family in refusals (`4e0bb8c`)

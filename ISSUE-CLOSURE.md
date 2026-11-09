@@ -561,6 +561,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ## Commits that name no issue
 
+- `4a21569` docs: add the landing instructions and the verify script
+- `64e3a92` docs: name the guard for the issues without a fragment
 - `2ecca23` docs: regenerate the closure table for the final tree
 - `2a91253` merge: Team Red QA pass over the 57 issue backlog
 - `4e0bb8c` docs: name the report flag and the image family in refusals
