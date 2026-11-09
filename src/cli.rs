@@ -547,11 +547,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     match v.iter().position(|&b| b == b'=') {
                         // An empty key (`--env =VALUE`) is not a variable:
                         // execve would see a leading '=' and every backend
-                        // treats it differently (the redaction path refuses
-                        // it, the plain path used to pass it through).  The
-                        // parser is the one place every mode shares.
-                        Some(0) | None => die(&format!(
-                            "--env needs KEY=VALUE with a non-empty KEY, not '{}'",
+                        // treats it differently.  The parser refuses it in
+                        // every mode, with the message the mask's own
+                        // validation prints, so there is one wording
+                        // (issue 30).
+                        Some(0) => die("environment variable name \"\" must not be empty"),
+                        None => die(&format!(
+                            "--env needs KEY=VALUE, not '{}'",
                             String::from_utf8_lossy(&v)
                         )),
                         Some(p) => {

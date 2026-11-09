@@ -317,12 +317,25 @@ case "$probe_rep" in
     *) fail "i1-set-starts-with-the-unconditional-namespaces (got [$probe_rep])" ;;
 esac
 
-iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" true
+iso_run "$T/none.out" "$T/none.err" --isolate=pid "$CASES" true
 none_rep=$(report_of "$T/none.err")
-if has "$none_rep" "pid=off" && has "$none_rep" "net=off" && has "$none_rep" "tmp=off"; then
+if has "$none_rep" "net=off" && has "$none_rep" "tmp=off"; then
     pass "i1-off-switches-are-named-not-omitted"
 else
     fail "i1-off-switches-are-named-not-omitted (got [$none_rep])"
+fi
+
+# `--isolate=none` means no isolation at all: no namespace, no
+# `no_new_privs`, no Landlock and no `pmask: isolation:` report (issue 26).
+# It is not "the three switchable namespaces off", which still creates the
+# unconditional user, mount, UTS, IPC and cgroup namespaces.
+iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" show-nnp
+none_rep=$(report_of "$T/none.err")
+none_nnp=$(tr -d '[:space:]' <"$T/none.out")
+if [ -z "$none_rep" ] && [ "$none_nnp" = "NoNewPrivs:0" ]; then
+    pass "i1-none-means-no-isolation (no report, NoNewPrivs=0)"
+else
+    fail "i1-none-means-no-isolation (report=[$none_rep] status=[$none_nnp])"
 fi
 
 # --------------------------------------------------- I2: no_new_privs
@@ -390,8 +403,9 @@ else
 fi
 
 # control: with the UTS namespace off the payload must NOT be renamed.
-# `--isolate=none` still creates a UTS namespace (it costs nothing to
-# refuse and cannot weaken the view), so the control is the unisolated run.
+# `--isolate=pid,net,tmp` switches the three selectable namespaces off but
+# still creates the unconditional UTS namespace, and `--isolate=none`
+# creates nothing at all (issue 26), so the control is the unisolated run.
 # Catches: a hostname that was already neutral, which would make the case
 # above pass for the wrong reason.
 "$TOOL" -q /bin/sh -c 'uname -n' >"$T/nouts.out" 2>/dev/null

@@ -64,8 +64,9 @@ else
     fail "qa30-isolate-refuses-an-empty-key (rc=$rc err=$(tr '\n' '|' <"$D/i.err"))"
 fi
 
-# The refusal must show the offending value, so a typo is attributable.
-if grep -q -- "=VALUE" "$D/p.err"; then
+# The refusal must name the empty key the way the mask's own validation
+# does, so one wording covers every mode.
+if grep -q 'environment variable name "" must not be empty' "$D/p.err"; then
     pass "qa30-message-names-the-empty-key"
 else
     fail "qa30-message-names-the-empty-key (err=$(tr '\n' '|' <"$D/p.err"))"
