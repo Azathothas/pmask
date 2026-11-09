@@ -173,6 +173,8 @@ case "$argv" in
     *"$SECRET"*) pass "s4-control-literal-secret-readable-in-argv" ;;
     *) fail "s4-control-literal-secret-readable-in-argv (argv=[$argv])" ;;
 esac
+pay=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+[ -n "$pay" ] && kill -9 "$pay" 2>/dev/null
 kill -9 "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
@@ -211,7 +213,9 @@ if [ "$alive" = yes ]; then
 else
     fail "s11-warned-run-still-supervises (supervisor died)"
 fi
-kill "$SUP" 2>/dev/null
+pay=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+[ -n "$pay" ] && kill -9 "$pay" 2>/dev/null
+kill -9 "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 
@@ -228,7 +232,9 @@ if [ "$warn" = 1 ] && [ "$named" = 1 ]; then
 else
     fail "s6-redact-mode-says-overridden (warn=$warn named=$named; $(tr '\n' '|' < "$err"))"
 fi
-kill "$SUP" 2>/dev/null
+pay=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+[ -n "$pay" ] && kill -9 "$pay" 2>/dev/null
+kill -9 "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 
@@ -237,7 +243,9 @@ err="$D/s7.err"
 PMASK_NO_SELFMASK=1 "$TOOL" -l "$L" -- "$CASES" sleeper QAMARK >/dev/null 2>"$err" &
 SUP=$!
 sleep 0.9
-kill "$SUP" 2>/dev/null
+pay=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+[ -n "$pay" ] && kill -9 "$pay" 2>/dev/null
+kill -9 "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 warn=$(grep -c 'PMASK_NO_SELFMASK=1' "$err" 2>/dev/null)
@@ -281,7 +289,9 @@ PMASK_NO_SELFMASK=1 PMASK_PROBE_AUDIT=1 "$TOOL" -l "$L" --no-redact \
 SUP=$!
 sleep 0.9
 warn=$(grep -c 'PMASK_NO_SELFMASK=1 leaves' "$err" 2>/dev/null)
-kill "$SUP" 2>/dev/null
+pay=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+[ -n "$pay" ] && kill -9 "$pay" 2>/dev/null
+kill -9 "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 if [ "$warn" = 1 ]; then
