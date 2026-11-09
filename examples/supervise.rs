@@ -1,9 +1,10 @@
 //! Supervise a process tree from a library: start a multi-process build
 //! under a label, keep working, then collect the exit state.
 //!
-//! Needs ptrace: a session is a ptrace supervisor, so a host that
-//! seccomp-bans `PTRACE_SEIZE` makes this example fail with
-//! `PermissionDenied`.  `pmask probe` reports whether the host allows it.
+//! This example needs a host where ptrace is permitted: `kernel.yama.ptrace_scope`
+//! is 0 and no seccomp filter bans ptrace. On a host that bans it the example
+//! fails with `PermissionDenied`. Use the micro-VM gate (`sh vm/run.sh`) there;
+//! it boots a kernel where ptrace works.
 //!
 //! ```sh
 //! cargo run --example supervise -- /bin/sh -c 'echo level-1; sh -c "echo level-2"; exit 7'

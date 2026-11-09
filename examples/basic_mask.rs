@@ -1,9 +1,9 @@
 //! Run a command under a label and report its exit code.
 //!
-//! Needs ptrace: on a host that seccomp-bans `PTRACE_SEIZE` this example
-//! dies with `PermissionDenied`, which is the session error and not a
-//! usage error.  `pmask probe` says whether the host allows it, and
-//! `vm/run.sh` gives a host that does.
+//! This example needs a host where ptrace is permitted: `kernel.yama.ptrace_scope`
+//! is 0 and no seccomp filter bans ptrace. On a host that bans it the example
+//! fails with `PermissionDenied`. Use the micro-VM gate (`sh vm/run.sh`) there;
+//! it boots a kernel where ptrace works.
 //!
 //! ```sh
 //! cargo run --example basic_mask -- /bin/echo hello

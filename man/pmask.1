@@ -87,6 +87,8 @@ program first, then arguments.
 The vector replaces
 .IR COMMAND ,
 so no command may follow the options.
+The descriptor is duplicated before it is read, so the caller's own
+descriptor stays open; the argument source itself is consumed.
 It is capped at 8 MiB; a larger vector is refused without buffering it
 all.
 .TP
@@ -141,12 +143,19 @@ Implies
 .BR \-\-no\-new\-privs .
 If the filter cannot be installed, the run exits 126 naming the failure
 instead of running without the promise.
-The redirect points the call at the label copy the session already
-placed in the tracee, so it needs no write into tracee memory; when the
-label copy cannot be reached (a tracee the tracer may not read), the
-rename is refused with EFAULT and counted, and
-.B comm
-stays the label rather than following the payload's choice.
+.PP
+With
+.B \-\-no\-dumpable
+the tracer may not be able to reach the label address inside a
+non-dumpable tracee.
+When that happens the rename is refused: the
+.BR prctl(PR_SET_NAME)
+call fails, the process keeps the label as its
+.BR comm ,
+and the run prints one warning and counts each refused rename in the
+session summary.
+A root tracer, whose access does not depend on dumpability, still
+redirects the rename.
 .TP
 .B \-\-rexec
 Exec the program from a sealed memfd, so
@@ -204,6 +213,12 @@ Implies
 Ask for a hugetlbfs-backed image and report the backing it got.
 When huge pages are unavailable the run reports it and uses an ordinary
 memfd.
+The fallback covers every image source, including
+.B \-\-image \-
+and
+.BR \-\-image\-from\-fd :
+a pipe source is spooled first, so a failed huge-page write is retried
+on an ordinary memfd instead of ending the run.
 Implies
 .BR \-\-rexec .
 .TP
@@ -214,14 +229,27 @@ Prints one line and continues without it otherwise.
 .TP
 .BI \-\-scope\-name " NAME"
 Re-exec once through
-.BR "systemd-run \-\-scope" .
+.BR "systemd-run \-\-user \-\-scope" .
+The transient unit is named
+.BI pmask- NAME \- pid\fR,
+with NAME sanitised to letters, digits, dot, underscore and hyphen and
+cut to 64 bytes; its description is
+.BR pmask ,
+not the command line.
 The unit name is visible in
-.BR /proc/\fIpid\fB/cgroup ,
-and the transient unit's description is the session label, not the real
-command line.
+.BR /proc/\fIpid\fB/cgroup
+and in
+.BR systemctl .
+The description is the literal
+.BR pmask ,
+never the command line.
+When
+.B systemd-run
+is not usable the run prints one line and continues without a scope.
 .TP
 .BR \-q ", " \-\-quiet
-Suppress diagnostics, including the session summary.
+Suppress diagnostics, including the session summary and the isolation
+report.
 .TP
 .BR \-v ", " \-\-verbose
 Trace every redaction event to stderr.
@@ -231,6 +259,102 @@ Print the version.
 .TP
 .BR \-h ", " \-\-help
 Print the help text.
+.SH MODES
+The run selects one of three modes before any secret is read.
+.TP
+.B redact
+The default where ptrace is permitted.
+The tracer redacts every process's
+.BR cmdline ,
+.B environ
+and
+.B comm
+and applies the mask options.
+.TP
+.B isolate
+The payload runs in fresh namespaces without a tracer.
+Selected by
+.B \-\-isolate
+when unprivileged user namespaces are available, and by
+.B \-\-no\-redact \-\-isolate
+when the host grants them.
+No /proc metadata is redacted.
+.TP
+.B plain
+No tracer and no namespace.
+Selected by
+.BR \-\-no\-redact ,
+by a host that refuses ptrace, and by
+.B \-\-isolate
+where user namespaces are unavailable and ptrace is unavailable.
+.PP
+Selection order:
+.B \-\-redact
+and
+.B \-\-no\-redact
+together are a usage error.
+.B \-\-redact \-\-isolate=LIST
+redacts the tree and creates the namespaces LIST names.
+.B \-\-isolate=none
+creates no namespace and the ordinary ladder decides between redact and
+plain.
+.B \-\-no\-redact \-\-isolate
+still creates the namespaces when the host grants them, because
+isolation does not need ptrace.
+Without either flag the run redacts where ptrace works and runs plain
+where it does not; the probe's reason is printed once.
+.PP
+Options that need the tracer do not apply in isolate or plain mode.
+They are
+.BR \-\-comm ,
+.BR \-\-argv0 ,
+.BR \-\-no\-exact ,
+.BR \-\-detach ,
+.BR \-\-no\-follow ,
+.BR \-\-on\-exit ,
+.BR \-\-watch\-rename ,
+.BR \-\-unshare ,
+.BR \-\-no\-dumpable
+and the image family
+.RB ( \-\-rexec ,
+.BR \-\-rexec\-allow\-disk ,
+.BR \-\-image ,
+.BR \-\-image\-from\-fd ,
+.BR \-\-exec\-once ,
+.B \-\-hugetlb ).
+The run names each one it drops in a note, and the JSON report carries
+the same notes.
+Three flags are refused instead, because a note would not keep their
+contract:
+.B \-\-audit
+needs a tracer,
+.B \-\-image
+(and the rest of the image family) cannot exec an image without the
+redaction child, and
+.B \-\-secret\-close\-on\-exec
+needs a tracer once a secret is delivered.
+.PP
+The label and
+.B \-\-label\-empty
+are a /proc presentation, so they do not apply outside redaction;
+.B \-\-keep\-env
+is satisfied because the other modes do not redact
+.BR environ ;
+.B \-\-no\-new\-privs
+is satisfied in isolate mode, which sets it.
+.BR \-\-env ,
+.BR \-\-env\-file ,
+.B \-\-secret
+and
+.B \-\-scope\-name
+apply in every mode.
+.PP
+In a mode that does not apply
+.BR \-\-no\-dumpable ,
+the report's
+.B payload_dumpable
+describes the selected mode: it is true unless the mode itself made
+the payload non-dumpable.
 .SH SECRET SIDE
 These options and the subcommands below work even where ptrace is
 refused, except
@@ -242,7 +366,10 @@ Deliver a secret on descriptor 3, 4, ...; the child's environment
 variable
 .B PMASK_SECRET_<NAME>
 holds the descriptor number, where NAME is the secret name upper-cased
-with every non-alphanumeric byte turned into an underscore.
+with every byte that is not an ASCII letter or digit turned into an
+underscore.
+Two names that differ only in punctuation therefore collide, and the
+run refuses them before any value is loaded.
 SRC is one of
 .BR file: PATH ,
 .BR env: VAR ,
@@ -257,6 +384,24 @@ or
 .B env:
 source still sits in pmask's own command line or environment, where
 /proc shows it; the value is absent from the child's /proc entry.
+A
+.B literal:
+value is also in pmask's own argument vector, and the kernel audit
+subsystem records the supervisor's own exec before pmask can redact
+anything: the
+.B type=EXECVE
+and
+.B type=PROCTITLE
+records hold the value in clear text for the life of the audit log, and
+the shell history and any wrapper's argv hold it too.
+.B \-\-args\-from\-fd
+keeps the value out of the supervisor's argv; the
+.BR file: ,
+.B agent:
+and
+.B stdin
+sources never put it there.
+.PP
 The delivered descriptor survives exec, so every descendant inherits it
 and a same-uid peer can read /proc/<pid>/fd/N, unless
 .B \-\-secret\-close\-on\-exec
@@ -277,11 +422,31 @@ Run the payload in fresh namespaces:
 (default all).
 .B none
 means no isolation at all: no namespace is created, and the payload
-runs without
-.B no_new_privs
-and without a Landlock policy.
+keeps the host's namespaces,
+.BR no_new_privs
+state and filesystem policy.
 A host that cannot create user namespaces runs the plain path and says
 so.
+.PP
+The private
+.B /dev
+carries
+.BR /dev/null ,
+.BR /dev/zero ,
+.BR /dev/full ,
+.BR /dev/random ,
+.BR /dev/urandom
+and
+.BR /dev/tty ,
+plus
+.B /dev/pts
+and
+.B /dev/ptmx
+when the host has them, and a private
+.BR /dev/shm .
+A member the host cannot provide is reported and counted as a
+degradation.
+>>>>>>> qa/docs3
 .TP
 .B \-\-redact
 Ask for /proc redaction explicitly (the default).
@@ -291,6 +456,8 @@ it composes: the tree is redacted and the payload gets exactly the
 namespaces LIST names, in one run.
 A LIST the host cannot grant is reported as a degradation, never
 replaced by a different set.
+.B \-\-redact \-\-isolate=none
+redacts the tree and creates no namespace.
 .TP
 .B \-\-no\-redact
 Never touch /proc metadata, even where ptrace works.
@@ -332,7 +499,9 @@ count naming the interfaces the tree still discloses.
 A field that cannot be read prints
 .BR "not reachable" ,
 never a zero.
-Needs the redaction mode; a plain or isolate run refuses the flag.
+A run whose selected mode is not redaction refuses the flag with exit
+status 255, including a host that cannot ptrace and would select plain
+mode.
 .TP
 .BI \-\-secret\-fd\-name " NAME"
 Name the delivered secret memfd NAME instead of
@@ -360,8 +529,10 @@ NAME is checked like
 A run that prepares no image warns that the name had no effect.
 .TP
 .BI \-\-report " json"
-Print the run as one JSON object on stdout, after the payload has
-exited; a payload that writes to stdout shares fd 1 with it, so use
+Print the run as one JSON object on stdout, after the payload has exited.
+The report shares descriptor 1 with the payload, so a payload that writes
+to stdout interleaves with it and the stream is not one JSON document;
+use
 .B \-\-report\-file
 or
 .B \-\-report\-fd
@@ -537,11 +708,66 @@ them.
 .B \-\-report
 is refused with exit status 255; the daemon returns the exit status only.
 .SH EXIT STATUS
-The exit status of the supervised command.
+The contract has three kinds of status.
+.TP
+.B payload
+The exit status of the supervised command passes through untouched,
+0 to 255 as the program returned it, including through
+.BR \-\-daemon .
 A command killed by a signal makes
 .B pmask
 die by the same signal.
-Usage errors exit 255.
+.TP
+.B "125"
+The child could not install a delivered secret descriptor.
+.TP
+.B "126"
+The
+.B \-\-rexec
+image was refused, or the
+.B \-\-watch\-rename
+filter could not be installed.
+.TP
+.B "127"
+The image was missing, or the program could not be executed.
+.TP
+.B "1"
+A named secret does not exist:
+.BR "store get" ,
+.BR "store rm" ,
+.B "pmask read"
+and
+.B pmask get
+use it so a script can tell "no such secret" from a usage error.
+An unreadable descriptor in
+.B pmask read
+also exits 1.
+.TP
+.B "2"
+.B pmask read
+refused to write a secret to a terminal without
+.BR \-\-tty .
+.TP
+.B "3, 4"
+.B pmask doctor
+found a requested guarantee degraded (3) or unavailable (4).
+.TP
+.B "255"
+Usage errors, refusals and a wrong or missing passphrase.
+This includes an unknown option, a bad label or
+.BR comm ,
+a refused
+.BR --report ,
+a refused
+.BR --audit ,
+a refused flag in
+.B \-\-daemon
+mode, an unreadable store, and a
+.B doctor
+request that names no known guarantee.
+.PP
+Store and agent errors that are not a missing name use 255; a missing
+name uses 1.
 .SH SEE ALSO
 .BR pmaskd (8)
 .SH LICENSE
