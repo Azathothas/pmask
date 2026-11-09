@@ -109,6 +109,8 @@ Descendants are traced but not redacted.
 .TP
 .B \-\-no\-exit\-kill
 Do not set PTRACE_O_EXITKILL: the tree survives if the supervisor dies.
+.B \-\-no\-exitkill
+is the spelling the parser also accepts and the shell completions offer.
 .TP
 .B \-\-no\-dumpable
 Set PR_SET_DUMPABLE=0 in every process of the tree.
@@ -570,6 +572,9 @@ job refuse the flag with exit status 255.
 Write the
 .B \-\-report
 document to PATH instead of stdout, so the payload keeps fd 1 to itself.
+It implies
+.BR \-\-report=json ,
+so it needs the same secret-side run that flag needs.
 The file is opened before the payload runs; a path that cannot be
 written is a usage error and the payload does not start.
 .TP

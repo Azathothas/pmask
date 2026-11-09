@@ -131,8 +131,8 @@ Options that matter most:
 | `--memfd-name NAME` | name the image memfd NAME instead of the label; applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and `--hugetlb` |
 | `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
 | `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; the payload shares fd 1, so a consumer that has to parse the document uses `--report-file` or `--report-fd`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
-| `--report-file PATH` | write the `--report` document to PATH instead of stdout; the payload keeps fd 1 |
-| `--report-fd N` | write the `--report` document to descriptor N; checked before the payload runs |
+| `--report-file PATH` | write the `--report` document to PATH instead of stdout; the payload keeps fd 1. It implies `--report=json`, so it needs the same secret-side run |
+| `--report-fd N` | write the `--report` document to descriptor N; checked before the payload runs and not inherited by it. It implies `--report=json` |
 | `--audit` | print one residue row per tracee at each exec completion, then a residue count naming the interfaces the tree still discloses; needs the redaction mode |
 
 `--args-from-fd` matters for shell history as well: a command read from
@@ -227,7 +227,7 @@ without one it falls back to the peer's pid and start time, which is
 best effort.
 
 `--daemon` refuses the flags it cannot honour. `--secret`, `--isolate`,
-`--no-redact` and `--image` change what this process would do locally,
+`--no-redact`, `--image` and `--image-from-fd` change what this process would do locally,
 and the daemon owns the masking policy and the job environment, so the
 client exits 255 and names the flag rather than dropping it. `--report`
 is refused the same way: a daemon job returns the exit status only. Mask

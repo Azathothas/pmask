@@ -540,7 +540,9 @@ fn main() {
             local_only.push("--no-redact");
         }
         if cli.mask.has_image() {
-            local_only.push("--image");
+            // Both spellings of the image family are refused; name both
+            // rather than the canonical one only.
+            local_only.push("--image or --image-from-fd");
         }
         if !local_only.is_empty() {
             eprintln!(
@@ -599,10 +601,21 @@ fn main() {
                  daemon owns the run, so drop --report"
             );
         } else {
+            // Name the flag the operator wrote: `--report-file` and
+            // `--report-fd` imply the JSON report, so a message about
+            // `--report=json` alone reads as a flag they never passed.
+            let which = if cli.report_file.is_some() {
+                "--report-file"
+            } else if cli.report_fd.is_some() {
+                "--report-fd"
+            } else {
+                "--report=json"
+            };
             eprintln!(
-                "pmask: --report=json: the plain mask path does not produce a report; the \
+                "pmask: {}: the plain mask path does not produce a report; the \
                  report describes a secret-side run, so add --secret, --isolate or --no-redact, \
-                 or drop --report"
+                 or drop the report option",
+                which
             );
             // `--redact` changes nothing about the runner: it is the
             // default mode spelled out.  Say so, because the old message
