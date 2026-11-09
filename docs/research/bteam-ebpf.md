@@ -182,15 +182,17 @@ supervisor TracerPid=0                    # its own tracer, detached
 payload    TracerPid=498782               # the tracer thread
 supervisor task names:
   498776 b57tracer
-  498782 pmask-tracer
+  498782 pmask-tracer        [pre-#38 build; from #38 the name is the session comm]
 ```
 
 Two facts a sensor gets from `sys_enter_ptrace` are visible here without it:
 the payload's `TracerPid` names a process inside the tree, and the
-supervisor has a task literally named `pmask-tracer`.  Neither was visible
-through eBPF on this host (no program could be loaded), and both are
-visible from userland — which is why the eBPF row is not the load-bearing
-one for detecting pmask.
+supervisor has a second task.  The task's name was the literal
+`pmask-tracer` on the build captured above; from #38 it takes the session's
+`comm`, so the name is no longer the durable part, and the `Tgid != Pid`
+relation is.  Neither was visible through eBPF on this host (no program
+could be loaded), and both are visible from userland — which is why the
+eBPF row is not the load-bearing one for detecting pmask.
 
 `strace` cannot stand in for the tracer-syscall channels either.  It is a
 second tracer: `strace -f` makes pmask's own `PTRACE_SEIZE` fail with

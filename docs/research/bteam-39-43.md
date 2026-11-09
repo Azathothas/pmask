@@ -32,9 +32,15 @@ Detector rules are written the way an observer would write them: from
 sup = candidate supervising process
 ok  = comm(sup) == cmdline0(sup)
       and cmdline_len(sup) == len(comm(sup)) + 1
-      and any(comm(t) == "pmask-tracer" for t in tasks(sup))
+      and any(comm(t) == "pmask-tracer" for t in tasks(sup))   # pre-#38 only
 if ok: alert("pmask supervisor", sup)
 ```
+
+The thread-name clause is a capture of the build these rows were measured
+on.  From #38 on the thread takes the session's `comm`, so that clause no
+longer fires; the two-clause shape without it (label served as both
+`cmdline` and `comm`, plus a second task) is the durable part, and the
+`Tgid != Pid` relation in `bteam-38-50.md` is the replacement.
 
 and, for the debug variant:
 
@@ -54,7 +60,7 @@ cmdline: proc-evid|                     (label + one NUL)
 comm: [proc-evid]
 uid1000 stat 48-51: 0 0 0 0
 root    stat 48-51: <4 addresses>       arg_end-arg_start = 9, env span 0
-threads: 2      task proc-evid, task pmask-tracer
+threads: 2      task proc-evid, task pmask-tracer   [pre-#38 build]
 exe: readlink refused, environ: EACCES
 ```
 
