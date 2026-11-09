@@ -86,12 +86,28 @@ So the fragment asserts the pid set, not the count. A detector written
 against the count alone would fire on this container with nothing masked,
 which is the same false-positive shape the issue warns about.
 
-One incidental finding, recorded because it is a real usable signal: this
-host's `/proc` readdir hides a live thread id from an unprivileged reader
-(`143`, `Tgid=122`), while `stat` and `kill(0)` find it. That is a
-kernel/container property and has nothing to do with pmask; it is also
-exactly the kind of divergence this family *is* good at, which is why the
-family's silence about pmask is informative rather than accidental.
+One incidental finding is also the positive control the fragment needs:
+this host's `/proc` readdir hides a live thread id from an unprivileged
+reader (`143`, `Tgid=122`), while `stat` and `kill(0)` still find it.
+
+```
+$ tests/testcases procviews 143
+pid=143 getdents64=absent readdir=absent stat=present kill0=present
+```
+
+`chkproc` names that pid, and does not name any pmask pid:
+
+```
+PASS d5-chkproc-does-not-name-the-payload (payload=no supervisor=no bulk=45)
+PASS d5b-chkproc-names-a-genuinely-hidden-pid (pid 143: readdir=absent
+     stat=present, named by chkproc)
+```
+
+That is what turns "the family is blind to pmask" from an argument into a
+measurement: the sweeper demonstrably fires on a real divergence on this
+host at this moment, and the pmask pids are not in its output.  The
+divergence itself is a kernel/container property and has nothing to do
+with pmask; it is exactly the kind of thing this family is good at.
 
 ## The one member that is not blind: `strace`
 

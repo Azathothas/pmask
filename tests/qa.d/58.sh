@@ -28,6 +28,8 @@
 #   d3  sandfly-processdecloak: SKIP when absent
 #   d4  unhide (sys / checkkill / checkgetprio): SKIP when absent
 #   d5  chkproc: the pid set, not the bulk count, is the assertion
+#   d5b the positive control: a pid this host genuinely hides from readdir
+#       must be named by chkproc, or the sweep is not known to fire
 #   d6  rkhunter hidden_procs: SKIP when absent or silently skipped;
 #       PMASK_QA_RKHUNTER_CONF names a config file for an extracted copy
 #   d7  pspy: a content sampler; its sampling limit is the finding
@@ -224,6 +226,34 @@ if bin=$(find_tool chkproc); then
         fi
         printf 'NOTE d5 bulk hidden count with one masked tree: %s; the\n' "${total:-unknown}"
         printf '     no-pmask baseline is in docs/research/bteam-detectors.md\n'
+        # The positive control.  On this container the kernel hides one
+        # live thread id from an unprivileged readdir while stat and
+        # kill(0) still find it.  If a pid like that exists, chkproc must
+        # name it: that separates "the sweep is blind to pmask" from "the
+        # sweep never fires here".
+        # The scan cannot start from `readdir` — that is the view the pid
+        # is missing from.  It starts from the tool's own candidate set and
+        # verifies each one independently.
+        hidden_pid=""
+        for p in $(hidden_names "$D/chkproc.out"); do
+            [ "$p" = "$$" ] && continue
+            case "$("$CASES" procviews "$p" 2>/dev/null)" in
+                *"getdents64=absent readdir=absent stat=present"*)
+                    hidden_pid=$p
+                    break
+                    ;;
+            esac
+        done
+        if [ -z "$hidden_pid" ]; then
+            skip "d5b-chkproc-names-a-genuinely-hidden-pid (this host hides no pid from readdir, so the sweep's firing cannot be shown)"
+        else
+            ctl=$(hidden_names "$D/chkproc.out" | grep -cx "$hidden_pid")
+            if [ "$ctl" = 1 ]; then
+                pass "d5b-chkproc-names-a-genuinely-hidden-pid (pid $hidden_pid: readdir=absent stat=present, named by chkproc)"
+            else
+                fail "d5b-chkproc-names-a-genuinely-hidden-pid (pid $hidden_pid is genuinely hidden but chkproc did not name it, so d5 proves nothing)"
+            fi
+        fi
     fi
     stop SUP
     stop PAY

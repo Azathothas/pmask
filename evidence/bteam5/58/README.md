@@ -33,6 +33,18 @@ never contains the supervisor or the payload (`setdiff.log`,
 `hidden-control.txt`, `hidden-masked.txt`). The QA case asserts the pid set,
 not the count.
 
+## The positive control
+
+`chkproc` is shown to fire on a real divergence on this host: pid 143 is a
+live thread id that `getdents64` and `readdir` do not return while `stat`
+and `kill(0)` find it, and `chkproc` names it.  No pmask pid is ever in the
+same output.
+
+```
+PASS d5-chkproc-does-not-name-the-payload (payload=no supervisor=no bulk=45)
+PASS d5b-chkproc-names-a-genuinely-hidden-pid (pid 143: readdir=absent stat=present, named by chkproc)
+```
+
 ## Fragments
 
 * `no-tools-run.log` — `sh tests/qa.d/58.sh` with nothing installed:
