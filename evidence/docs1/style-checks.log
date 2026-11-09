@@ -1,0 +1,5 @@
+$ grep -n em-dash README.md docs/DEPLOY.md SECURITY.md
+exit=1
+
+$ grep -nE '[A-Za-z0-9,)] -- [A-Za-z]' (prose double hyphen)
+exit=1
