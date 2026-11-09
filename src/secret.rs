@@ -94,7 +94,29 @@ pub enum Source {
 
 impl Source {
     /// Parse the `NAME=SOURCE` form used by `--secret`.
+    ///
+    /// A caller that can tell the operator about a typo should use
+    /// [`parse_spec`](Source::parse_spec), which reports the scheme it
+    /// could not place; this form discards that and is kept for callers
+    /// that only want the pair.
     pub fn parse(spec: &str) -> io::Result<(String, Source)> {
+        let (name, source, _unknown) = Source::parse_spec(spec)?;
+        Ok((name, source))
+    }
+
+    /// Parse `NAME=SOURCE` and say when the source named a scheme this
+    /// build does not know.
+    ///
+    /// A source that starts with `word:` where `word` is not a known
+    /// scheme is delivered whole as a literal, because refusing it would
+    /// break a value that legitimately contains a colon.  That fallback
+    /// is silent from the parser's point of view, so the third element
+    /// is the unrecognised word: the caller prints one warning naming it,
+    /// and `--secret TOK=flie:/x` stops looking like a file source.
+    ///
+    /// A bare value (`--secret TOK=abc`) and `stdin` name no scheme and
+    /// report nothing.
+    pub fn parse_spec(spec: &str) -> io::Result<(String, Source, Option<String>)> {
         let (name, rest) = spec.split_once('=').ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -118,6 +140,7 @@ impl Source {
                 ),
             ));
         }
+        let mut unknown = None;
         let source = if let Some(v) = rest.strip_prefix("literal:") {
             Source::Literal(v.to_string())
         } else if let Some(p) = rest.strip_prefix("file:") {
@@ -133,10 +156,11 @@ impl Source {
         } else if rest == "stdin" {
             Source::Stdin
         } else {
+            unknown = scheme_candidate(rest).map(str::to_string);
             // bare value: treat as a literal, so `--secret TOKEN=abc` works
             Source::Literal(rest.to_string())
         };
-        Ok((name.to_string(), source))
+        Ok((name.to_string(), source, unknown))
     }
 
     /// A short description of the source for an error message.  It carries
@@ -156,6 +180,48 @@ impl Source {
     pub fn is_in_plain_sight(&self) -> bool {
         matches!(self, Source::Literal(_) | Source::Env(_))
     }
+}
+
+/// The schemes [`Source::parse_spec`] recognises, as an operator would
+/// type them.  `stdin` is not in the list because a source of exactly
+/// `stdin` carries no colon.
+pub const KNOWN_SCHEMES: &[&str] = &["literal:", "file:", "env:", "agent:", "daemon:"];
+
+/// The scheme a source looks like it names, when it begins `word:` and
+/// the word cannot be one of the known schemes.
+///
+/// `None` for a value with no colon or with a colon that cannot start a
+/// scheme (`/etc/passwd:x`, `./a:b`, a value with a blank before the
+/// colon).  The rules are narrow on purpose: a scheme is a short run of
+/// ASCII letters, digits, `-`, `_`, `+` and `.`, so a path and a token
+/// that merely contains a colon are not mistaken for a typo'd one.
+fn scheme_candidate(rest: &str) -> Option<&str> {
+    let (word, _) = rest.split_once(':')?;
+    if word.is_empty() || word.len() > 32 {
+        return None;
+    }
+    let looks_like_a_scheme = word
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'+' | b'.'));
+    if looks_like_a_scheme {
+        Some(word)
+    } else {
+        None
+    }
+}
+
+/// The one warning for a `--secret` source that named a scheme this
+/// build does not know.  Both surfaces that parse a spec print it: the
+/// CLI after it has read the whole command line, so the last `-q`
+/// decides, and [`Runner::secret_spec`] as it is called.
+pub fn unknown_scheme_warning(name: &str, scheme: &str) -> String {
+    format!(
+        "warning: --secret {}: '{}:' is not a known secret scheme ({}); the value is \
+         delivered as a literal",
+        name,
+        scheme,
+        KNOWN_SCHEMES.join(", ")
+    )
 }
 
 /// A named secret held in protected memory.
@@ -844,6 +910,52 @@ mod tests {
     fn spec_parsing_rejects_an_over_long_name() {
         let long = "A".repeat(MAX_NAME_LEN + 1);
         assert!(Source::parse(&format!("{}=literal:x", long)).is_err());
+    }
+
+    #[test]
+    fn an_unknown_scheme_is_reported_and_delivered_as_a_literal() {
+        // Issue 11: a typo in the scheme used to be delivered silently.
+        // The word is reported so the caller can warn; the value is still
+        // delivered, because a literal that contains a colon is legal.
+        let (name, src, unknown) = Source::parse_spec("TOK=flie:/etc/passwd").unwrap();
+        assert_eq!(name, "TOK");
+        assert_eq!(unknown.as_deref(), Some("flie"));
+        assert!(matches!(src, Source::Literal(ref v) if v == "flie:/etc/passwd"));
+
+        let (_, _, unknown) = Source::parse_spec("TOK=agent:NAME").unwrap();
+        assert!(unknown.is_none(), "a known scheme must not be reported");
+        let (_, _, unknown) = Source::parse_spec("TOK=daemon:NAME").unwrap();
+        assert!(unknown.is_none(), "the old spelling is still a scheme");
+        let (_, _, unknown) = Source::parse_spec("TOK=stdin").unwrap();
+        assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn a_bare_value_names_no_scheme_and_is_silent() {
+        // The whole point of the fallback: `--secret TOK=abc` is a value,
+        // not a typo, and must not produce a diagnostic.
+        for spec in [
+            "TOK=abc123",
+            "TOK=/etc/passwd",
+            "TOK=./relative:file",
+            "TOK=",
+            "TOK=with space: here",
+            "TOK=:leading",
+        ] {
+            let (_, src, unknown) = Source::parse_spec(spec).unwrap();
+            assert!(unknown.is_none(), "{} reported {:?}", spec, unknown);
+            assert!(matches!(src, Source::Literal(_)), "{}", spec);
+        }
+    }
+
+    #[test]
+    fn the_warning_names_the_scheme_and_the_known_ones() {
+        let w = unknown_scheme_warning("TOK", "flie");
+        assert!(w.contains("'flie:'"), "{}", w);
+        assert!(w.contains("literal:") && w.contains("file:"), "{}", w);
+        assert!(w.contains("TOK"), "{}", w);
+        // One line: a warning that wraps is read as two.
+        assert_eq!(w.lines().count(), 1, "{}", w);
     }
 
     #[test]

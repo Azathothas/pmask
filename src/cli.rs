@@ -53,8 +53,11 @@ Options:
                        Repeatable.
       --env-file PATH  Read variables for the program from PATH: one KEY=VALUE
                        per line, '#' starts a comment line, blank lines are
-                       skipped, no quoting, values are taken as written.
-                       Repeatable.
+                       skipped, a trailing CR is stripped, an 'export '
+                       prefix is allowed, a key with a blank or control byte
+                       is refused, and one pair of matching ' or " quotes
+                       around a value is removed.  The grammar is shared
+                       with pmaskd's --env-file.  Repeatable.
       --args-from-fd N Read the command from file descriptor N: NUL-separated
                        program and arguments.  The secrets then never appear
                        in pmask's own command line.  The vector is capped
@@ -326,38 +329,22 @@ fn label_arg(bytes: &[u8]) -> String {
     }
 }
 
-/// Parse an `--env-file`: `KEY=VALUE` lines, `#` comment lines, blank
-/// lines skipped.  Keys must be non-empty and free of NUL; values are
-/// taken as written.
+/// Parse an `--env-file` with the daemon's parser.
+///
+/// One grammar for one flag: `pmaskd` loads its job environment from the
+/// same `--env-file` and both surfaces call
+/// [`pmask::daemon::parse_env_file`], so a file that works for one works
+/// for the other.  The grammar (a trailing CR stripped, an `export `
+/// prefix allowed, blanks and control bytes in a key refused, one pair of
+/// matching quotes removed from a value) is documented on that function.
 fn read_env_file(path: &[u8]) -> Vec<(OsString, OsString)> {
-    let shown = String::from_utf8_lossy(path).into_owned();
     let p = std::path::Path::new(std::ffi::OsStr::from_bytes(path));
-    let data = match std::fs::read(p) {
-        Ok(d) => d,
-        Err(e) => die(&format!("--env-file {}: {}", shown, e)),
-    };
-    let mut out = Vec::new();
-    for (n, line) in data.split(|&b| b == b'\n').enumerate() {
-        let lineno = n + 1;
-        if line.is_empty() || line[0] == b'#' {
-            continue;
-        }
-        if line.contains(&0) {
-            die(&format!("--env-file {}: line {}: NUL byte", shown, lineno));
-        }
-        let eq = match line.iter().position(|&b| b == b'=') {
-            Some(p) if p > 0 => p,
-            _ => die(&format!(
-                "--env-file {}: line {}: expected KEY=VALUE",
-                shown, lineno
-            )),
-        };
-        out.push((
-            OsString::from_vec(line[..eq].to_vec()),
-            OsString::from_vec(line[eq + 1..].to_vec()),
-        ));
+    match pmask::daemon::parse_env_file(p) {
+        Ok(v) => v,
+        // The error already names the file and the line, so naming the
+        // option as well would repeat the path.
+        Err(e) => die(&e.to_string()),
     }
-    out
 }
 
 fn parse_on_exit(v: &[u8]) -> SessionEnd {
@@ -394,6 +381,11 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut secrets: Vec<(String, Source)> = Vec::new();
     let mut keep_env_all = false;
     let mut keep_env_names: Vec<String> = Vec::new();
+    // `(secret name, scheme word)` for every `--secret` whose source
+    // looked like it named a scheme this build does not know.  The
+    // warning is printed after the whole vector is parsed, so the last
+    // `-q` in the command line decides whether it appears.
+    let mut unknown_schemes: Vec<(String, String)> = Vec::new();
     let mut agent_socket: Option<PathBuf> = None;
     let mut allow_argv_secret = false;
     let mut secret_burn = false;
@@ -634,8 +626,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "secret" => {
                     let v = take_value("--secret", inline, &argv, &mut i);
-                    match Source::parse(&String::from_utf8_lossy(&v)) {
-                        Ok(pair) => secrets.push(pair),
+                    match Source::parse_spec(&String::from_utf8_lossy(&v)) {
+                        Ok((name, source, unknown)) => {
+                            if let Some(scheme) = unknown {
+                                unknown_schemes.push((name.clone(), scheme));
+                            }
+                            secrets.push((name, source));
+                        }
                         Err(e) => die(&format!("--secret: {}", e)),
                     }
                 }
@@ -781,6 +778,20 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
 
     if image_program.is_some() && args_fd.is_some() {
         die("--image and --args-from-fd are exclusive");
+    }
+
+    // A typo'd scheme is delivered as a literal, which is data, not an
+    // error: `--secret TOK=flie:/etc/passwd` must not fail a run that
+    // would otherwise work.  Invariant 13 still applies, so it is said
+    // out loud, and the message names the word and the schemes that do
+    // exist.
+    if !quiet {
+        for (name, scheme) in &unknown_schemes {
+            eprintln!(
+                "pmask: {}",
+                pmask::secret::unknown_scheme_warning(name, scheme)
+            );
+        }
     }
 
     let reexec_argv: Vec<OsString> = argv

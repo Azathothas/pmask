@@ -1,0 +1,29 @@
+### baseline: /tmp/basebin/pmask (qa-base, fa46e62) and /tmp/basebin/pmaskd
+
+$ pmask --no-redact --env-file e -- env   (rows 1, 2 and 4)
+0000000   C   R   L   F   =   v  \r  \n   K   =   "   q   u   o   t   e
+0000020   d       v   a   l   u   e   "  \n   e   x   p   o   r   t    
+0000040   F   O   O   =   b   a   r  \n
+0000050
+
+$ pmask --no-redact --env-file e -- true   (row 3: BAD KEY accepted)
+baseline rc=0  (0 = the defect: the key was accepted)
+
+$ pmaskd --env-file e -S sock   (the daemon grammar, for contrast)
+pmaskd: /tmp/tmp.08xmtKoJId/e3:1: key contains a space
+baseline daemon rc=255
+
+### fixed: target/release/pmask and pmaskd
+
+$ pmask --no-redact --env-file e -- env   (rows 1, 2 and 4)
+0000000   C   R   L   F   =   v  \n   F   O   O   =   b   a   r  \n   K
+0000020   =   q   u   o   t   e   d       v   a   l   u   e  \n
+0000036
+
+$ pmask --no-redact --env-file e -- true   (row 3 refused)
+pmask: /tmp/tmp.08xmtKoJId/e3:1: key contains a space
+fixed rc=255
+
+$ pmaskd --env-file e -S sock   (same words as the CLI now)
+pmaskd: /tmp/tmp.08xmtKoJId/e3:1: key contains a space
+fixed daemon rc=255

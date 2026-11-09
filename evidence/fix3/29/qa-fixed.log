@@ -1,0 +1,11 @@
+PASS qa29-control-json-parses
+PASS qa29-store-path-in-json
+PASS qa29-store-backslash-in-json
+PASS qa29-agent-socket-in-json
+PASS qa29-require-quote-escaped
+PASS qa29-empty-require-refused (rc=255)
+PASS qa29-eq-empty-require-refused (rc=255)
+PASS qa29-comma-require-refused (rc=255)
+PASS qa29-valid-require-still-works
+PASS qa29-control-no-require-exits-zero
+== VERDICT: 0 failure(s) ==

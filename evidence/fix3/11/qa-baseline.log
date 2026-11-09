@@ -1,0 +1,9 @@
+FAIL qa11-typo-warns (no warning in stderr: pmask: mode=plain secrets=1 exit=0|pmask: note: secret 'TOK' uses literal: and the value is in this process's argv or environment; another local account can read it|)
+FAIL qa11-typo-warning-names-known ()
+PASS qa11-typo-still-delivers (flie:/x)
+PASS qa11-bare-value-silent
+PASS qa11-bare-path-silent
+PASS qa11-known-scheme-silent
+PASS qa11-quiet-suppresses
+FAIL qa11-refusal-names-the-run (rc=255, err=[pmask: secret 'TOK' uses literal:; this run cannot redact /proc, so the value would stay in pmask's own argv or environment for the whole run; use file:PATH or agent:NAME, or pass --allow-argv-secret])
+== VERDICT: 3 failure(s) ==

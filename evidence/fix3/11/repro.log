@@ -1,0 +1,23 @@
+### baseline: /tmp/basebin/pmask (qa-base, fa46e62)
+
+$ pmask --no-redact --secret TOK=flie:/x --allow-argv-secret -- /bin/true
+pmask exit=0
+  (nothing above names 'flie': the source is reported only as literal:)
+
+$ pmask -q --no-redact --secret TOK=flie:/x --allow-argv-secret -- sh -c "cat <&3"
+flie:/x  <- the literal is delivered, exit=0
+
+### fixed: target/release/pmask
+
+$ pmask --no-redact --secret TOK=flie:/x --allow-argv-secret -- /bin/true
+pmask exit=0
+pmask: warning: --secret TOK: 'flie:' is not a known secret scheme (literal:, file:, env:, agent:, daemon:); the value is delivered as a literal
+pmask: mode=plain secrets=1 exit=0
+pmask: note: secret 'TOK' uses literal: and the value is in this process's argv or environment; another local account can read it
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)
+
+$ pmask --no-redact --secret TOK=abc123 --allow-argv-secret -- /bin/true   (control: a bare value)
+pmask exit=0
+pmask: mode=plain secrets=1 exit=0
+pmask: note: secret 'TOK' uses literal: and the value is in this process's argv or environment; another local account can read it
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)

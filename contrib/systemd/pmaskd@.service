@@ -46,11 +46,14 @@ RestrictSUIDSGID=yes
 SystemCallFilter=@system-service ptrace
 SystemCallArchitectures=native
 
-# A passphrase, when the unit is given one, arrives as a credential rather
-# than an environment variable or a path every account can read.  Enable
-# these two lines together with a matching ExecStart --passphrase-file.
-#LoadCredential=passphrase:/etc/pmask/passphrase
-#ExecStart=/usr/bin/pmaskd --socket %t/pmask/pmask.sock --store %S/pmask/store.enc
+# The encrypted store is NOT pmaskd's.  pmaskd has no --store and no
+# --passphrase-file: it takes the job environment from --env-file, so the
+# job's variables are in a file, not in this unit.  The store is unlocked
+# and served by a separate `pmask agent` process, and a job reaches it
+# through a `--secret NAME=agent:NAME` source.  Run the agent as its own
+# unit (or as a sibling process in the same namespace) and pass its socket
+# to the job; do not add --store to this unit's ExecStart, because pmaskd
+# exits 255 with `unknown option --store`.
 
 Restart=on-failure
 RestartSec=1s
