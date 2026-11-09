@@ -53,7 +53,7 @@ line exactly:
 |---|---|
 | another uid | the label in `cmdline` and `comm`; no real argv or environ |
 | a monitoring agent of the same uid | the label, and also `exe`, `maps`, `fd/*` and `cwd`, which name the real binary; a `pmaskd` job's child on the composed daemon path reads `environ` as 0 bytes, and the holder's `environ` is refused (`EACCES`) |
-| the same, with `--no-dumpable` | the label; those files are refused |
+| the same, with `--no-dumpable` | the label; `environ`, `maps`, `auxv`, `exe`, `fd` and `/proc/<pid>/mem` are refused, and the five refusals are themselves a signal |
 | `ps` output pasted into a ticket or a chat | the label |
 | root on the host | **that** a pid exists, its `/proc/<pid>/exe`, its `maps`, its open files, its cgroups, and its memory via `PTRACE_ATTACH` |
 | anyone with kernel access | everything |
@@ -101,14 +101,14 @@ Options that matter most:
 | `-l, --label NAME` | the presented command line and comm |
 | `--comm NAME` | a comm separate from the label, at most 15 bytes |
 | `--argv0 NAME` | argv[0] of the program; the default is the command as typed |
-| `--keep-env` | leave `environ` visible |
-| `--keep-env=NAME` | keep only the named variables visible, repeatable |
+| `--keep-env` | leave `environ` visible in full, values included, so every variable the caller passed is readable again; a later `--keep-env=NAME` narrows it to the named variables |
+| `--keep-env=NAME` | keep only the named variables visible, repeatable; each named value is readable again, at its original position inside a window that otherwise reads as NUL padding |
 | `--env K=V`, `--env-file PATH` | set the child environment |
 | `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the descriptor stays open for the payload and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
 | `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
 | `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
 | `--no-exact` | keep the kernel's original argv window instead of relocating it; `cmdline` is the label plus one NUL per argument |
-| `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `exe`, `fd`. The supervisor is non-dumpable in every mode |
+| `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `auxv`, `exe` and `fd`, and `/proc/<pid>/mem` is refused, so the real argv cannot be recovered from payload memory. The refusal is itself a fingerprint: five `EACCES` opens where an ordinary same-uid process succeeds. The supervisor is non-dumpable in every mode |
 | `--no-new-privs` | set-uid and file capabilities gain nothing |
 | `--watch-rename` | keep the label when a program renames itself |
 | `--rexec` | run from a sealed memfd, so `exe` names the label; the ordered chain falls back to `/proc/self/fd/N`, then an `O_TMPFILE` or named temporary file on an executable mount, reporting each failed step |
@@ -472,7 +472,16 @@ read the conditions they print.
   the life of the process, in the injected block its own libc reads. A
   reader with `ptrace` permission over it, which means the same uid when
   the payload is dumpable, recovers them from `/proc/<pid>/mem`;
-  `--no-dumpable` closes that for the same uid.
+  `--no-dumpable` closes that for the same uid. The cost is the `EACCES`
+  shape: `environ`, `maps`, `auxv`, `exe` and `fd` are refused where an
+  ordinary same-uid process allows them, and `/proc/<pid>/stat` fields 48
+  to 51 read `0 0 0 0`. The zeros alone are not specific, because other
+  daemons report them too; the five-file refusal set is.
+- `--keep-env` re-exposes the whole environment and `--keep-env=NAME`
+  re-exposes the named values. A secret in either is readable by the same
+  uid, and `--keep-env` is indistinguishable from an ordinary process with
+  a large environment. A later `--keep-env=NAME` narrows an earlier
+  `--keep-env`; a later `--keep-env` widens it again.
 - What still tells the truth after the window moves is listed one
   interface at a time in `docs/research/detection-residue.md`, with the
   condition that reveals it in each row.
