@@ -956,26 +956,20 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
     if out.bound == 0 && first_errno != 0 {
         return Err(first_errno);
     }
+    // The extras are optional: a host may lack `/dev/pts`, and a kernel
+    // may refuse the bind.  Each one that fails is left out of `extra` and
+    // named as a degradation, and the run continues: failing it here would
+    // turn a host detail into a refused payload.
     if held[basic] >= 0 {
-        match bind_held_as(held[basic], DEV_PTS, true) {
-            Ok(()) => out.extra |= DE_PTS,
-            Err(e) => {
-                if first_errno == 0 {
-                    first_errno = e;
-                }
-            }
+        if bind_held_as(held[basic], DEV_PTS, true).is_ok() {
+            out.extra |= DE_PTS;
         }
         // SAFETY: a descriptor opened above.
         unsafe { libc::close(held[basic]) };
     }
     if held[basic + 1] >= 0 {
-        match bind_held_as(held[basic + 1], DEV_PTMX, false) {
-            Ok(()) => out.extra |= DE_PTMX,
-            Err(e) => {
-                if first_errno == 0 {
-                    first_errno = e;
-                }
-            }
+        if bind_held_as(held[basic + 1], DEV_PTMX, false).is_ok() {
+            out.extra |= DE_PTMX;
         }
         // SAFETY: a descriptor opened above.
         unsafe { libc::close(held[basic + 1]) };
