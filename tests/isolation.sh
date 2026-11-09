@@ -862,13 +862,17 @@ fi
 # non-dumpable process does not let it open.
 printf 'iso-secret-value' > "$T/i15b.tok"
 chmod 600 "$T/i15b.tok"
-out=$("$TOOL" --isolate --secret T=file:"$T/i15b.tok" -- "$CASES" secretfd T 16 2>&1)
+# The isolation report and the mode line are on stderr; the probe's own
+# answer is on stdout.  `secretfd` prints the fd and the byte count on
+# stdout, so a run that is killed by a signal (rc 137) or a report line on
+# the wrong stream cannot satisfy the check by accident.
+out=$("$TOOL" --isolate --secret T=file:"$T/i15b.tok" -- "$CASES" secretfd T 16 2>"$T/i15b.err")
 rc=$?
 if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'fd=3' \
     && printf '%s' "$out" | grep -q 'bytes=16'; then
     pass "i15b-isolate-delivers-a-file-secret"
 else
-    fail "i15b-isolate-delivers-a-file-secret (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|'))"
+    fail "i15b-isolate-delivers-a-file-secret (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|') err=$(tr '\n' '|' < "$T/i15b.err"))"
 fi
 
 # control: the supervisor masks its own environ in isolate mode even
