@@ -259,6 +259,49 @@ payload without its secret. The descriptor is readable through
 reader that cooperates. `literal:` and `env:` sources are refused in a
 mode that cannot redact unless `--allow-argv-secret` is given.
 
+## Modes: what each one redacts
+
+pmask selects one of three modes. The run prints `mode=` and, at the
+default verbosity, one note per request the mode could not apply. The
+JSON report carries the same `mode` and a `mode_reason` naming the axis
+that kept the run below the strongest available one.
+
+| mode | selected by | redacts | does not |
+|---|---|---|---|
+| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, from the exec-entry stop, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary, and the payload's memory holds its real argv, unless `--rexec` and `--no-dumpable` are added |
+| isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the intermediate process under the label; the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
+| plain | `--no-redact`, or a host that does not allow `ptrace` | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
+
+- `--redact --isolate=LIST` composes the two. It redacts the tree and
+  gives the payload exactly the namespaces the list names (`pid`, `net`,
+  `tmp`; `all` is the default). It does not substitute `--unshare` for
+  the list. A list the host cannot grant is reported as a degradation; it
+  is never replaced by a different namespace set.
+- `--isolate=none` means no isolation at all: no namespace, no
+  `no_new_privs`, no Landlock, and the payload runs with the host's view
+  unchanged. A bare `--isolate` asks for `all`.
+- `--no-redact --isolate` runs the isolation path. Isolation does not
+  need `ptrace`, and dropping the namespaces would be a silent fallback,
+  so the namespaces are applied and the run reports `mode=isolate`.
+- `--unshare` is the redaction path with private user, pid and mount
+  namespaces and a private procfs. The host-side entry is the label.
+- Every mask option that the plain or isolate mode cannot apply prints
+  one note naming the option and the reason. `--no-dumpable` is one of
+  them: the plain and isolate paths do not change the payload's
+  dumpability, and the report's `payload_dumpable` is computed from the
+  selected mode rather than from the request.
+- `--audit` needs the redaction mode. It is refused with exit 255 for
+  `--no-redact`, for `--isolate`, and on a host that selects plain
+  because `ptrace` is unavailable. `--report=json` needs `--secret`,
+  `--isolate` or `--no-redact`; a plain mask run and a `--daemon` job
+  refuse it with exit 255.
+- A 32-bit image is refused, not redacted: one warning names it, the
+  session counts it, and the payload keeps its real `cmdline`, `comm` and
+  `environ`.
+- `-q` suppresses the `mode=` line, every note and the summary. It does
+  not suppress the `--audit` rows or a `--report` document, which were
+  requested explicitly.
+
 ## How it works
 
 `pmask` is a `ptrace` supervisor and the parent of the tree:
