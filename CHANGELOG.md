@@ -1,6 +1,6 @@
 # Changes
 
-Every commit on this branch on top of `fa46e62`.
+Every commit on `qa/final` on top of `fa46e62`.
 
 ## Features and hardening
 
@@ -56,6 +56,7 @@ Every commit on this branch on top of `fa46e62`.
 
 ## Tests and gates
 
+- test: decide the wait policy by the child, not the clock (`d28a822`)
 - test: scope the secret sweep to this run (`12d334a`)
 - test: wait for the validate control instead of one sample (`3394b8b`)
 - test: cover the composed isolate audit path (`64d6514`)
@@ -113,6 +114,9 @@ Every commit on this branch on top of `fa46e62`.
 
 ## Documentation
 
+- docs: elide the worktree path from a research capture (`2cc6a62`)
+- docs: drop the worktree name from the changelog (`45ad062`)
+- docs: regenerate the closure table at the final head (`696c0ff`)
 - docs: add the landing instructions and the verify script (`4a21569`)
 - docs: name the guard for the issues without a fragment (`64e3a92`)
 - docs: regenerate the closure table for the final tree (`2ecca23`)

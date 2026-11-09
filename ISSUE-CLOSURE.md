@@ -42,7 +42,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 40 | [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/40.sh` | `evidence/bteam1` |
 | 41 | [b-team] The `environ` file of a masked process: zero bytes, a NUL run, or the kept variables | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/41.sh` | `evidence/bteam1` |
 | 42 | [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade | `199580b`, `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/42.sh` | `evidence/bteam1` |
-| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `babede3`, `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
+| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `2cc6a62`, `babede3`, `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
 | 44 | [b-team] `--no-dumpable` answers `EACCES` on five files and zeroes four `stat` fields | `ee9e7e2`, `66937c9`, `74fbe52`, `720873b`, `9ca47ad`, `8d1c552` | `tests/qa.d/44.sh` | `evidence/bteam3` |
 | 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `12d334a`, `ad77b37`, `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
 | 46 | [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1` | `5abd5e4`, `e77a5da`, `03720b3`, `c4b61fc`, `d155066`, `af95ff7` | `tests/qa.d/46.sh` | `evidence/bteam5` |
@@ -367,6 +367,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #43 [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path
 
+- `2cc6a62` docs: elide the worktree path from a research capture
+  Files: `docs/research/bteam-39-43.md`
 - `babede3` docs: date the pre-38 tracer captures
   Files: `docs/research/bteam-39-43.md`, `docs/research/bteam-ebpf.md`
 - `149ee7c` docs: point every claim in the residue note at its source
@@ -561,6 +563,9 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ## Commits that name no issue
 
+- `d28a822` test: decide the wait policy by the child, not the clock
+- `45ad062` docs: drop the worktree name from the changelog
+- `696c0ff` docs: regenerate the closure table at the final head
 - `4a21569` docs: add the landing instructions and the verify script
 - `64e3a92` docs: name the guard for the issues without a fragment
 - `2ecca23` docs: regenerate the closure table for the final tree
