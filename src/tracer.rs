@@ -555,7 +555,13 @@ impl Tracer {
         // say so: the handshake is then not the one this code installs.
         let sig = libc::WSTOPSIG(status);
         let event = (status as u32) >> 16;
-        if event != arch::PTRACE_EVENT_STOP || sig != libc::SIGTRAP {
+        if event == arch::PTRACE_EVENT_STOP && sig == libc::SIGTRAP {
+            vlog!(
+                self,
+                "master {}: handshake is the PTRACE_INTERRUPT stop",
+                master
+            );
+        } else {
             vlog!(
                 self,
                 "master {}: handshake stop is sig {}/{}, not PTRACE_INTERRUPT",
