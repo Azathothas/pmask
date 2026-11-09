@@ -354,6 +354,11 @@ impl Mask {
     /// Keep the named environment variables visible in
     /// `/proc/<pid>/environ`.  Every other variable stays redacted.
     /// Repeated calls add names.
+    ///
+    /// An explicit list wins over an earlier [`Mask::keep_environ_visible`]:
+    /// the caller asked twice, and the narrower request is the later one.
+    /// A later `keep_environ_visible` still wins over this call, because
+    /// the last request is the one the operator meant.
     pub fn keep_env_vars<I, S>(mut self, names: I) -> Mask
     where
         I: IntoIterator<Item = S>,
@@ -363,6 +368,11 @@ impl Mask {
             let n: String = n.into();
             self.keep_env_names.push(n.into_bytes());
         }
+        // The list is the narrower request: `--keep-env` followed by
+        // `--keep-env=NAME` must show NAME only, not the whole inherited
+        // environment (issue 16).  A later `--keep-env` still turns the
+        // redaction off again, because the last request wins.
+        self.redact_environ = true;
         self
     }
 
