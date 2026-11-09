@@ -1195,4 +1195,103 @@ mod tests {
             std::fs::read(&exe).unwrap()
         );
     }
+
+    // Issue 28: a source that cannot seek (a pipe) must not lose the
+    // hugetlb fallback.  `prepare_fd` carries the bytes it already read
+    // into the ordinary memfd, so the retry does not depend on `lseek`.
+    // Mutation control: returning the hugetlb write error instead of
+    // retrying makes the `Ok` arm unreachable on a host without huge
+    // pages, which is the defect this guards.
+    #[test]
+    fn prepare_fd_falls_back_on_a_pipe_source() {
+        let data = std::fs::read(std::env::current_exe().expect("current_exe")).expect("read exe");
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: a pipe pair of our own.
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe: {}", io::Error::last_os_error());
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        // A pipe holds 64 KiB, so the writer must run beside the reader:
+        // a single-threaded fill would block on the image bytes.
+        let to_write = data.clone();
+        let writer = std::thread::spawn(move || {
+            let mut off = 0usize;
+            while off < to_write.len() {
+                // SAFETY: writing the image bytes into our own pipe.
+                let n = unsafe {
+                    libc::write(
+                        write_fd,
+                        to_write[off..].as_ptr() as *const libc::c_void,
+                        to_write.len() - off,
+                    )
+                };
+                if n <= 0 {
+                    break;
+                }
+                off += n as usize;
+            }
+            // SAFETY: our own descriptor; the reader sees the end of file.
+            unsafe { libc::close(write_fd) };
+        });
+
+        let opts = Options { hugetlb: true };
+        let image = match prepare_fd(read_fd, "pipe hugetlb", opts) {
+            Ok(i) => i,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                // SAFETY: our own descriptor.
+                unsafe { libc::close(read_fd) };
+                let _ = writer.join();
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => {
+                // SAFETY: our own descriptor.
+                unsafe { libc::close(read_fd) };
+                let _ = writer.join();
+                panic!("prepare_fd on a pipe with --hugetlb failed: {}", e);
+            }
+        };
+        // SAFETY: our own descriptor.
+        unsafe { libc::close(read_fd) };
+        writer.join().expect("writer thread");
+        assert_eq!(
+            std::fs::read(format!("/proc/self/fd/{}", image.fd)).unwrap(),
+            data,
+            "the fallback lost bytes the first carrier had already taken"
+        );
+        // On a host without huge pages the note must say what happened;
+        // on one with them the backing stays hugetlb and there is no note.
+        match (&image.backing, &image.note) {
+            (Backing::HugeTlb { .. }, None) => {}
+            (Backing::Memfd, Some(note)) => {
+                assert!(
+                    note.contains("--hugetlb unavailable") && note.contains("ordinary memfd"),
+                    "note was {:?}",
+                    note
+                );
+            }
+            (b, n) => panic!("backing {:?} does not match note {:?}", b, n),
+        }
+    }
+
+    // `ordinary_retry` is the single place the fallback note is built, so
+    // both carriers that can lose their huge pages name the run the same
+    // way.  Mutation control: dropping the cause from the note makes this
+    // fail.
+    #[test]
+    fn ordinary_retry_builds_the_fallback_note() {
+        let cause = io::Error::from_raw_os_error(libc::EINVAL);
+        let (fd, note) = match ordinary_retry("fallback", &cause) {
+            Ok(v) => v,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => panic!("memfd refused: {}", e),
+        };
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(fd) };
+        let note = note.expect("a fallback carries a note");
+        assert!(note.contains("--hugetlb unavailable"), "{}", note);
+        assert!(note.contains("ordinary memfd"), "{}", note);
+    }
 }
