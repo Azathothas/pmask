@@ -54,7 +54,15 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
 cleanup() {
+    # The control payload is started directly, so its comm is the test
+    # binary's name and `kill_comm mkiso` never matches it: kill the pid
+    # and the label as well.  A leak here poisons the /proc sweep in
+    # tests/edge.sh, which runs after this suite.
+    [ -n "${MATRIX_CTL:-}" ] && kill -9 "$MATRIX_CTL" 2>/dev/null
+    [ -n "${MATRIX_PID:-}" ] && kill -9 "$MATRIX_PID" 2>/dev/null
+    [ -n "${MATRIX_SUP:-}" ] && kill -9 "$MATRIX_SUP" 2>/dev/null
     kill_comm mkiso KILL 2>/dev/null
+    [ -n "${MATRIX_LABEL:-}" ] && kill_label "$MATRIX_LABEL" 2>/dev/null
     rm -rf "$T"
 }
 trap cleanup EXIT
@@ -520,6 +528,7 @@ if has "$probe_rep" "dev"; then
     for n in $dev_list; do
         case "$n" in
             null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr) ;;
+            pts|ptmx|shm) ;;
             *) unexpected="$unexpected $n" ;;
         esac
     done
@@ -542,7 +551,9 @@ if has "$probe_rep" "dev"; then
     # A host node that exists outside the bound set must be gone.  Any one
     # of these proves the host's /dev is not visible.
     leak=""
-    for n in kvm mqueue shm pts fuse net console log core initctl ptmx; do
+    # `pts`, `ptmx` and `shm` are deliberately present inside (bound or
+    # created by the private /dev), so they cannot serve as leak probes.
+    for n in kvm mqueue fuse net console log core initctl; do
         if [ -e "/dev/$n" ]; then
             leak=$n
             break
