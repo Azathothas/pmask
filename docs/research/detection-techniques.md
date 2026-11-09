@@ -275,7 +275,7 @@ A userland reader with the same uid can prove, from files alone:
   arg_start` is larger than the bytes `cmdline` returns, the process is in the
   setproctitle path and the byte at `arg_end - 1` is non-zero. Measured: mode 2
   gives a span of 10 and a `cmdline` of 10, consistent; mode 4 gives a span of
-  63 and a `cmdline` of 10, inconsistent. `[observed]`
+  58 and a `cmdline` of 10, inconsistent. `[observed]`
 * **The span is not in `[stack]`.** `[stack]` is where the kernel puts `argv`
   at exec. A span in an anonymous mapping, or in a mapping with no name, was
   placed there after exec. Measured: mode 2 reports `vma_after=[anonymous]`
@@ -369,7 +369,7 @@ mode 4, a 10-byte span and an anonymous VMA for mode 2.
 | signal | naive zero-fill | label at `arg_start` | PR_SET_MM relocation | pmask |
 | --- | --- | --- | --- | --- |
 | NUL run in `cmdline` (DET0164) | yes, 49 bytes | no, 1 | no, 1 | no |
-| `cmdline` shorter than the `stat` span | no, 58 vs 58 | yes, 58 vs 10 | no, 10 vs 10 | no, 11 vs 11 |
+| `cmdline` shorter than the `stat` span | no, 58 vs 58 | yes, 58 vs 10 | no, 10 vs 10 | no, 10 vs 10 |
 | span not in `[stack]` | no | no | yes, `[anonymous]` | no |
 | `environ` empty | no | no | yes, 0 bytes | yes, 0 bytes |
 | `comm` versus `exe` | no | no | no | yes |
