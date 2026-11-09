@@ -1,0 +1,34 @@
+# How the third-party tools were obtained for the measurement, and what
+# was NOT done.
+#
+# The fragment (tests/qa.d/58.sh) installs nothing and downloads nothing.
+# For the evidence run only, three Debian packages were fetched from the
+# configured Debian archive (the same source apt would use) and extracted
+# into /tmp/b58dl/root with `dpkg-deb -x`; nothing was installed into a
+# system path, and nothing came from an upstream tarball, a GitHub release
+# or a curl|sh:
+
+apt-get download unhide      -> unhide_20240510-2_amd64.deb
+apt-get download chkrootkit  -> chkrootkit_0.58b-5+b8_amd64.deb
+apt-get download rkhunter    -> rkhunter_1.4.6-13_all.deb
+
+dpkg-deb -x unhide_20240510-2_amd64.deb       /tmp/b58dl/root
+dpkg-deb -x chkrootkit_0.58b-5+b8_amd64.deb   /tmp/b58dl/root
+dpkg-deb -x rkhunter_1.4.6-13_all.deb         /tmp/b58dl/root
+
+# Symlinks so the fragment's find_tool and rkhunter's own PATH search both
+# see them:
+/tmp/b58dl/tools/unhide   -> /tmp/b58dl/root/usr/sbin/unhide-linux
+/tmp/b58dl/tools/chkproc  -> /tmp/b58dl/root/usr/lib/chkrootkit/chkproc
+/tmp/b58dl/tools/rkhunter -> /tmp/b58dl/root/usr/bin/rkhunter
+
+# rkhunter's default config points at /usr paths that do not exist for an
+# extracted copy; /tmp/b58dl/rkh.conf rewrites DBDIR, SCRIPTDIR, TMPDIR and
+# LOGFILE, and removes hidden_procs from DISABLE_TESTS.
+#
+# The remaining tools (sandfly-processdecloak, pspy, zapper, lsrootkit) are
+# not packaged by Debian.  They were not downloaded: their upstream
+# distribution is a GitHub release or a source tree, which the task's
+# "do not install third-party tools from untrusted sources" rule puts out
+# of scope.  Their cases therefore SKIP on this host and the note records
+# the structural result instead of a run.
