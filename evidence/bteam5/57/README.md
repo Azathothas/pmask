@@ -11,8 +11,8 @@ Raw logs in this directory:
 | --- | --- |
 | `probe.log` | every route to eBPF/tracefs/connector, uid 1000 and root |
 | `refusal.log` | the same, tightened: the exact refusal lines and a `/proc` substitute |
-| `substitute-strace.log` | `strace` on a pmask run; shows why strace is not a substitute for eBPF here |
-| `probe.sh`, `refusal.sh`, `substitute-strace.sh` | the scripts, re-runnable |
+| `why-strace-cannot-substitute.log` | the second-tracer `EPERM`, isolated with a minimal C probe |
+| `probe.sh`, `refusal.sh`, `substitute-strace.sh`, `why-strace-cannot-substitute.sh` | the scripts, re-runnable |
 
 ## Result
 
@@ -59,23 +59,48 @@ zeroes `TracerPid` without making the seize unrecorded.
 ## The substitute, and what it does not establish
 
 `strace` reads the same kernel tracepoints through ptrace rather than bpf,
-so it can show the *shape* of the tracer-syscall channel (`substitute-strace.log`).
-It cannot be run on this host against a working pmask session: `strace -f`
-itself attaches to every child, and `PTRACE_SEIZE` on an already-traced
-child fails with `EPERM`, so pmask exits 255 at its first seize:
+so it would show the *shape* of the tracer-syscall channel.  It cannot be
+used as a substitute here, for two separate reasons, both captured in
+`why-strace-cannot-substitute.log`:
+
+1. `strace -f` attaches to every child of the process it starts, so the
+   child pmask forks is already traced and pmask's `PTRACE_SEIZE` gets
+   `EPERM`:
+
+   ```
+   ptrace(PTRACE_SEIZE, 1090380, NULL, PTRACE_O_TRACESYSGOOD|...|PTRACE_O_EXITKILL) = -1 EPERM
+   pmask: session error: Operation not permitted (os error 1)
+   ```
+
+   A minimal C probe reproduces the same `EPERM` without pmask in the
+   picture (`PTRACE_SEIZE = 0` with no other tracer, `-1 EPERM` under
+   `strace -f`), so the cause is "the target already has a tracer", not
+   pmask's seize call.
+
+2. A second tracer cannot attach to a running masked payload either:
+   `strace -p <payload>` returns `ptrace(PTRACE_SEIZE, ...): Operation not
+   permitted`.  The only way to see the tracer-syscall channel from
+   userland is to be the first tracer, which is exactly what a sensor
+   is not.
+
+What userland *can* read, and what a sensor's two channels would tell it:
 
 ```
-ptrace(PTRACE_SEIZE, 3761227, NULL, PTRACE_O_TRACESYSGOOD|...|PTRACE_O_EXITKILL) = -1 EPERM
-pmask: session error: Operation not permitted (os error 1)
+supervisor=1090612 payload=1090619
+payload TracerPid=1090616
+supervisor tasks:
+  1090612 b57obs
+  1090616 pmask-tracer
 ```
 
-That is a real limit of `strace` as a substitute, and it is also a new
-observation about pmask: a supervisor started under a tracer cannot start
-its session, and the failure is a session error rather than a refusal that
-names the reason (see the defect list in the report). A minimal C probe
-(`/tmp/b57/seize.c` in the log) reproduces the `EPERM` without pmask, so the
-cause is "the target is already traced", not a pmask bug in the seize call
-itself.
+The `TracerPid` join and the `pmask-tracer` task name are the load-bearing
+signals on this host, not an eBPF program.
+
+There is a separate pmask observation in item 1 worth naming: a supervisor
+started under a tracer cannot start its session, and it reports
+`pmask: session error: Operation not permitted (os error 1)` with exit 255.
+The message names the errno and not the cause; that is in the defect list
+of the final report.
 
 ## Residual
 
