@@ -406,10 +406,12 @@ fn copy_from_start(src: RawFd, dst: RawFd) -> io::Result<()> {
 ///
 /// A hugetlb carrier that cannot be filled falls back to an ordinary
 /// memfd, as [`fill_from`] does: `--hugetlb` never fails a run for lack of
-/// huge pages.  The bytes go into an ordinary memfd first, because a
-/// source that cannot seek (a pipe, a socket, `--image -`) cannot be read
-/// twice: the spool is what makes the retry possible, and it is the image
-/// itself when the huge pages are refused.
+/// huge pages.  The bytes are spooled into an ordinary memfd first,
+/// because a source that cannot seek (a pipe, a socket, `--image -`)
+/// cannot be read twice: the spool is what makes the retry possible, and
+/// it becomes the image itself when the huge pages are refused.  A
+/// successful hugetlb run therefore copies the image twice, which costs
+/// one image of memory for the duration of the prepare.
 pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
     let mut magic = [0u8; 4];
     let mut got = 0usize;
@@ -437,51 +439,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         return Err(e);
     }
     if opts.hugetlb {
-        // A huge memfd can be created while the pool is empty; the copy
-        // then fails part-way.  The spool still holds the whole image, so
-        // the ordinary memfd below is a complete fallback.
-        match huge_memfd(label) {
-            Ok(huge) => {
-                let moved = copy_from_start(spool, huge).and_then(|()| seal(huge));
-                if moved.is_ok() {
-                    // SAFETY: the descriptors are ours.
-                    unsafe { libc::close(spool) };
-                    return Ok(Image {
-                        fd: huge,
-                        backing: Backing::HugeTlb {
-                            page_size: HUGETLB_PAGE,
-                        },
-                        note: None,
-                        path: None,
-                    });
-                }
-                let e = moved.err().unwrap_or_else(io::Error::last_os_error);
-                // SAFETY: the descriptor is ours.
-                unsafe { libc::close(huge) };
-                seal(spool)?;
-                return Ok(Image {
-                    fd: spool,
-                    backing: Backing::Memfd,
-                    note: Some(format!(
-                        "--hugetlb unavailable: {}; using an ordinary memfd",
-                        e
-                    )),
-                    path: None,
-                });
-            }
-            Err(e) => {
-                seal(spool)?;
-                return Ok(Image {
-                    fd: spool,
-                    backing: Backing::Memfd,
-                    note: Some(format!(
-                        "--hugetlb unavailable: {}; using an ordinary memfd",
-                        e
-                    )),
-                    path: None,
-                });
-            }
-        }
+        return finish_hugetlb(label, spool);
     }
     if let Err(e) = seal(spool) {
         // SAFETY: the descriptor is ours.
@@ -494,6 +452,62 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         note: None,
         path: None,
     })
+}
+
+/// Seal `spool`, closing it if the seal is refused.
+fn seal_spool(spool: RawFd) -> io::Result<RawFd> {
+    match seal(spool) {
+        Ok(()) => Ok(spool),
+        Err(e) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(spool) };
+            Err(e)
+        }
+    }
+}
+
+/// Move a fully filled `spool` onto huge pages, or return it as the image.
+///
+/// A huge memfd can be created while the pool is empty; the copy then
+/// fails part-way.  `spool` still holds the whole image, so the ordinary
+/// memfd returned here is complete.  Every failure is a note, never an
+/// error: `--hugetlb` does not fail a run for lack of huge pages.
+fn finish_hugetlb(label: &str, spool: RawFd) -> io::Result<Image> {
+    let fallback = |cause: String| -> io::Result<Image> {
+        Ok(Image {
+            fd: seal_spool(spool)?,
+            backing: Backing::Memfd,
+            note: Some(format!(
+                "--hugetlb unavailable: {}; using an ordinary memfd",
+                cause
+            )),
+            path: None,
+        })
+    };
+    let huge = match huge_memfd(label) {
+        Ok(fd) => fd,
+        Err(e) => return fallback(e.to_string()),
+    };
+    let moved = copy_from_start(spool, huge).and_then(|()| seal(huge));
+    match moved {
+        Ok(()) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(spool) };
+            Ok(Image {
+                fd: huge,
+                backing: Backing::HugeTlb {
+                    page_size: HUGETLB_PAGE,
+                },
+                note: None,
+                path: None,
+            })
+        }
+        Err(e) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(huge) };
+            fallback(e.to_string())
+        }
+    }
 }
 
 /// Copy an already open source into a fresh image.
