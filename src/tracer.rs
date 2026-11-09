@@ -673,13 +673,13 @@ impl Tracer {
             fd_names.join(",")
         };
         if !self.audit_header {
-            println!("pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds");
+            audit_line("pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds");
             self.audit_header = true;
         }
-        println!(
+        audit_line(&format!(
             "pmask audit: pid={} comm={} exe={} tracer={} cmdline_bytes={} nul_ratio={} fds={}",
             pid, comm, exe, tracer, cmdline_bytes, nul_ratio, fds
-        );
+        ));
         // The interfaces this row cannot close.  The pid always exists;
         // a readable exe, a readable memory file and a descriptor that
         // names the tool are the other three.
@@ -707,11 +707,11 @@ impl Tracer {
         // suppress its residue line.
         if self.cfg.audit {
             let reasons: Vec<&str> = self.audit_reasons.iter().copied().collect();
-            println!(
+            audit_line(&format!(
                 "pmask audit: residue: {} ({})",
                 self.audit_residue,
                 reasons.join(", ")
-            );
+            ));
         }
         if self.cfg.quiet {
             return;
@@ -1617,6 +1617,23 @@ fn wait_master_stop(pid: libc::pid_t) -> io::Result<i32> {
 
 fn last_errno() -> i32 {
     io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// Write one `--audit` row to stdout, ignoring a failed write.
+///
+/// The audit rows are a report, not a control channel.  `println!`
+/// panics on `EPIPE` (`pmask --audit ... | head -1`), `panic = "abort"`
+/// turns that into `SIGABRT`, and `PTRACE_O_EXITKILL` then kills the
+/// payload the row is about.  A reader that went away must cost the
+/// report and nothing else, so the write result is deliberately dropped
+/// (issue 17).
+fn audit_line(row: &str) {
+    use std::io::Write;
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    let _ = lock.write_all(row.as_bytes());
+    let _ = lock.write_all(b"\n");
+    let _ = lock.flush();
 }
 
 fn finish_status(pid: libc::pid_t, status: i32) -> ExitState {
