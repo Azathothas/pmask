@@ -18,13 +18,13 @@ PASS o10-control-default-redacts-path
 PASS o11-args-from-fd-secret-absent
 PASS o11-args-from-fd-program-gets-arguments
 PASS o11-control-observer-sees-plain-argv
-options.sh: 334: cannot open /proc/2636308/environ: Permission denied
+options.sh: 334: cannot open /proc/499057/environ: Permission denied
 PASS o12-supervisor-comm-is-label
 PASS o12-supervisor-cmdline-is-label
 PASS o12-supervisor-hides-argv-and-environ
 PASS o12-control-no-selfmask-leaves-argv
 PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
-INFO self-entry-window 486ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
+INFO self-entry-window 479ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
 PASS o14-on-exit-detach-keeps-background-child
 PASS o14-on-exit-kill-terminates-background-child
 PASS o14-on-exit-wait-waits (detach=0s wait=3s)
@@ -39,7 +39,7 @@ PASS o17b-watch-rename-success-is-silent
 PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
 PASS o18-rexec-maps-has-no-disk-path
 PASS o18-control-exe-is-disk-path
-PASS o19-unshare-payload-sees-only-itself (inside=1 outside=42)
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=30)
 PASS o20-daemon-with-mask-options-warns
 PASS o20-quiet-suppresses-daemon-warning
 PASS o20-control-label-only-has-no-warning

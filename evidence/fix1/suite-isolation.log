@@ -23,12 +23,12 @@ PASS i1-set-starts-with-the-unconditional-namespaces
 PASS i1-off-switches-are-named-not-omitted
 PASS i2-no-new-privs-set-in-the-payload
 PASS i2-control-flag-clear-without-isolation
-PASS i3-payload-sees-only-itself (inside=1 host=34)
-PASS i3-control-pid-off-sees-the-host (off=35 host~34 isolated=1)
+PASS i3-payload-sees-only-itself (inside=1 host=30)
+PASS i3-control-pid-off-sees-the-host (off=35 host~30 isolated=1)
 PASS i4-neutral-hostname-inside (host=errand-pyztg9rss42g inside=pmask)
 PASS i4-control-without-isolation-sees-the-host-name
-PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533324])
-PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533392])
+PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533247])
+PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533311])
 PASS i6-cgroup-path-is-the-namespace-root
 PASS i7-private-tmp-hides-the-host's-files
 PASS i7-control-tmp-off-sees-the-host's-files
@@ -61,14 +61,14 @@ PASS i15-isolate-refuses-an-env-secret
 PASS i15-refused-env-secret-leaves-no-process
 PASS i15-isolate-refuses-a-literal-secret
 PASS i15b-isolate-delivers-a-file-secret
-isolation.sh: 829: cannot open /proc/986541/environ: Permission denied
+isolation.sh: 829: cannot open /proc/641869/environ: Permission denied
 PASS i15-supervisor-environ-is-masked
 PASS i15-control-payload-environ-keeps-the-value (2)
 PASS i15-value-is-gone-after-the-run
 PASS i16-no-secret-close-on-exec-is-named
-PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=35)
+PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=36)
 PASS i18-redact-and-no-redact-contradict
-PASS i19-matrix-sessions-are-live (masked=990894 control=991528)
+PASS i19-matrix-sessions-are-live (masked=646255 control=646831)
 PASS i19-cmdline-is-the-label (bytes=12)
 PASS i20-comm-is-the-label (masked=mkisomatrix control=testcases)
 PASS i21-environ-refused-with-no-dumpable

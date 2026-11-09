@@ -583,12 +583,20 @@ impl Tracer {
         }
         self.register(master, Tracee::new(State::Slow));
         // PTRACE_SYSCALL starts the syscall supervision the first exec is
-        // swapped at.  A group-stop (the abnormal case above) needs
-        // SIGCONT to leave it.
-        let release = if sig == libc::SIGTRAP {
-            0
+        // swapped at.  The stop above is normally the interrupt stop and
+        // the release carries no signal.  The two other shapes must not
+        // lose a signal the child was sent: a signal-delivery stop is
+        // re-injected so its handler or default action still runs, and a
+        // group-stop (which has already consumed its stop signal) is left
+        // with SIGCONT.
+        let release = if event == arch::PTRACE_EVENT_STOP {
+            if sig == libc::SIGTRAP {
+                0
+            } else {
+                libc::SIGCONT
+            }
         } else {
-            libc::SIGCONT
+            sig
         };
         self.resume(master, release, true);
 
@@ -1543,6 +1551,10 @@ impl Tracer {
                 );
                 if let Some(t) = self.table.get_mut(&pid) {
                     t.clear_exec_state();
+                    // Another ABI's exec replaces the address space; the
+                    // block that held the comm label goes with it, and a
+                    // stale address must not be used as a rename target.
+                    t.rename_addr = 0;
                 }
                 self.set_state(pid, State::Script);
                 self.resume(pid, 0, true);

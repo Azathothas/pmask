@@ -31,7 +31,7 @@ PASS k15-window-kept (arg extent 16 = label + argc, environ 40 NUL bytes not emp
 PASS k15b-real-prctl-refusal-is-reported (rc=0)
 PASS k15b-real-refusal-keeps-the-window (extent 13 = label + argc)
 PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
-INFO completion-stop 4897us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
+INFO completion-stop 5374us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
 PASS k12-thread-comm-is-label (4 of 4 threads)
 PASS k12-setproctitle-rewrite-keeps-args
 PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
@@ -42,7 +42,7 @@ PASS k13-fexecve-argv-intact (entry swaps: 2)
 PASS k13b-at-execfn-diverges (payload=/workspace/wt/fix1/tests/testcases auxv=core-label-x)
 PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
 PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
-PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 1032384: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 457070: exec not redacted: redaction block failed: no syscall instruction for mmap)
 PASS k17-empty-argv-element-is-forwarded
 PASS k14-thread-starts-settled (settled=4 slow=0)
 == VERDICT: FAIL=0 ==
