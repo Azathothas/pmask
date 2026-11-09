@@ -410,7 +410,8 @@ view is the real path, and the offset is `1 + len(label) + argc`.
 ```
 exact,label4     env_start == env_end == AT_EXECFN
 keep-env,label4  env_start=140731932532657 env_end=140731932532676 AT_EXECFN=139891444633608
-keep-env,label12 same, AT_EXECFN is 1 TB away from env_end
+keep-env,label12 env_start=140737409040305 env_end=140737409040324 AT_EXECFN=139733903212560
+                 (env_end - AT_EXECFN = 1003505827764 bytes)
 ```
 
 A detector that gates on `AT_EXECFN == env_end` gets no hit in `--keep-env`.
@@ -470,7 +471,7 @@ program keeps its real argv".
 
 ## Cross-cutting: what a defender should actually run
 
-For each channel, the narrow rule is the conjunction, never one clause.  The
+For each channel the narrow rule is the conjunction, never one clause.  The
 measured facts that change a rule someone might already have written:
 
 1. `cmdline` shorter than the `stat` span never fires (issue 40).  Both
@@ -485,6 +486,20 @@ measured facts that change a rule someone might already have written:
    mode; it only does on the plain path (issue 39).
 6. A `literal:` secret never reaches the payload's `environ`; only its name
    and descriptor number do (issue 41).
+
+## Where each claim lives in the source
+
+| claim | source |
+|---|---|
+| the startup zeroing, before the parse | `src/main.rs` `main`, `zero_argv_block` under the `PMASK_NO_SELFMASK` test |
+| the runner re-masks after the fork, unconditionally | `src/run.rs` `Runner::run`, the `Mode::Redact` and `Mode::Isolate` arms |
+| the self-mask steps and their order | `src/selfmask.rs` `mask_self_label_with_window` |
+| the argv/env window relocation and the auxv rewrite | `src/execimg.rs` `relocate_windows`, called only under `cfg.exact` |
+| the block layout, including the second label copy | `src/execimg.rs` `build_redaction_block`, `label_presentation_len` |
+| the same layout for the supervisor | `src/selfmask.rs` `relocate_own_window` |
+| `--comm` size and the three label cut points | `src/mask.rs` `validate`, `to_config`, `ENTRY_SCRATCH_LABEL` |
+| the environ shapes | `src/execimg.rs` `redact_after_exec` step 5, `src/mask.rs` `keep_environ_visible` |
+| the warning and the audit refusal | `src/main.rs` `check_no_selfmask`, `warn_keep_env_secret`; `src/caps.rs` `kernel_audit_reachable` |
 
 ## What this batch did not do
 
