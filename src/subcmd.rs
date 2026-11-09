@@ -354,21 +354,49 @@ fn path_from(v: &OsStr) -> PathBuf {
     PathBuf::from(v)
 }
 
+const STORE_HELP: &str = "\
+pmask store init|set NAME|get NAME|list|rm NAME|path \
+ [--store PATH] [--passphrase-file PATH]
+
+  init                  create the encrypted store (refuses an existing file)
+  set NAME              read the value from stdin or --from-file and store it
+  get NAME              print one stored value
+  list                  print every stored name
+  rm NAME               remove one stored name
+  path                  print the store file path
+
+  --store PATH          store file (default: $XDG_DATA_HOME/pmask/store.enc)
+  --passphrase-file P   read the passphrase from P
+  --from-file P         read the value for `set` from P instead of stdin
+
+The passphrase is read from --passphrase-file, $PMASK_PASSPHRASE_FILE,
+$PMASK_PASSPHRASE, or the terminal, in that order.";
+
+const GET_HELP: &str = "\
+pmask get NAME [--socket PATH]
+
+Ask a running `pmask agent` for one secret and print it.  The name is the
+one the agent holds in the encrypted store.";
+
 fn cmd_store(args: &[OsString]) -> i32 {
-    let sub = match args.first() {
-        Some(s) => s.to_string_lossy().into_owned(),
-        None => {
-            eprintln!("pmask: store needs a subcommand (init|set|get|list|rm|path)");
-            return 255;
-        }
-    };
     let mut path = store::default_path();
     let mut pass_file: Option<PathBuf> = None;
     let mut from_file: Option<PathBuf> = None;
     let mut positional: Vec<OsString> = Vec::new();
-    let mut i = 1usize;
+    let mut end_opts = false;
+    let mut i = 0usize;
     while i < args.len() {
         let b = args[i].as_bytes();
+        if end_opts || b.len() < 2 || b[0] != b'-' || b == b"-" {
+            positional.push(args[i].clone());
+            i += 1;
+            continue;
+        }
+        if b == b"--" {
+            end_opts = true;
+            i += 1;
+            continue;
+        }
         if let Some(v) = inline_arg(b, "--store") {
             path = path_from(OsStr::from_bytes(v));
         } else if let Some(v) = inline_arg(b, "--passphrase-file") {
@@ -390,18 +418,41 @@ fn cmd_store(args: &[OsString]) -> i32 {
                     None => return 255,
                 },
                 b"-h" | b"--help" => {
-                    println!(
-                        "pmask store init|set NAME|get NAME|list|rm NAME|path \
-                         [--store PATH] [--passphrase-file PATH]"
-                    );
+                    println!("{}", STORE_HELP);
                     return 0;
                 }
-                _ => positional.push(args[i].clone()),
+                other => {
+                    eprintln!(
+                        "pmask: store: unknown option '{}' (see 'pmask store --help')",
+                        String::from_utf8_lossy(other)
+                    );
+                    return 255;
+                }
             }
         }
         i += 1;
     }
 
+    let Some(sub) = positional.first().map(|s| s.to_string_lossy().into_owned()) else {
+        eprintln!(
+            "pmask: store needs a subcommand (init|set|get|list|rm|path; see 'pmask store --help')"
+        );
+        return 255;
+    };
+    positional.remove(0);
+    // Refuse an unknown verb before the passphrase prompt: a typo must not
+    // ask for the store's passphrase, and must not look like a hang.
+    if !matches!(
+        sub.as_str(),
+        "init" | "set" | "get" | "list" | "rm" | "path"
+    ) {
+        eprintln!(
+            "pmask: store: unknown subcommand '{}'; expected init, set, get, \
+             list, rm or path (see 'pmask store --help')",
+            sub
+        );
+        return 255;
+    }
     if sub == "path" {
         println!("{}", path.display());
         return 0;
@@ -723,23 +774,42 @@ fn cmd_agent(args: &[OsString]) -> i32 {
 fn cmd_get(args: &[OsString]) -> i32 {
     let mut sock: Option<PathBuf> = None;
     let mut name: Option<String> = None;
+    let mut end_opts = false;
     let mut i = 0usize;
     while i < args.len() {
         let b = args[i].as_bytes();
-        if let Some(v) = inline_arg(b, "--socket") {
+        if end_opts || b.len() < 2 || b[0] != b'-' || b == b"-" {
+            if name.is_some() {
+                eprintln!("pmask: get takes one NAME (see 'pmask get --help')");
+                return 255;
+            }
+            name = Some(args[i].to_string_lossy().into_owned());
+            i += 1;
+            continue;
+        }
+        if b == b"--" {
+            end_opts = true;
+        } else if let Some(v) = inline_arg(b, "--socket") {
             sock = Some(path_from(OsStr::from_bytes(v)));
         } else if b == b"--socket" {
             match opt_value(args, &mut i, "--socket") {
                 Some(v) => sock = Some(path_from(&v)),
                 None => return 255,
             }
+        } else if b == b"-h" || b == b"--help" {
+            println!("{}", GET_HELP);
+            return 0;
         } else {
-            name = Some(args[i].to_string_lossy().into_owned());
+            eprintln!(
+                "pmask: get: unknown option '{}' (see 'pmask get --help')",
+                String::from_utf8_lossy(b)
+            );
+            return 255;
         }
         i += 1;
     }
     let Some(name) = name else {
-        eprintln!("pmask: get needs a NAME");
+        eprintln!("pmask: get needs a NAME (see 'pmask get --help')");
         return 255;
     };
     match agent::fetch(sock.as_ref(), &name) {
