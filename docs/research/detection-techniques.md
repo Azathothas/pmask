@@ -103,13 +103,13 @@ The analytic is built from three signals. Test each against the technique the
 kernel actually implements.
 
 Signal 1, "unexpected null byte sequences". A zero-filled `argv` region is
-exactly this: the measured naive rewrite produces a `cmdline` of 63 bytes with
-54 NUL bytes and a longest NUL run of 54 (`detection-measured.md`, mode 1).
+exactly this: the measured naive rewrite produces a `cmdline` of 58 bytes with
+49 NUL bytes and a longest NUL run of 49 (`detection-measured.md`, mode 1).
 The same signal therefore fires on a naive implementation and does not fire on
 one that truncates instead of zero-filling. Measured: when the label is placed
-at `arg_start` and the byte at `arg_end - 1` is left at zero, `cmdline` is 10
-bytes with one NUL and `ps` shows only `ci-runner` (mode 4 in the measured
-file). One byte at the end of the span removes the entire first signal.
+at `arg_start` and the byte at `arg_end - 1` is set to a non-zero byte,
+`cmdline` is 10 bytes with one NUL and `ps` shows only `ci-runner` (mode 4 in
+the measured file). One byte at the end of the span removes the entire first signal.
 `[observed]` for the measurement, `[inferred]` for the generalisation that any
 implementation can do this.
 
@@ -275,7 +275,7 @@ A userland reader with the same uid can prove, from files alone:
   arg_start` is larger than the bytes `cmdline` returns, the process is in the
   setproctitle path and the byte at `arg_end - 1` is non-zero. Measured: mode 2
   gives a span of 10 and a `cmdline` of 10, consistent; mode 4 gives a span of
-  63 and a `cmdline` of 10, inconsistent. `[observed]`
+  58 and a `cmdline` of 10, inconsistent. `[observed]`
 * **The span is not in `[stack]`.** `[stack]` is where the kernel puts `argv`
   at exec. A span in an anonymous mapping, or in a mapping with no name, was
   placed there after exec. Measured: mode 2 reports `vma_after=[anonymous]`
