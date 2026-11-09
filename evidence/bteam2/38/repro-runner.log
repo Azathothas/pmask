@@ -1,19 +1,19 @@
 pmask=./target/release/pmask kernel=6.12.113+deb13-amd64 uid=1000
---- runner, plain label (supervisor 4178748)
-  task 4178748 comm=[b2-runner-label]
-  task 4178898 comm=[b2-runner-label]
+--- runner, plain label (supervisor 2928616)
+  task 2928616 comm=[b2-runner-label]
+  task 2928643 comm=[b2-runner-label]
 
---- runner, empty label (the fallback case) (supervisor 12303)
-  task 12303 comm=[ ]
-  task 12424 comm=[ ]
+--- runner, empty label (the fallback case) (supervisor 2932349)
+  task 2932349 comm=[ ]
+  task 2932373 comm=[ ]
 
---- runner, retired-name label (supervisor 40512)
-  task 40512 comm=[pmask-tracer]
-  task 40642 comm=[pmask-trace]
+--- runner, retired-name label (supervisor 2936259)
+  task 2936259 comm=[pmask-tracer]
+  task 2936286 comm=[pmask-trace]
 
 --- CLI path for comparison (spawn after the self-mask)
---- CLI, empty label (supervisor 69335)
-  task 69335 comm=[ ]
-  task 69381 comm=[ ]
+--- CLI, empty label (supervisor 2940097)
+  task 2940097 comm=[ ]
+  task 2940107 comm=[ ]
 --- retired-name sightings in this run
 pmask-tracer sightings host-wide: 1 (a neighbour run may account for one)

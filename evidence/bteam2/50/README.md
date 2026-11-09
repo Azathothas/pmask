@@ -32,19 +32,22 @@ payload; the reader finishes in milliseconds.
 
 ```
 ================ control: a plain process holds its argv
-HIT region=5616f3430000-5616f3451000 [heap]
-HIT region=7ffe54c5b000-7ffe54c7c000 [stack]
+HIT region=557f7a7bb000-557f7a7dc000 [heap]
+HIT region=7ffd0f89b000-7ffd0f8bc000 [stack]
 SCAN mappings_read=27 hits=2
 ================ default mode
-payload=3824284 cmdline=b2-50-lab|
-HIT region=559259cc0000-559259ce1000 [heap]
-HIT region=7fcc3a082000-7fcc3a085000 [stack]
+payload=2984277 cmdline=b2-50-lab|
+payload mem:
+HIT region=560df8ad9000-560df8afa000 [heap]
+HIT region=7f49c2e12000-7f49c2e15000 [stack]
 SCAN mappings_read=27 hits=2
-supervisor=3824272 mem:
+supervisor=2984268 mem:
 REFUSED maps: Permission denied
 ================ --no-dumpable
-payload=3826263 cmdline=b2-50-lab| state=S (sleeping)
-HIT: none
+payload=2986659 cmdline=b2-50-lab| state=S (sleeping)
+payload mem:
+REFUSED maps: Permission denied
+supervisor=2986647 mem:
 REFUSED maps: Permission denied
 payload work: holdargs wrote its report
 ```

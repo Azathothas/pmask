@@ -1,6 +1,6 @@
 pmask=./target/release/pmask kernel=6.12.113+deb13-amd64 uid=1000
 ================ --detach end state
-payload=68726
+payload=2944403
 cmdline: b2-47-detach|
 TracerPid:	0
 comm: b2-47-detach
@@ -9,20 +9,20 @@ stderr while running:
 exit=0
 stderr after exit:
 ================ --no-follow
-pid=68409 comm=sleep cmdline=sleep|300| tracer=0
-pid=68756 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=0
-pid=68759 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=68758
-pid=68760 comm=sleep cmdline=/bin/sleep|5| tracer=68758
+pid=2963529 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=0
+pid=2963538 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=2963537
+pid=2963545 comm=sleep cmdline=/bin/sleep|5| tracer=2963537
+pid=2963704 comm=sleep cmdline=sleep|480| tracer=0
 stderr:
 ================ --on-exit detach (orphan)
 supervisor exit=0
-orphan pid=68796 ppid=1 cmdline=b2-47-orphan| tracer=0
+orphan pid=2967411 ppid=1 cmdline=b2-47-orphan| tracer=0
 ================ --on-exit kill (control)
 supervisor exit=0
 survivors=0
 ================ default exit-kill: SIGKILL the supervisor
-payload=68852 before kill
+payload=2971753 before kill
 payload gone after supervisor SIGKILL
 ================ --no-exit-kill: SIGKILL the supervisor
-payload=68881 before kill
+payload=2976699 before kill
 payload ALIVE after supervisor SIGKILL; tracer=0 cmdline=b2-47-survive|

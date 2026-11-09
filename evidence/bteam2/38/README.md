@@ -57,13 +57,16 @@ pmask-tracer sightings: 1
 After (`repro-after.log`):
 
 ```
-supervisor=60769 payload=60772
-TracerPid:	60771
+supervisor=2925032 payload=2925046
+TracerPid:	2925045
 Name:	b2-38-proc-evid
-Tgid:	60769
-Pid:	60771
-pmask-tracer sightings: 0
+Tgid:	2925032
+Pid:	2925045
+pmask-tracer sightings: in-session=0 host-wide=1
 ```
+
+The `host-wide=1` is a neighbour's process on the same machine (the log names
+its cmdline); the in-session count is the property under test and is 0.
 
 The `Tgid != Pid` pair survives. That is the residual, documented in
 `docs/research/bteam-38-50.md`.
@@ -79,8 +82,9 @@ fragment's `q38i` cases cover the daemon path end to end:
 
 ```
 daemon tasks: 65499 [b2-daemon-lab]  65504 [b2-job-label]
-pmask-tracer sightings=0
 ```
+
+The fragment's `q38i`/`q38i2` are the repeatable form.
 
 ## A defect the fix found on its own second pass
 

@@ -371,12 +371,88 @@ run_window() {
 # payload is the single-exec case.  The plain runs are the controls: with
 # no launcher, the process is its own payload and the masked run's label
 # can never appear.
+# The sampler finds the payload by scanning /proc, and on a loaded host a
+# scan can take longer than the window itself.  A single sample therefore
+# sometimes starts after the exec has settled and reports no window, which
+# is a property of the instrument and not of the mask.  Repeat the masked
+# rows and report the median of the windows that were actually seen, plus
+# the number of attempts that missed; a row that missed every attempt says
+# so and is a SKIP rather than a zero.  The plain controls are run once,
+# because their expected result ("the label never appears") does not depend
+# on catching a short interval.
+WINDOW_ATTEMPTS="${WINDOW_ATTEMPTS:-3}"
+
+# window_repeat VARIANT DESC CMD...
+# Runs the attempt loop and reports the *median* off-label time of the
+# attempts that saw a window, not the largest.  Taking the largest would be
+# a biased estimator: a retry that happens to catch part of the next exec or
+# a scheduling hiccup reports a longer window than the steady-state one, and
+# repeating until the number looks big is how a measurement stops meaning
+# anything.  A row that missed every attempt reports the misses and prints
+# the SKIP form, never a zero.
+#
+# The per-attempt lines are printed so the spread is visible.
+window_repeat() {
+    wr_variant="$1"; wr_desc="$2"; shift 2
+    wr_hit=0
+    wr_attempt=0
+    wr_vals="$T/wr.vals"
+    : >"$wr_vals"
+    wr_lines="$T/wr.lines"
+    : >"$wr_lines"
+    while [ "$wr_attempt" -lt "$WINDOW_ATTEMPTS" ]; do
+        wr_attempt=$((wr_attempt + 1))
+        wr_row=$(run_window "$wr_variant" "$wr_desc" "$@")
+        case "$wr_row" in
+            *" off_label_total_us=0.000"*|*"SKIP "*)
+                printf 'WINDOW-ATTEMPT variant=%s payload=%s attempt=%s missed=1\n' \
+                    "$wr_variant" "$wr_desc" "$wr_attempt"
+                ;;
+            *)
+                wr_us=$(printf '%s' "$wr_row" | sed -n 's/.*off_label_total_us=\([0-9.]*\).*/\1/p')
+                printf 'WINDOW-ATTEMPT variant=%s payload=%s attempt=%s off_label_us=%s\n' \
+                    "$wr_variant" "$wr_desc" "$wr_attempt" "${wr_us:-?}"
+                [ -n "$wr_us" ] && echo "$wr_us" >>"$wr_vals"
+                wr_hit=$((wr_hit + 1))
+                echo "$wr_row" >>"$wr_lines"
+                ;;
+        esac
+    done
+    if [ "$wr_hit" = 0 ]; then
+        printf 'WINDOW variant=%s payload=%s SKIP (no attempt caught the window in %s tries; the sampler found the payload after its exec had settled)\n' \
+            "$wr_variant" "$wr_desc" "$wr_attempt"
+        return 0
+    fi
+    wr_stats=$(sort -n "$wr_vals" | awk '{a[NR]=$1} END{
+        if (NR%2) med=a[(NR+1)/2];
+        else med=(a[NR/2]+a[NR/2+1])/2;
+        printf "%.3f %.3f %.3f", a[1], med, a[NR]
+    }')
+    wr_min=$(printf '%s' "$wr_stats" | cut -d' ' -f1)
+    wr_median=$(printf '%s' "$wr_stats" | cut -d' ' -f2)
+    wr_max=$(printf '%s' "$wr_stats" | cut -d' ' -f3)
+    # The quoted sequences are the attempts that saw a transition, which is
+    # the observable the channel is about.  They are printed as a block
+    # rather than beside the median figure: with an even number of attempts
+    # the median need not be any observed value, and putting one attempt's
+    # sequence next to it would read as though the two came from one run.
+    wr_transitions=$(awk '/ sequence=[^ ]*>/' "$wr_lines")
+    if [ -n "$wr_transitions" ]; then
+        printf 'WINDOW-SEEN the attempts that saw a comm change:\n'
+        printf '%s\n' "$wr_transitions"
+    else
+        printf 'WINDOW-SEEN none: every attempt was late, so the window is shorter than the sampler can catch on this run\n'
+    fi
+    printf 'WINDOW variant=%s payload=%s attempts=%s caught=%s off_label_us_median=%s min=%s max=%s\n' \
+        "$wr_variant" "$wr_desc" "$wr_attempt" "$wr_hit" "$wr_median" "$wr_min" "$wr_max"
+}
+
 if [ -n "$SAMPLER" ] && have_date_ns; then
     printf '#!/bin/sh\nsleep 0.35\n' >"$T/payload.sh"
     chmod 755 "$T/payload.sh"
     cp /bin/sleep "$T/payload.elf" 2>/dev/null || true
-    run_window masked script "$T/payload.sh"
-    run_window masked elf "$T/payload.elf" 0.35
+    window_repeat masked script "$T/payload.sh"
+    window_repeat masked elf "$T/payload.elf" 0.35
     run_window plain script "$T/payload.sh"
     run_window plain elf "$T/payload.elf" 0.35
 else
