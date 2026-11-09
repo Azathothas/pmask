@@ -1093,16 +1093,18 @@ impl Tracer {
                 self.warn(format_args!("pid {}: detach failed: {}", pid, e));
             }
         } else {
-            // The `--detach` trade, at the moment it is taken: the pid
-            // still carries the label and the relocated window, but no
-            // supervisor remains, so a later exec of it runs fully real.
-            // One line per session; the summary's count covers the rest.
+            // The `--detach` trade is named once per session, at the
+            // first release: the pid still carries the label and the
+            // relocated window, but no supervisor remains, so a later
+            // exec of it runs fully real.  The caller that settles an exec
+            // under `--detach` (execimg) already prints the per-tracee
+            // line, so this one adds the session-level statement the
+            // summary's count refers to; the flag keeps it to one line.
             if self.cfg.detach && !self.detach_warned {
                 self.detach_warned = true;
                 self.warn(format_args!(
-                    "--detach: pid {} is released untraced, so its later execs are not \
-                     redacted",
-                    pid
+                    "--detach: each released pid runs its later execs unredacted; the \
+                     session summary counts every release"
                 ));
             }
             vlog!(self, "pid {}: detached", pid);

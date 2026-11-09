@@ -124,7 +124,7 @@ Options that matter most:
 | `--secret N=SRC` | deliver a secret on descriptor 3, 4, ...; `PMASK_SECRET_<NAME>=<fd>` names it in the child |
 | `--secret-burn` | let a cooperating reader truncate the value once and never grow it back |
 | `--secret-close-on-exec` | close the descriptor in each direct child of the payload at its fork, not in the payload; needs the ptrace supervisor, so plain and isolate modes refuse it |
-| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing |
+| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing; NAME is 1 to 200 printable bytes, no slash and no control byte |
 | `--memfd-name NAME` | name the image memfd NAME instead of the label; applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and `--hugetlb` |
 | `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
 | `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; the payload shares fd 1, so a consumer that has to parse the document uses `--report-file` or `--report-fd`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |

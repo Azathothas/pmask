@@ -440,7 +440,7 @@ behind `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and
 `--hugetlb` defaults to the label, or to the program name for `--image`
 without a label; `--memfd-name NAME` replaces it, and also the tag of the
 `--exec-once` temporary-file carrier. One validator serves both: not
-empty, at most 200 bytes, no `/`, NUL, LF or CR, checked at parse time
+empty, at most 200 bytes, no `/`, no control byte and no DEL, checked at parse time
 and again where the object is created. The options are cosmetic by
 design. They change the string a reader sees, not the fact that a memfd
 backs the descriptor or the image.

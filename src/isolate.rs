@@ -80,14 +80,15 @@
 //!
 //! # What the CLI still has to wire
 //!
-//! This module exposes the mechanisms; two call sites outside it are not
-//! wired, and are named here rather than changed:
+//! `run` takes the caller's `quiet` flag: the status pipe is drained
+//! either way, so a silent run cannot deadlock the child, and nothing is
+//! printed when the caller asked for silence.
 //!
-//! 1. A namespace-free filesystem run has to skip `run::Mode::Isolate`,
-//!    which today needs unprivileged user namespaces.  `run.rs` should
-//!    apply [`FsPolicy::apply_child`] in its `pre_exec` closure instead.
-//! 2. `-q` does not reach the report: `isolate::run` takes no quiet flag,
-//!    so the effective set is printed on every isolation run.
+//! One call site outside this module is still not wired: a namespace-free
+//! filesystem run has to skip `run::Mode::Isolate`, which today needs
+//! unprivileged user namespaces.  `run.rs` could apply
+//! [`FsPolicy::apply_child`] in its `pre_exec` closure instead, and that
+//! is a feature, not a defect in this module.
 
 use crate::userns;
 use crate::ExitState;

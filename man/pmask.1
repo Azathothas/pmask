@@ -521,7 +521,8 @@ A reader then sees
 at
 .BR /proc/\fIpid\fB/fd/N ,
 so a sweep for the default literal finds nothing.
-NAME is 1 to 200 bytes of printable text without a slash, NUL, LF or CR.
+NAME is 1 to 200 bytes of printable text: no slash, and no control byte
+or DEL.
 The descriptor's content and seals do not change.
 .TP
 .BI \-\-memfd\-name " NAME"

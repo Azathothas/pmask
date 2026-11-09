@@ -458,7 +458,11 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             "not an ELF image",
         ));
     }
-    let mut name = sanitize_name(label).into_bytes();
+    // The image name is the operator's choice when `--memfd-name` was
+    // given, exactly as on the path carrier: `/proc/<pid>/exe` must read
+    // the same string whichever way the bytes arrived.
+    let image_name = opts.image_name(label);
+    let mut name = sanitize_name(&image_name).into_bytes();
     name.push(0);
     let spool = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
         .map_err(|e| with_context(e, "memfd_create refused"))?;
@@ -469,7 +473,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         return Err(e);
     }
     if opts.hugetlb {
-        return finish_hugetlb(label, spool);
+        return finish_hugetlb(&image_name, spool);
     }
     if let Err(e) = seal(spool) {
         // SAFETY: the descriptor is ours.

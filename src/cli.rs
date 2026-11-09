@@ -302,7 +302,9 @@ pub struct Cli {
     /// `--audit`: print one residue row per tracee and a residue count.
     pub audit: bool,
     /// `--redact`: ask for the default redaction explicitly.  With
-    /// `--isolate` it is the composed spelling of `--unshare`.
+    /// `--isolate` it composes the two: the tree is redacted and the
+    /// payload enters exactly the namespaces the list names.  It is not a
+    /// rewrite into `--unshare`; that substitution was issue 19.
     pub redact: bool,
     /// `--allow-argv-secret`: keep a literal or env source even in a mode
     /// that cannot redact, and warn instead of refusing.
@@ -537,20 +539,28 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                             // space, and the run would fail on a name that
                             // looks like a program (issue 14 N3).  Name the
                             // spelling rather than guess.
+                            // A word that looks like a variable list is the
+                            // common typo for the inline spelling, but it
+                            // is also a legal program name (`sleep`,
+                            // `env`, `make`).  Refusing it would break a
+                            // command that works; warn once and run what
+                            // the operator wrote, so the run is visible
+                            // rather than narrowed (issue 14 N3).
                             if let (Some(next), Some(after)) = (argv.get(i + 1), argv.get(i + 2)) {
                                 if after.as_bytes() == b"--"
                                     && argv.len() > i + 3
                                     && looks_like_env_names(next.as_bytes())
+                                    && !quiet
                                 {
-                                    die(&format!(
-                                        "--keep-env takes no value; did you mean \
-                                         --keep-env={}?  The space form keeps the whole \
-                                         environment and treats the next word as the program",
+                                    eprintln!(
+                                        "pmask: warning: --keep-env takes no value, so '{}' is \
+                                         the program and the whole environment stays visible; \
+                                         write --keep-env={} to keep only those variables",
+                                        next.to_string_lossy(),
                                         next.to_string_lossy()
-                                    ));
+                                    );
                                 }
                             }
-                            mask = mask.keep_environ_visible();
                             mask = mask.keep_environ_visible();
                             keep_env_all = true;
                         }

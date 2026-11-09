@@ -345,13 +345,15 @@ pub fn validate_memfd_name(name: &str) -> io::Result<()> {
             ),
         ));
     }
-    if name
-        .bytes()
-        .any(|b| b == b'/' || b == 0 || b == b'\n' || b == b'\r')
-    {
+    // Every C0 control byte is refused, not only NUL, LF and CR: the name
+    // reaches `/proc/<pid>/fd/N` and the audit row's `fds=` list, both of
+    // which a line-oriented reader parses.  A tab or ESC in a link target
+    // is not a secret leak, but it is a way to make one report line look
+    // like two, so the validator closes it at the source.
+    if name.bytes().any(|b| b == b'/' || b < 0x20 || b == 0x7f) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "memfd name must not contain '/', NUL, LF or CR bytes",
+            "memfd name must not contain '/', a control byte or DEL",
         ));
     }
     Ok(())

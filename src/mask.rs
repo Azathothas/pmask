@@ -1520,15 +1520,27 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
     // private /proc.  `--redact --isolate` asks for exactly the namespaces
     // in `p.namespaces`.  Both go through the same fork helper, so the
     // id-map handshake and the report shape are shared.
-    let ns: Option<crate::userns::ChildNs> = if p.unshare {
-        Some(crate::userns::ChildNs {
+    //
+    // When both are given the requests compose: `--unshare` supplies the
+    // pid namespace and the private /proc, and every namespace the isolate
+    // list names is added to that set.  Taking one and dropping the other
+    // is the defect issue 19 removed from the CLI, and it would be just as
+    // silent here.
+    let unshare_ns = crate::userns::ChildNs {
+        pid: true,
+        net: false,
+        procfs: true,
+        private_tmp: false,
+    };
+    let ns: Option<crate::userns::ChildNs> = match (p.unshare, p.namespaces) {
+        (true, Some(iso)) => Some(crate::userns::ChildNs {
             pid: true,
-            net: false,
+            net: iso.net,
             procfs: true,
-            private_tmp: false,
-        })
-    } else {
-        p.namespaces
+            private_tmp: iso.private_tmp,
+        }),
+        (true, None) => Some(unshare_ns),
+        (false, iso) => iso,
     };
     let mut in_userns = false;
     // The set the child actually entered, for its post-fork setup.

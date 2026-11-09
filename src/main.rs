@@ -396,7 +396,13 @@ impl ReportSink {
             // SAFETY: `dup` on a descriptor the operator passed open; the
             // original stays open, so a shell redirect the caller still
             // owns is not closed by us.
-            let dup = unsafe { libc::dup(n) };
+            //
+            // `F_DUPFD_CLOEXEC`: the duplicate must not reach the payload.
+            // A payload that inherits it can write into the document a CI
+            // consumer is about to parse, which defeats the reason to use
+            // `--report-fd` instead of stdout.  `--report-file` is
+            // close-on-exec for the same reason.
+            let dup = unsafe { libc::fcntl(n, libc::F_DUPFD_CLOEXEC, 3) };
             if dup < 0 {
                 eprintln!(
                     "pmask: --report-fd {}: {}",
@@ -405,18 +411,40 @@ impl ReportSink {
                 );
                 std::process::exit(255);
             }
+            // The caller's own descriptor must not reach the payload
+            // either: a `9>report.json` redirect in a shell is not
+            // close-on-exec, so the payload would inherit fd 9 and could
+            // write into the document a consumer is about to parse.  The
+            // duplicate above is already close-on-exec and is what pmask
+            // writes through, so setting the flag on the original costs
+            // the caller nothing in this process and closes the channel.
+            // SAFETY: `fcntl` on a descriptor the operator passed open; a
+            // failure is not fatal (the report still lands), so the
+            // result is dropped.
+            unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
             let f = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(dup) };
             return Some(ReportSink::File(f, std::path::PathBuf::new()));
         }
         Some(ReportSink::Stdout)
     }
 
-    /// Write the finished document.  A failure here is reported and exits
-    /// 255: a report the caller cannot read is not a successful run.
+    /// Write the finished document.
+    ///
+    /// A file or descriptor the caller named must take the document, so a
+    /// failed write there is reported and exits 255.  Stdout is different:
+    /// the reader may have gone away (a closed pipe, `| head -1`), and
+    /// `print!` panics on that, which `panic = "abort"` turns into
+    /// SIGABRT and replaces the payload's exit status (issue 17's class).
+    /// A report nobody reads must not change the run's result, so the
+    /// stdout write takes the same drop-result treatment as the audit rows.
     fn write(self, text: &str) {
         use std::io::Write;
         match self {
-            ReportSink::Stdout => print!("{}", text),
+            ReportSink::Stdout => {
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(text.as_bytes());
+                let _ = out.flush();
+            }
             ReportSink::File(mut f, path) => {
                 if let Err(e) = f.write_all(text.as_bytes()).and_then(|_| f.flush()) {
                     if path.as_os_str().is_empty() {
@@ -538,7 +566,13 @@ fn main() {
     // plain mode is refused in `Runner::run`, after the probe has decided
     // it (issue 32), because the flag must not be silently inert on a
     // host that cannot ptrace.
-    if cli.audit && (cli.no_redact || cli.isolate.is_some()) {
+    // `--redact --isolate=LIST` composes to the redaction mode (issue 19),
+    // so it keeps the tracer and `--audit` works there; only a run that
+    // selects isolate alone, or plain, has no tree to describe.
+    let audit_refused = cli.audit
+        && (cli.no_redact
+            || (cli.isolate.is_some() && !cli.redact && !cli.isolate.is_some_and(|iso| iso.none)));
+    if audit_refused {
         eprintln!(
             "pmask: --audit needs the redaction mode; {} mode has no tracer to \
              describe the tree, so drop --audit or the flag that forces the mode",
