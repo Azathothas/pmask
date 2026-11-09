@@ -155,7 +155,7 @@
 //! programs with the daemon's privileges, and a privileged observer on
 //! the host can read the daemon's memory.  See the trust model above.
 //!
-//! # Secret store
+//! # Job environment
 //!
 //! The daemon locks the memory that holds the job environment with
 //! `mlock` (a failure is a warning).  On `SIGTERM` or `SIGINT` it stops

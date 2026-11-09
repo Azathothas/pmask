@@ -358,7 +358,8 @@ fn fill(fd: RawFd, src: RawFd) -> io::Result<()> {
     seal(fd)
 }
 
-/// Copy `program` into a sealed memfd named after `label` or `opts`.
+/// Copy `program` into a sealed image memfd. The name is `label` unless
+/// `opts.memfd_name` supplied another.
 ///
 /// Returns InvalidInput with "not an ELF image" when the file does not start
 /// with the ELF magic. Returns the kernel error when `memfd_create` or the

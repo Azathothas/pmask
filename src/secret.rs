@@ -799,7 +799,8 @@ pub fn write_secret(fd: libc::c_int, newline: Newline, tty_ok: bool) -> io::Resu
 /// Parse the arguments of `pmask read` and print one secret.
 ///
 /// Returns the process exit status: 0 on success, 1 when the secret cannot
-/// be found or read, 255 on a usage error.
+/// be found, read or written to a terminal (2 for the terminal refusal),
+/// and 255 on a usage error.
 pub fn read_main(args: &[OsString]) -> i32 {
     let mut name: Option<String> = None;
     let mut fd: Option<libc::c_int> = None;

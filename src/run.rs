@@ -663,7 +663,8 @@ impl Runner {
     }
 
     /// Record that the run asks for a non-dumpable payload
-    /// (`--no-dumpable`), so the report's `payload_dumpable` is false.
+    /// (`--no-dumpable`). The redaction mode makes the report field false;
+    /// isolate and plain mode leave the payload dumpable and say so.
     /// The redaction mode applies it at each exec; the isolate and plain
     /// modes do not change dumpability and say so in a note.
     pub fn no_dumpable(mut self, on: bool) -> Runner {

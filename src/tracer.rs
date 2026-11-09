@@ -33,7 +33,8 @@ pub struct Config {
     /// Inject `prctl(PR_SET_DUMPABLE, 0)` at every exec completion.
     pub no_dumpable: bool,
     /// The children carry a seccomp filter that traps `prctl(PR_SET_NAME)`
-    /// (`SECCOMP_RET_TRACE`); the tracer reverts renames to the label.
+    /// (`SECCOMP_RET_TRACE`). The tracer redirects the rename to the label, or
+/// refuses the call when it cannot reach the label address.
     pub watch_prctl: bool,
     /// What happens to the remaining tree when the master exits.
     pub session_end: SessionEnd,
@@ -1452,7 +1453,8 @@ impl Tracer {
     }
 
     /// `PTRACE_EVENT_SECCOMP`: the children carry a filter that traps
-    /// `prctl(PR_SET_NAME)` only.  The rename is redirected to the label.
+    /// `prctl(PR_SET_NAME)` only.  The rename is redirected to the label when
+/// the label address is reachable, and refused otherwise.
     fn on_seccomp_stop(&mut self, pid: libc::pid_t) {
         let mut si: SyscallInfo = unsafe { std::mem::zeroed() };
         if inject::get_syscall_info(pid, &mut si).is_ok()
