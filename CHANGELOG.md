@@ -1,6 +1,6 @@
 # Changes
 
-Every commit on `qa/final` on top of `fa46e62`.
+Every commit on this branch on top of `fa46e62`.
 
 ## Features and hardening
 
