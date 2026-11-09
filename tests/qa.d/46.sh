@@ -78,17 +78,26 @@ await_pid() {
     return 1
 }
 
-# wait_report FILE [SECONDS] -> the `renamer-comm=` line, once written.
+# wait_report FILE -> the `renamer-comm=` line, once written.
 # The renamer prints it after its 700 ms sleep, then parks, so the line is
 # the signal that the rename has happened and the payload is still alive.
+# The budget is 30 s: the payload needs about 1.2 s, and a loaded host can
+# take much longer to schedule it.  The elapsed time goes to a file rather
+# than a variable, because the caller captures the return value with a
+# command substitution, which runs in a subshell.
 wait_report() {
     n=0
-    while [ "$n" -lt 60 ]; do
+    while [ "$n" -lt 300 ]; do
         line=$(sed -n 's/^renamer-comm=//p' "$1" 2>/dev/null | head -n 1)
-        [ -n "$line" ] && { echo "$line"; return 0; }
+        if [ -n "$line" ]; then
+            echo $((n / 10)) > "$2"
+            echo "$line"
+            return 0
+        fi
         n=$((n + 1))
         sleep 0.1 2>/dev/null || sleep 1
     done
+    echo 30 > "$2"
     return 1
 }
 
@@ -160,16 +169,17 @@ wait "$PLAIN" 2>/dev/null
 # 700 ms and parks.  /proc/<pid>/comm is read while it is parked.
 "$TOOL" -q -l "$L2" --watch-rename -- "$CASES" renamer >"$D/s2.out" 2>"$D/s2.err" &
 SUP=$!
+# Wait for the payload's own report first: it is printed after the rename
+# and before the payload parks, so a line means the rename has happened.
+self=$(wait_report "$D/s2.out" "$D/s2.waited") || self=""
 PAY=$(await_pid "$SUP") || PAY=""
-self=""
-[ -n "$PAY" ] && self=$(wait_report "$D/s2.out") || self=""
 comm=""
 [ -n "$PAY" ] && comm=$(status_field "$PAY" Name)
 kill "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 if [ -z "$PAY" ] || [ -z "$self" ]; then
-    fail "s2-redirect-keeps-the-label (payload=[$PAY] self=[$self] stderr=$(head -1 "$D/s2.err"))"
+    fail "s2-redirect-keeps-the-label (payload=[$PAY] self=[$self] waited=$(cat "$D/s2.waited" 2>/dev/null)s stderr=$(head -1 "$D/s2.err"))"
 elif [ "$comm" = "$L2" ] && [ "$self" = "$L2" ]; then
     pass "s2-redirect-keeps-the-label (comm=$comm, payload saw $self)"
 else
@@ -178,16 +188,15 @@ fi
 
 "$TOOL" -q -l "$L2" -- "$CASES" renamer >"$D/s2c.out" 2>/dev/null &
 SUP=$!
+self=$(wait_report "$D/s2c.out" "$D/s2c.waited") || self=""
 PAY=$(await_pid "$SUP") || PAY=""
-self=""
-[ -n "$PAY" ] && self=$(wait_report "$D/s2c.out") || self=""
 comm=""
 [ -n "$PAY" ] && comm=$(status_field "$PAY" Name)
 kill "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
 if [ -z "$PAY" ] || [ -z "$self" ]; then
-    fail "s2b-control-rename-takes-effect (payload=[$PAY] self=[$self])"
+    fail "s2b-control-rename-takes-effect (payload=[$PAY] self=[$self] waited=$(cat "$D/s2c.waited" 2>/dev/null)s)"
 elif [ "$comm" = "other" ] && [ "$self" = "other" ]; then
     pass "s2b-control-rename-takes-effect (comm=$comm, payload saw $self)"
 else
@@ -244,9 +253,8 @@ err="$D/s5.err"
 "$TOOL" -l "$L2" --watch-rename --no-dumpable -- "$CASES" renamer \
     >"$D/s5.out" 2>"$err" &
 SUP=$!
+self=$(wait_report "$D/s5.out" "$D/s5.waited") || self=""
 PAY=$(await_pid "$SUP") || PAY=""
-self=""
-[ -n "$PAY" ] && self=$(wait_report "$D/s5.out") || self=""
 comm=""
 [ -n "$PAY" ] && comm=$(status_field "$PAY" Name)
 kill "$SUP" 2>/dev/null
@@ -268,7 +276,7 @@ elif [ "$comm" = "$L2" ]; then
 elif [ "$comm" = "other" ] && grep -q 'cannot redirect a rename to the label' "$err" 2>/dev/null; then
     pass "s5-watch-rename-no-dumpable (defect #60 open: comm=$comm, payload=$self, warning=$(head -1 "$err"))"
 else
-    fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] warn=$(grep -c 'cannot redirect' "$err" 2>/dev/null): neither the fixed shape nor the documented defect)"
+    fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=$(cat "$D/s5.waited" 2>/dev/null)s warn=$(grep -c 'cannot redirect' "$err" 2>/dev/null): neither the fixed shape nor the documented defect)"
 fi
 echo "NOTE s5 depends on issue #60 (fix1); this branch's qa/fix1 has no commits," \
      "so the open-defect shape is what was asserted here"
