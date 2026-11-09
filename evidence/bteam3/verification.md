@@ -22,9 +22,12 @@ $ sh scripts/check-rename.sh
 exit=0
 ```
 
-The library tests went from 167 to 175 with the six new `run::tests`
-cases: `audit_state`, the netlink reply parser, the three warning
-wordings, and the no-warning and mixed-source cases.
+The library tests went from 168 (measured on a clean `qa-base`
+checkout) to 175, with seven new `run::tests` cases: `audit_state`,
+`the_netlink_reply_parser_reads_the_three_shapes`, the four warning
+wordings (literal, env, enabled-audit, disabled-audit), the no-warning
+case, and the mixed literal/env source list.  `run::tests` went from 6
+`#[test]` functions to 13.
 
 ## The fragments
 
