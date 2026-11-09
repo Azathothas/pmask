@@ -325,10 +325,15 @@ impl Report {
 
     /// The effective set as one comma-separated line.  An applied mechanism
     /// is bare, except where its detail is the point (`landlock:abi=N`,
-    /// `proc:subset`).  A mechanism that did not take effect carries its
-    /// state, so a reader never has to infer it from an absence.
+    /// `proc:subset`, `dev:6+4`).  A mechanism that did not take effect
+    /// carries its state, so a reader never has to infer it from an
+    /// absence.
+    ///
+    /// `dev` counts what the fresh `/dev` holds: the basic nodes, then the
+    /// optional members (`pts`, `ptmx`, `shm`, the stdio links) that are in
+    /// place.  The degradation lines name each absent member in full.
     pub fn describe(&self) -> String {
-        fn item(name: &str, e: &Entry) -> String {
+        let item = |name: &str, e: &Entry| -> String {
             match e.state {
                 State::Applied => match name {
                     "landlock" => format!("landlock:abi={}", e.detail),
@@ -341,6 +346,13 @@ impl Report {
                         };
                         format!("proc:{}", mode)
                     }
+                    "dev" => {
+                        let extras = DEV_EXTRAS
+                            .iter()
+                            .filter(|(bit, _)| self.dev_extra & bit != 0)
+                            .count();
+                        format!("dev:{}+{}", e.detail, extras)
+                    }
                     _ => name.to_string(),
                 },
                 State::Off => format!("{}=off", name),
@@ -348,7 +360,7 @@ impl Report {
                 State::Blocked(code) => format!("{}=blocked({})", name, errno_text(code)),
                 State::Skipped(code) => format!("{}=skipped({})", name, errno_text(code)),
             }
-        }
+        };
         [
             item("user", &self.user),
             item("mount", &self.mount),
@@ -1612,12 +1624,13 @@ mod tests {
         set_ok(&mut frame, I_NNP, 0);
         set_ok(&mut frame, I_DEV, 6);
         set_ok(&mut frame, I_PROC, PROC_SUBSET_PID);
-        let r = Report::from_frame(&frame);
+        let mut r = Report::from_frame(&frame);
+        r.dev_extra = DE_PTS | DE_PTMX | DE_SHM | DE_LINKS;
         let d = r.describe();
         assert_eq!(
             d,
             "user,mount,pid,net=refused(EPERM),uts=refused(EINVAL),ipc,cgroup,tmp,\
-             landlock:abi=6,no_new_privs,dev,proc:subset"
+             landlock:abi=6,no_new_privs,dev:6+4,proc:subset"
         );
         // Every mechanism is present exactly once, whatever its state.
         for name in [
@@ -1677,6 +1690,34 @@ mod tests {
         // The basic-count line is not printed when all six are bound, so
         // the four extras are the whole list.
         assert_eq!(deg.len(), 4, "{:?}", deg);
+    }
+
+    // The applied entry counts what it got, so an operator sees the pty
+    // members without reading the degradation list.  Mutation control:
+    // printing the bare name makes this fail.
+    #[test]
+    fn applied_dev_entry_counts_the_members() {
+        let r = dev_report(6, DE_PTS | DE_PTMX | DE_SHM | DE_LINKS);
+        assert!(r.describe().contains("dev:6+4"), "{}", r.describe());
+        let partial = dev_report(5, DE_PTS);
+        assert!(
+            partial.describe().contains("dev:5+1"),
+            "{}",
+            partial.describe()
+        );
+    }
+
+    // A member this host lacks is not in the count, so the count and the
+    // degradation line can never disagree.
+    #[test]
+    fn dev_count_matches_the_degradation_lines() {
+        let r = dev_report(6, DE_PTS | DE_SHM);
+        let d = r.describe();
+        assert!(d.contains("dev:6+2"), "{}", d);
+        let deg = r.degradations();
+        assert_eq!(deg.len(), 2, "{:?}", deg);
+        assert!(deg.iter().any(|l| l.contains("/dev/ptmx")), "{:?}", deg);
+        assert!(deg.iter().any(|l| l.contains("/dev/fd")), "{:?}", deg);
     }
 
     // The other half: a fresh /dev with every member reports no

@@ -104,15 +104,39 @@ fi
 
 # q25f: the report says dev applied and names no missing optional member
 # this host supplies.  A "fresh /dev has no /dev/pts" line while the host
-# has /dev/pts is the false claim this issue is about.
-if grep -q "isolation: .*dev" "$T/c.err"; then
-    if grep -q "fresh /dev has no /dev/pts" "$T/c.err" && [ -d /dev/pts ]; then
-        fail "q25f-report-does-not-disclaim-a-present-member (host has /dev/pts, report says it is absent)"
+# has /dev/pts is the false claim this issue is about.  The applied entry
+# counts what it got: `dev:<basic>+<optional>`.
+if grep -q "isolation: .*dev:" "$T/c.err"; then
+    count=$(sed -n 's/.*[ ,]dev:\([0-9]*\)+\([0-9]*\).*/\1 \2/p' "$T/c.err" | head -1)
+    base=${count%% *}
+    extra=${count##* }
+    if [ "${base:-0}" -ge 6 ]; then
+        pass "q25f-report-counts-the-basic-nodes (dev:${base}+${extra})"
     else
-        pass "q25f-report-does-not-disclaim-a-present-member"
+        fail "q25f-report-counts-the-basic-nodes (dev:${base:-?}+${extra:-?}, want >=6 basic)"
+    fi
+    # Every member this host has and the run could place must be counted.
+    want=0
+    [ -e /dev/pts ] && want=$((want + 1))
+    [ -e /dev/ptmx ] && want=$((want + 1))
+    [ -e /dev/shm ] && want=$((want + 1))
+    want=$((want + 1))  # the stdio links, which are always created
+    if [ "${extra:-0}" -eq "$want" ]; then
+        pass "q25f2-report-counts-the-optional-members (${extra}/${want})"
+    elif grep -q "fresh /dev has no" "$T/c.err"; then
+        skip "q25f2-report-counts-the-optional-members (${extra}/${want}: the report names a refused member)"
+    else
+        fail "q25f2-report-counts-the-optional-members (${extra}/${want}, want ${want})"
+    fi
+    if grep -q "fresh /dev has no /dev/pts" "$T/c.err" && [ -d /dev/pts ]; then
+        fail "q25f3-report-does-not-disclaim-a-present-member (host has /dev/pts, report says it is absent)"
+    else
+        pass "q25f3-report-does-not-disclaim-a-present-member"
     fi
 else
-    skip "q25f-report-does-not-disclaim-a-present-member (no dev entry in the report: $(head -1 "$T/c.err"))"
+    skip "q25f-report-counts-the-basic-nodes (no dev entry in the report: $(head -1 "$T/c.err"))"
+    skip "q25f2-report-counts-the-optional-members (no dev entry in the report)"
+    skip "q25f3-report-does-not-disclaim-a-present-member (no dev entry in the report)"
 fi
 
 # q25g: a degradation is named for a member this host lacks.  When the
