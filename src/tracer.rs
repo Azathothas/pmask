@@ -142,6 +142,11 @@ pub struct SessionStats {
     pub unredacted: u32,
     /// Execs that skipped only the `comm` rename.
     pub comm_skipped: u32,
+    /// `prctl(PR_SET_NAME)` calls the redirect could not aim at the
+    /// label, so the kernel refused them with `EFAULT` and `comm` kept
+    /// the label.  Counted rather than letting the payload's own name
+    /// through (`--watch-rename`, issue 60).
+    pub rename_refused: u32,
     /// Foreign-architecture execs refused.
     pub foreign_arch: u32,
     /// Execs of an already settled process: redacted after the exec, with
@@ -218,6 +223,16 @@ pub struct Tracee {
     /// (`--exec-once`).  Kept until the exec completes so the descriptor
     /// stays open for the tracee's `/proc/<tracer>/fd/N` path.
     pub rexec_image: Option<std::sync::Arc<crate::rexec::Image>>,
+    /// Absolute address of the NUL-terminated `comm` label in this
+    /// tracee's presentation block, or 0 when no block is mapped (an
+    /// unredacted exec, `--no-follow`, or before the first completion).
+    ///
+    /// `--watch-rename` points the trapped `prctl(PR_SET_NAME)` name
+    /// argument here, so the redirect needs no tracee memory write.  A
+    /// write is what a `--no-dumpable` tracee refuses to a non-root
+    /// tracer, which turned the natural flag pair into a silent leak
+    /// (issue 60).
+    pub rename_addr: u64,
 }
 
 impl Tracee {
@@ -236,6 +251,7 @@ impl Tracee {
             secret_fds_open: false,
             vfork_child: false,
             rexec_image: None,
+            rename_addr: 0,
         }
     }
 
@@ -360,9 +376,11 @@ impl Tracer {
     /// terminal state.
     ///
     /// `master` is forked and blocked reading `go_fd`.  The tracer seizes
-    /// it, releases it by writing one byte to `go_fd`, then takes the
-    /// child's `SIGSTOP` handshake stop as the point from which the first
-    /// exec is supervised.
+    /// it, stops it with `PTRACE_INTERRUPT`, takes that `PTRACE_EVENT_STOP`
+    /// as the handshake, releases it by writing one byte to `go_fd`, and
+    /// begins syscall supervision from there.  The stop must not come from
+    /// the child: a pid-namespace init cannot count on a job-control stop
+    /// it sends itself being delivered (issue 4).
     pub fn supervise(
         mut self,
         master: libc::pid_t,
@@ -462,17 +480,66 @@ impl Tracer {
             }
             return Err(e);
         }
-        let byte = [1u8; 1];
-        // SAFETY: go_fd is a valid pipe write end owned by this call.
-        unsafe {
-            libc::write(go_fd, byte.as_ptr() as *const libc::c_void, 1);
-            libc::close(go_fd);
+        // Ask the seized child to stop instead of waiting for a signal it
+        // sends itself.  The old handshake was `libc::raise(SIGSTOP)` in
+        // the child, and a process that is pid 1 of its own pid namespace
+        // (`--unshare`, `--redact --isolate`) cannot rely on that stop
+        // arriving: the kernel discards a job-control stop aimed at a
+        // namespace init, the tracer then took the next stop it saw (the
+        // exec event) as the handshake, and `supervise` returned without
+        // redacting anything (issue 4).  `PTRACE_INTERRUPT` is delivered
+        // by the kernel to the tracee, so the namespace cannot change the
+        // outcome.
+        //
+        // Order matters: interrupt, wait for the stop, and only then
+        // release the child.  The child cannot exec while it is stopped,
+        // so the stop that arrives is always the interrupt stop and never
+        // an exec event.
+        let rc = unsafe {
+            libc::ptrace(
+                arch::PTRACE_INTERRUPT as _,
+                master,
+                std::ptr::null_mut::<libc::c_void>(),
+                std::ptr::null_mut::<libc::c_void>(),
+            )
+        };
+        if rc == -1 {
+            let e = io::Error::last_os_error();
+            // SAFETY: closing the pipe ends and the report descriptor
+            // owned by this call.
+            unsafe {
+                libc::close(go_fd);
+                if report_fd >= 0 {
+                    libc::close(report_fd);
+                }
+            }
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                // The child is already gone (a refused setup step exits
+                // it before the handshake).  Reap it and report its own
+                // status, like the readiness-EOF path above.
+                let mut st = 0i32;
+                // SAFETY: plain waitpid of our own child.
+                unsafe {
+                    libc::waitpid(master, &mut st, libc::__WALL);
+                }
+                return Ok(finish_status(master, st));
+            }
+            // Nothing is traced: the child must not run unmasked.
+            // SAFETY: plain kill and reap of our own child.
+            unsafe {
+                libc::kill(master, libc::SIGKILL);
+                let mut st = 0i32;
+                libc::waitpid(master, &mut st, libc::__WALL);
+            }
+            return Err(e);
         }
         let status = match wait_master_stop(master) {
             Ok(s) => s,
             Err(e) => {
-                // SAFETY: the report descriptor is owned by this call.
+                // SAFETY: the descriptor and the pipe end are owned by
+                // this call.
                 unsafe {
+                    libc::close(go_fd);
                     if report_fd >= 0 {
                         libc::close(report_fd);
                     }
@@ -481,12 +548,42 @@ impl Tracer {
             }
         };
         if !libc::WIFSTOPPED(status) {
-            // died before stopping (for example an internal error)
+            // died before the handshake (for example an internal error)
+            // SAFETY: the pipe end is owned by this call.
+            unsafe { libc::close(go_fd) };
             return Ok(finish_status(master, status));
         }
+        // A `PTRACE_INTERRUPT` stop is `PTRACE_EVENT_STOP` with SIGTRAP.
+        // Any other stop here means the child got a job-control signal of
+        // its own; it is still a stop, so release it the same way, but
+        // say so: the handshake is then not the one this code installs.
+        let sig = libc::WSTOPSIG(status);
+        let event = (status as u32) >> 16;
+        if event != arch::PTRACE_EVENT_STOP || sig != libc::SIGTRAP {
+            vlog!(
+                self,
+                "master {}: handshake stop is sig {}/{}, not PTRACE_INTERRUPT",
+                master,
+                sig,
+                event
+            );
+        }
+        let byte = [1u8; 1];
+        // SAFETY: go_fd is a valid pipe write end owned by this call.
+        unsafe {
+            libc::write(go_fd, byte.as_ptr() as *const libc::c_void, 1);
+            libc::close(go_fd);
+        }
         self.register(master, Tracee::new(State::Slow));
-        // Signal 0 suppresses the handshake SIGSTOP.
-        self.resume(master, 0, true);
+        // PTRACE_SYSCALL starts the syscall supervision the first exec is
+        // swapped at.  A group-stop (the abnormal case above) needs
+        // SIGCONT to leave it.
+        let release = if sig == libc::SIGTRAP {
+            0
+        } else {
+            libc::SIGCONT
+        };
+        self.resume(master, release, true);
 
         loop {
             let waited = if self.master_exit.is_some() && self.table.is_empty() {
@@ -677,13 +774,13 @@ impl Tracer {
             fd_names.join(",")
         };
         if !self.audit_header {
-            println!("pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds");
+            audit_line("pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds");
             self.audit_header = true;
         }
-        println!(
+        audit_line(&format!(
             "pmask audit: pid={} comm={} exe={} tracer={} cmdline_bytes={} nul_ratio={} fds={}",
             pid, comm, exe, tracer, cmdline_bytes, nul_ratio, fds
-        );
+        ));
         // The interfaces this row cannot close.  The pid always exists;
         // a readable exe, a readable memory file and a descriptor that
         // names the tool are the other three.
@@ -711,11 +808,11 @@ impl Tracer {
         // suppress its residue line.
         if self.cfg.audit {
             let reasons: Vec<&str> = self.audit_reasons.iter().copied().collect();
-            println!(
+            audit_line(&format!(
                 "pmask audit: residue: {} ({})",
                 self.audit_residue,
                 reasons.join(", ")
-            );
+            ));
         }
         if self.cfg.quiet {
             return;
@@ -781,6 +878,16 @@ impl Tracer {
             eprintln!(
                 "pmask: {} --rexec fallback step(s) taken ({} used the on-disk last resort)",
                 s.rexec_fallback, s.rexec_disk
+            );
+        }
+        // A rename the redirect had to refuse left `comm` at the label,
+        // so the promise held, but the payload's own `PR_SET_NAME` did
+        // not take effect.  That is a degradation, and it is counted.
+        if s.rename_refused > 0 {
+            eprintln!(
+                "pmask: {} rename(s) refused because the label address was not available \
+                 (comm kept the label)",
+                s.rename_refused
             );
         }
     }
@@ -1311,25 +1418,85 @@ impl Tracer {
         self.resume_state(pid, 0);
     }
 
-    /// Point `prctl(PR_SET_NAME, ...)` at a label buffer just below the
-    /// tracee's stack pointer (outside the red zone).
+    /// Point the tracee's `prctl(PR_SET_NAME)` name argument at the label,
+    /// without writing into the tracee when the label is already mapped
+    /// there.
+    ///
+    /// The preferred target is the comm label the completion stop left in
+    /// this tracee's presentation block (`Tracee::rename_addr`).  It is a
+    /// constant of the session that is already in the tracee's address
+    /// space, so pointing at it needs no `process_vm_writev` and no
+    /// `PTRACE_POKEDATA`.  That matters under `--no-dumpable`: a
+    /// non-dumpable tracee refuses both writes to a non-root tracer, and
+    /// the old write-only redirect therefore let the payload's rename
+    /// through, leaving `comm` disagreeing with `cmdline` (issue 60).
+    ///
+    /// Three outcomes, in order:
+    ///
+    /// 1. the recorded block address holds the label — point at it;
+    /// 2. no usable block (this exec was not redacted, or the block is
+    ///    gone) — write a fresh copy below the stack pointer and point at
+    ///    that, which is what the previous code always did;
+    /// 3. neither is available — point at an unmapped address, so the
+    ///    kernel refuses the rename with `EFAULT` and `comm` keeps the
+    ///    label.  The promise holds, and the session summary counts the
+    ///    refusal.  The payload's own name pointer is never left in place.
     fn redirect_rename(&mut self, pid: libc::pid_t, si: &SyscallInfo) {
         let Ok(mut regs) = Regs::get(pid) else { return };
-        let mut buf = [0u8; 16];
         let n = self.cfg.label_comm.len().min(15);
-        buf[..n].copy_from_slice(&self.cfg.label_comm[..n]);
-        let addr = (si.stack_pointer.wrapping_sub(512)) & !15u64;
-        if crate::remote::write_mem(pid, addr, &buf) != buf.len() as isize {
-            self.warn(format_args!(
-                "pid {}: cannot redirect a rename to the label",
-                pid
-            ));
-            return;
-        }
-        regs.set_arg(2, addr);
+        let block_addr = self
+            .table
+            .get(&pid)
+            .map(|t| t.rename_addr)
+            .filter(|a| *a != 0);
+        let target = match block_addr {
+            Some(a) if self.block_holds_label(pid, a, n) => a,
+            _ => {
+                let mut buf = [0u8; 16];
+                buf[..n].copy_from_slice(&self.cfg.label_comm[..n]);
+                let addr = (si.stack_pointer.wrapping_sub(512)) & !15u64;
+                if crate::remote::write_mem(pid, addr, &buf) == buf.len() as isize {
+                    addr
+                } else {
+                    // Fail closed: address 1 is never mapped, so
+                    // `PR_SET_NAME` returns `EFAULT` and `comm` keeps the
+                    // label.  Letting the payload's own pointer through
+                    // is the leak this filter exists to stop.
+                    self.stats.rename_refused += 1;
+                    self.warn(format_args!(
+                        "pid {}: cannot redirect a rename to the label; the rename is refused \
+                         so comm keeps the label",
+                        pid
+                    ));
+                    1
+                }
+            }
+        };
+        regs.set_arg(2, target);
         if regs.put(pid).is_ok() {
-            vlog!(self, "pid {}: rename redirected to the label", pid);
+            vlog!(self, "pid {}: rename redirected to {:#x}", pid, target);
         }
+    }
+
+    /// Does the tracee's memory at `addr` still start with the comm label?
+    ///
+    /// When the read fails the answer is "yes".  For a live tracee the
+    /// read fails because it is non-dumpable, which is exactly the
+    /// `--no-dumpable` case this redirect exists for; treating that as
+    /// "no block" would replace a working redirect with a refused rename
+    /// and count a degradation that did not happen.  The address is
+    /// bookkeeping the tracer wrote itself at the completion stop and is
+    /// cleared at the tracee's next exec entry.
+    fn block_holds_label(&self, pid: libc::pid_t, addr: u64, n: usize) -> bool {
+        if n == 0 {
+            return true;
+        }
+        let mut buf = [0u8; 16];
+        let want = n.min(buf.len());
+        if crate::remote::read_mem(pid, addr, &mut buf[..want]) != want as isize {
+            return true;
+        }
+        buf[..want] == self.cfg.label_comm[..want]
     }
 
     fn on_syscall_stop(&mut self, pid: libc::pid_t) {
@@ -1621,6 +1788,23 @@ fn wait_master_stop(pid: libc::pid_t) -> io::Result<i32> {
 
 fn last_errno() -> i32 {
     io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// Write one `--audit` row to stdout, ignoring a failed write.
+///
+/// The audit rows are a report, not a control channel.  `println!`
+/// panics on `EPIPE` (`pmask --audit ... | head -1`), `panic = "abort"`
+/// turns that into `SIGABRT`, and `PTRACE_O_EXITKILL` then kills the
+/// payload the row is about.  A reader that went away must cost the
+/// report and nothing else, so the write result is deliberately dropped
+/// (issue 17).
+fn audit_line(row: &str) {
+    use std::io::Write;
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    let _ = lock.write_all(row.as_bytes());
+    let _ = lock.write_all(b"\n");
+    let _ = lock.flush();
 }
 
 fn finish_status(pid: libc::pid_t, status: i32) -> ExitState {

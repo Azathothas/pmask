@@ -58,13 +58,27 @@ use std::time::Duration;
 
 static SESSION: Mutex<()> = Mutex::new(());
 
-/// The argument vector of this process, copied out of
-/// `/proc/self/cmdline` into owned memory.
+/// The argument vector of this process, in owned memory.
 ///
 /// A caller that reads its options from this copy can redact the
 /// kernel-served argv block immediately at startup, before parsing, which
 /// is the earliest point a supervisor can act on its own metadata.
+///
+/// The vector comes from the runtime's own copy (`std::env::args_os()`),
+/// not from `/proc/self/cmdline`.  The kernel's copy is what the block
+/// holds *now*, and a process that is itself running under an exact mask
+/// has already had that window moved onto the label; reading it would
+/// turn a nested `pmask read NAME` into `pmask <label>`, which finds no
+/// subcommand and prints the help text (issue 5).  `/proc/self/cmdline`
+/// stays as the fallback for the one case where the runtime vector is
+/// empty: a caller that cleared it, or an exec the library did not make.
+/// The block is zeroed afterwards exactly as before, so the self-mask
+/// property is unchanged.
 pub fn snapshot_argv() -> Vec<OsString> {
+    let from_runtime: Vec<OsString> = std::env::args_os().collect();
+    if !from_runtime.is_empty() {
+        return from_runtime;
+    }
     let raw = std::fs::read("/proc/self/cmdline").unwrap_or_default();
     split_cmdline(&raw)
 }
@@ -364,6 +378,11 @@ impl Mask {
     /// Keep the named environment variables visible in
     /// `/proc/<pid>/environ`.  Every other variable stays redacted.
     /// Repeated calls add names.
+    ///
+    /// An explicit list wins over an earlier [`Mask::keep_environ_visible`]:
+    /// the caller asked twice, and the narrower request is the later one.
+    /// A later `keep_environ_visible` still wins over this call, because
+    /// the last request is the one the operator meant.
     pub fn keep_env_vars<I, S>(mut self, names: I) -> Mask
     where
         I: IntoIterator<Item = S>,
@@ -373,6 +392,11 @@ impl Mask {
             let n: String = n.into();
             self.keep_env_names.push(n.into_bytes());
         }
+        // The list is the narrower request: `--keep-env` followed by
+        // `--keep-env=NAME` must show NAME only, not the whole inherited
+        // environment (issue 16).  A later `--keep-env` still turns the
+        // redaction off again, because the last request wins.
+        self.redact_environ = true;
         self
     }
 
@@ -687,8 +711,11 @@ impl Mask {
             if c.len() > crate::COMM_MAX {
                 return Err(invalid("comm must be at most 15 bytes"));
             }
-            if c.bytes().any(|b| b == 0) {
-                return Err(invalid("comm must not contain NUL"));
+            // LF and CR break the parenthesised `comm` field of
+            // `/proc/<pid>/stat`, which readers split on newlines; NUL
+            // truncates the kernel's `comm` copy.  Same rule as the label.
+            if c.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+                return Err(invalid("comm must not contain NUL, LF or CR bytes"));
             }
         }
         if let Some(a) = &self.argv0 {
@@ -1524,6 +1551,13 @@ fn child_exec(
         // that can end the child (a refused setuid, a refused seccomp
         // filter) runs after this point, so a failure is reported from a
         // seized tracee instead of racing the tracer's `PTRACE_SEIZE`.
+        //
+        // The tracer stops this process with `PTRACE_INTERRUPT` before it
+        // writes the go byte.  The child must not stop itself: a
+        // `--unshare` child is pid 1 of its own pid namespace, and the
+        // kernel discards a job-control stop such a process sends to
+        // itself, which used to cost the whole session its redaction
+        // (issue 4).
         let mut byte = 0u8;
         loop {
             let n = libc::read(go_r, &mut byte as *mut u8 as *mut libc::c_void, 1);
@@ -1535,7 +1569,6 @@ fn child_exec(
             }
             libc::_exit(126);
         }
-        libc::raise(libc::SIGSTOP);
 
         if in_userns {
             if let Err(e) = crate::userns::child_setup_proc() {

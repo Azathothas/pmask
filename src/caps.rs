@@ -20,8 +20,6 @@
 use std::io;
 use std::sync::OnceLock;
 
-/// `memfd_secret(2)`; same number on x86-64 and aarch64.
-const SYS_MEMFD_SECRET: libc::c_long = 447;
 /// `landlock_create_ruleset(2)`; same number on x86-64 and aarch64.
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 /// `pidfd_open(2)`.
@@ -215,18 +213,11 @@ impl Caps {
 
         let memfd_secret = match overrides.memfd_secret {
             Some(v) => v,
-            None => {
-                // SAFETY: plain syscall; a failure is the answer.
-                let fd =
-                    unsafe { libc::syscall(SYS_MEMFD_SECRET, 0 as libc::c_long) } as libc::c_int;
-                if fd >= 0 {
-                    // SAFETY: fd is ours.
-                    unsafe { libc::close(fd) };
-                    true
-                } else {
-                    false
-                }
-            }
+            // The probe creates the descriptor through the same helper
+            // the real buffers use, so a probe that succeeds cannot
+            // disagree with the allocation about `MFD_CLOEXEC`, and
+            // there is only one creation site to audit (issue 15).
+            None => crate::mem::secret_memfd_available(),
         };
 
         let mlock = probe_in_child(|| {
