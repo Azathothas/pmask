@@ -317,10 +317,17 @@ contract:
 .B \-\-audit
 needs a tracer,
 .B \-\-image
-(and the rest of the image family) cannot exec an image without the
-redaction child, and
+and
+.B \-\-image\-from\-fd
+cannot exec an image without the redaction child, and
 .B \-\-secret\-close\-on\-exec
 needs a tracer once a secret is delivered.
+The rest of the image family
+.RB ( \-\-rexec ,
+.BR \-\-rexec\-allow\-disk ,
+.BR \-\-exec\-once ,
+.B \-\-hugetlb )
+is dropped with a note, because it does not by itself name an image.
 .PP
 The label and
 .B \-\-label\-empty
