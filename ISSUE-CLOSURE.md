@@ -32,7 +32,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 29 | `doctor --json` breaks on a quoted store path; `doctor --require ''` passes | `bdc6b37` | `tests/qa.d/29.sh` | `evidence/fix3` |
 | 30 | `--env =VALUE` is accepted in plain mode and refused in redact mode | `12e4740`, `fa0204a` | `tests/qa.d/30.sh` | `evidence/fix2` |
 | 31 | `--args-from-fd 0` closes the payload's stdin | `7f80d21`, `ecd419d` | `tests/qa.d/31.sh` | `evidence/fix4` |
-| 32 | `--audit` is silently inert when the host selects plain mode | `2e1627b`, `fa0204a` | `tests/qa.d/32.sh` | `evidence/fix2` |
+| 32 | `--audit` is silently inert when the host selects plain mode | `64d6514`, `2e1627b`, `fa0204a` | `tests/qa.d/32.sh` | `evidence/fix2` |
 | 33 | `--comm` accepts LF and CR | `b48373f`, `398eda3` | `tests/qa.d/33.sh` | `evidence/fix1` |
 | 34 | A ptrace-denied host gives a cryptic `session error` for a mask run | `fa0204a` | `tests/qa.d/34.sh` | `evidence/fix2` |
 | 35 | The test gate is not root-safe (`sudo sh tests/run.sh` fails) | `6fef4c3` | `tests/qa.d/35.sh` | `evidence/fix5` |
@@ -42,9 +42,9 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 40 | [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/40.sh` | `evidence/bteam1` |
 | 41 | [b-team] The `environ` file of a masked process: zero bytes, a NUL run, or the kept variables | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/41.sh` | `evidence/bteam1` |
 | 42 | [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade | `199580b`, `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/42.sh` | `evidence/bteam1` |
-| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
+| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `babede3`, `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
 | 44 | [b-team] `--no-dumpable` answers `EACCES` on five files and zeroes four `stat` fields | `ee9e7e2`, `66937c9`, `74fbe52`, `720873b`, `9ca47ad`, `8d1c552` | `tests/qa.d/44.sh` | `evidence/bteam3` |
-| 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `ad77b37`, `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
+| 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `12d334a`, `ad77b37`, `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
 | 46 | [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1` | `5abd5e4`, `e77a5da`, `03720b3`, `c4b61fc`, `d155066`, `af95ff7` | `tests/qa.d/46.sh` | `evidence/bteam5` |
 | 47 | [b-team] End states: `--detach`, `--no-follow`, `--on-exit` and `PTRACE_O_EXITKILL` | `3eb7ab2`, `7f80d21`, `e51b7bd`, `ecd419d`, `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/47.sh` | `evidence/bteam2`, `evidence/fix4` |
 | 48 | [b-team] The launch window and the statistical side channels of supervision | `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/48.sh` | `evidence/bteam2` |
@@ -261,6 +261,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #32 `--audit` is silently inert when the host selects plain mode
 
+- `64d6514` test: cover the composed isolate audit path
+  Files: `CHANGELOG.md`, `ISSUE-CLOSURE.md`
 - `2e1627b` docs: refresh the per-issue fragment logs
 - `fa0204a` test: add QA fragments for the fix2 issues
   Files: `man/pmask.1`, `src/cli.rs`, `src/main.rs`, `src/run.rs`, `tests/helpers/noptrace.c`
@@ -365,6 +367,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #43 [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path
 
+- `babede3` docs: date the pre-38 tracer captures
+  Files: `docs/research/bteam-39-43.md`, `docs/research/bteam-ebpf.md`
 - `149ee7c` docs: point every claim in the residue note at its source
   Each measured statement now names the function that produces it, so a reader can check the note against the tree instead of trusting it. Also replaces one rounded figure with the number the log carries.
   Files: `docs/research/bteam-39-43.md`
@@ -396,6 +400,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #45 [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem`
 
+- `12d334a` test: scope the secret sweep to this run
 - `ad77b37` test: cover the report sink, the composition and the image names
 - `0022762` docs: record the issue 45 memfd-name evidence
 - `20716d0` test: cover the memfd name options
@@ -556,6 +561,9 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ## Commits that name no issue
 
+- `2a91253` merge: Team Red QA pass over the 57 issue backlog
+- `4e0bb8c` docs: name the report flag and the image family in refusals
+- `3394b8b` test: wait for the validate control instead of one sample
 - `dae8f8a` docs: correct the supervisor and isolate claims
 - `7c051c5` test: skip the root batch with the same reason as lib
 - `76878d9` test: match the control's own path and wait for it

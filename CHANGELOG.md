@@ -56,6 +56,9 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Tests and gates
 
+- test: scope the secret sweep to this run (`12d334a`)
+- test: wait for the validate control instead of one sample (`3394b8b`)
+- test: cover the composed isolate audit path (`64d6514`)
 - test: tighten the 38 and 46 controls for the fixed tree (`5abd5e4`)
 - test: skip the root batch with the same reason as lib (`7c051c5`)
 - test: match the control's own path and wait for it (`76878d9`)
@@ -110,6 +113,8 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Documentation
 
+- docs: date the pre-38 tracer captures (`babede3`)
+- docs: name the report flag and the image family in refusals (`4e0bb8c`)
 - docs: correct the supervisor and isolate claims (`dae8f8a`)
 - docs: date the audit capture against #38 (`45e7683`)
 - docs: mark the audit capture as the pre-38 build (`dbb5201`)
@@ -186,6 +191,7 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Merges
 
+- merge: Team Red QA pass over the 57 issue backlog (`2a91253`)
 - merge: docs3 latest (`fc252c6`)
 - merge: docs1 (`1c93abd`)
 - merge: docs3 (`79dc249`)
