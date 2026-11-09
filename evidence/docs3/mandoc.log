@@ -1,0 +1,2 @@
+$ mandoc -T lint -W error man/pmask.1 man/pmaskd.8
+exit=0

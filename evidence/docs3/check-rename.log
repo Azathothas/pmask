@@ -1,0 +1,2 @@
+$ sh scripts/check-rename.sh
+exit=0

@@ -1,0 +1,42 @@
+# comment audit excerpts from qa-base
+    pub no_dumpable: bool,
+    /// The children carry a seccomp filter that traps `prctl(PR_SET_NAME)`
+    /// (`SECCOMP_RET_TRACE`); the tracer reverts renames to the label.
+    pub watch_prctl: bool,
+
+    /// `PTRACE_EVENT_SECCOMP`: the children carry a filter that traps
+    /// `prctl(PR_SET_NAME)` only.  The rename is redirected to the label.
+    fn on_seccomp_stop(&mut self, pid: libc::pid_t) {
+        let mut si: SyscallInfo = unsafe { std::mem::zeroed() };
+//!   the later exec.  `prepare` returns the kernel error in that case.
+//! - Tools that look for `memfd:` executables can flag the process.  The
+//!   label sets the memfd name.
+//!
+//! The memfd keeps `FD_CLOEXEC`.  The fd stays open across `fork` and closes
+}
+
+/// Copy `program` into a sealed memfd named after `label`.
+///
+/// Returns InvalidInput with "not an ELF image" when the file does not start
+//! the host can read the daemon's memory.  See the trust model above.
+//!
+//! # Secret store
+//!
+//! The daemon locks the memory that holds the job environment with
+//! `mlock` (a failure is a warning).  On `SIGTERM` or `SIGINT` it stops
+///
+/// Returns the process exit status: 0 on success, 1 when the secret cannot
+/// be found or read, 255 on a usage error.
+pub fn read_main(args: &[OsString]) -> i32 {
+    let mut name: Option<String> = None;
+    /// `master` is forked and blocked reading `go_fd`.  The tracer seizes
+    /// it, releases it by writing one byte to `go_fd`, then takes the
+    /// child's `SIGSTOP` handshake stop as the point from which the first
+    /// exec is supervised.
+    pub fn supervise(
+        mut self,
+        }
+        self.register(master, Tracee::new(State::Slow));
+        // Signal 0 suppresses the handshake SIGSTOP.
+        self.resume(master, 0, true);
+
