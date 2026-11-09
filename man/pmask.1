@@ -57,6 +57,15 @@ Default: the label cut to 15 bytes.
 Leave
 .B /proc/\fIpid\fB/environ
 visible.
+It takes no value: a following word is the program, not a variable list.
+A line that writes
+.B \-\-keep\-env
+NAME
+.B \-\-
+COMMAND is refused, naming
+.BR \-\-keep\-env=NAME ,
+because the space form would keep everything and run NAME as the
+program.
 .TP
 .BI \-\-keep\-env= NAME[,NAME...]
 Keep only the named variables visible.
