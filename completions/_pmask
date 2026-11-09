@@ -15,19 +15,27 @@ _pmask() {
         '--on-exit[what happens to descendants]:policy:(detach wait kill)' \
         '--no-follow[redact only the direct child]' \
         '--no-exit-kill[do not set PTRACE_O_EXITKILL]' \
+        '--no-exitkill[alias for --no-exit-kill]' \
         '--no-dumpable[set PR_SET_DUMPABLE=0]' \
         '--no-new-privs[set no_new_privs]' \
         '--no-exact[keep the original cmdline byte extent]' \
         '--detach[detach each tracee after its exec; TracerPid reads 0]' \
         '--watch-rename[revert later renames to the label]' \
         '--rexec[exec from a sealed memfd]' \
+        '--image[read the program bytes from PATH; - reads stdin]:path:_files' \
+        '--image-from-fd[read the program bytes from a descriptor]:fd:' \
+        '--exec-once[reuse one sealed image per distinct program]' \
+        '--hugetlb[ask for a hugetlbfs-backed image]' \
+        '--rexec-allow-disk[allow the on-disk last resort of --rexec]' \
         '--unshare[new user, pid and mount namespaces]' \
         '--scope-name[systemd transient scope name]:name:' \
         '--daemon[run the job in a pmaskd]:socket:_files' \
         '--secret[deliver a secret on a descriptor: N=SRC]:spec:' \
         '--socket[secret-agent socket for agent: sources]:path:_files' \
         '--isolate[fresh namespaces]:list:(pid,net,tmp all none)' \
+        '--redact[ask for /proc redaction explicitly]' \
         '--no-redact[never touch /proc metadata]' \
+        '--audit[print a residue row per tracee at each exec]' \
         '--allow-argv-secret[keep a literal: or env: source and warn]' \
         '--secret-burn[seal without F_SEAL_SHRINK so the reader can truncate]' \
         '--secret-close-on-exec[close the descriptor in every descendant at its fork]' \
@@ -40,6 +48,8 @@ _pmask() {
         '(-E)'-E'[alias for --keep-env]' \
         '(-F)'-F'[alias for --no-follow]' \
         '(-K)'-K'[alias for --no-exit-kill]' \
+        '(-f)'-f'[accepted for compatibility, no effect]' \
+        '(-c)'-c'[accepted for compatibility, no effect]' \
         '*::command:_normal'
 }
 

@@ -1,0 +1,72 @@
+################ compare.sh
+FIELDS variant pid comm exe tracer_pid cmdline_bytes stat_arg_span nul_count nul_maxrun canary_in_cmdline canary_in_environ environ_bytes auxv_execfn_contains_canary argstart_vma mem_canary_readable
+ROW control 79198 sh /usr/bin/dash 0 35 35 4 1 1 1 2564 0 7ffcf3bb3000-7ffcf3bd4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+ROW redacted 80777 ci-runner /usr/bin/dash 80775 10 10 1 1 0 0 0 0 7f41c52eb000-7f41c52ef000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+SUPERVISOR redacted maps_bytes=REFUSED payload_maps_bytes=2146
+ROW redacted-nodumpable 82306 ci-runner SKIP 82305 10 0 1 1 0 SKIP SKIP SKIP SKIP SKIP
+SUPERVISOR redacted-nodumpable maps_bytes=REFUSED payload_maps_bytes=REFUSED
+SUPERVISOR control maps_bytes=2146
+MAP_FILES rexec_range=55b01a95a000-55b01a975000 rexec_target=/memfd:ci-runner (deleted) plain_range=5582e040f000-5582e042a000 plain_target=/workspace/wt/fix5/tests/testcases
+SCRIPT-WINDOW window_us=4882 method=completion-stop
+DETACH-TREE labelled=1 unlabelled=2 visible_grand=1 visible_child=1 detached=1
+AUDIT audit-report
+ROW redacted-detach 122454 ci-runner /usr/bin/dash 0 10 10 1 1 0 0 0 0 7f371f198000-7f371f19c000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+
+human table: one row per variant, the same values as the ROW lines
+variant          pid     comm           tracer cmd_bytes arg_span nuls  nul_run canary_cmd canary_env env_bytes auxv_canary mem_canary   scanned strings_bytes
+control          79198   sh             0      35        35       4     1       1          1          2564      0           1            2736128 0         
+redacted         80777   ci-runner      80775  10        10       1     1       0          0          0         0           1            2744320 0         
+redacted-nodumpable 82306   ci-runner      82305  10        0        1     1       0          SKIP       SKIP      SKIP        SKIP         SKIP   SKIP      
+redacted-detach  122454  ci-runner      0      10        10       1     1       0          0          0         0           1            2744320 0         
+
+detail: exe, the mapping that holds arg_start, and the mappings that
+detail: hold the canary in /proc/<pid>/mem, per variant
+control          exe=[/usr/bin/dash]
+                 argstart_vma=[7ffcf3bb3000-7ffcf3bd4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+redacted         exe=[/usr/bin/dash]
+                 argstart_vma=[7f41c52eb000-7f41c52ef000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+redacted-nodumpable exe=[SKIP]
+                 argstart_vma=[SKIP]
+                 mem_canary_in=[-]
+redacted-detach  exe=[/usr/bin/dash]
+                 argstart_vma=[7f371f198000-7f371f19c000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+
+canary PMKCAN-fXqk0qdX was an argv element of the job and PMK_COMPARE_CANARY held it
+in the environment.
+mem_canary comes from a page-by-page scan of every readable mapping in
+/proc/<pid>/mem.  strings(/proc/<pid>/mem) is not used because it seeks
+from offset 0, page 0 is unmapped, the read fails with EIO and it
+reports nothing at all, even for the control whose canary sits in its
+stack mapping.  The strings_bytes column is that figure, and it is why
+the column exists.
+COMPARE: OK
+################ conformance.sh
+PASS args-hidden cmdline=[cfm-conf|]
+PASS args-visible-control canary visible in pid 127206 without supervision
+PASS environ-hidden
+PASS environ-keep-control environ=[|||||||||||||||||||||||||||||||||||||||PMK_CONF_KEEP=CFMCONF]
+PASS comm-is-label
+PASS comm-control unsupervised comm is [sh]
+PASS ps-args-is-label
+PASS ps-args-control
+PASS supervisor-selfmask comm=[cfm-conf] cmdline=[cfm-conf|]
+PASS same-uid-exe-maps exe=[/usr/bin/dash]
+PASS same-uid-environ-read
+PASS holder-environ-refused
+PASS payload-session pid=132392
+PASS secret-absent
+PASS core-limit-zero holder=[0 0] payload=[0 0]
+PASS core-limit-control payload soft=[0] hard=[18446744073709551615] without a secret
+PASS secret-fd-is-memfd fd=3 seals=15 write_errno=1 link=/memfd:pmask-secret (deleted)
+PASS secret-fd-control seals=[-1] for a plain file (the memfd set is 15)
+PASS dumpable-default
+PASS dumpable-nodumpable
+PASS nodumpable-refuses
+SKIP observer-other-uid: needs root to create a second uid; its cmdline and comm half is what args-hidden and comm-is-label measure
+SKIP observer-root: this suite runs as uid 1000, so root's view cannot be observed from here
+SKIP observer-kernel: a kernel-level attacker is outside the process's view, so no case can measure it
+CONFORMANCE: PASS pass=21 fail=0 skip=3
+################ NATIVE: ALL-PASS ran=2 missing=0
