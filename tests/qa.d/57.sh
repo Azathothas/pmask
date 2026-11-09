@@ -10,7 +10,7 @@
 #   e1  eBPF program load: SKIP on this host, with the errno
 #   e2  process connector subscribe: SKIP with the errno
 #   e3  the substitute channel: the payload's TracerPid names a task of
-#       the tree, and the supervisor's task set has `pmask-tracer`
+#       the tree, and the supervisor's task set has a second thread
 #   e4  control: a plain payload has TracerPid 0 and no `pmask-tracer`
 #   e5  the kernel's exec record cannot carry argv: a `sched_process_exec`
 #       reader needs tracefs; SKIP when it is absent, and the source fact
@@ -204,7 +204,8 @@ sleep 0.3
 tracer=$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/$PLAIN/status" 2>/dev/null)
 found=no
 for t in /proc/"$PLAIN"/task/*; do
-    [ "$(cat "$t/comm" 2>/dev/null)" = "pmask-tracer" ] && found=yes
+    [ "$(basename "$t")" = "$PLAIN" ] && continue
+    found=yes
 done
 if [ "$tracer" = 0 ] && [ "$found" = no ]; then
     pass "e4-control-plain-process-has-no-tracer"
@@ -244,7 +245,7 @@ else
 fi
 echo "NOTE e6 does not make the tree invisible: the PTRACE_SEIZE that a"
 echo "     sys_enter_ptrace sensor would record already happened, and the"
-echo "     supervisor's pmask-tracer task remains."
+echo "     supervisor's tracer thread remains."
 
 echo "== QA57: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL)"
 [ "$FAIL" = 0 ] || exit 1

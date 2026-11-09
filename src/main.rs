@@ -112,6 +112,19 @@ fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
         .map(|(name, kind)| format!("'{}' ({})", name, kind))
         .collect();
     let list = named.join(", ");
+    // The generic `literal:`/`env:` warning in the parser already named
+    // the source and the ways out when it will be printed for this run
+    // (it is suppressed by `-q` and by `--daemon`).  This warning then
+    // adds only what that one cannot say, which is the escape and its
+    // window; repeating the source and the advice would be one exposure
+    // described twice.
+    let generic_shown = !cli.quiet && cli.daemon.is_none();
+    let advice = if generic_shown {
+        ""
+    } else {
+        "; keep the command out of the supervisor's argv with --args-from-fd, or use \
+         file:PATH or agent:NAME"
+    };
     // The same selection rule `run` uses, so the message describes the
     // mode this invocation will actually take.
     let mut runner = pmask::run::Runner::new();
@@ -126,10 +139,10 @@ fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
         eprintln!(
             "pmask: warning: PMASK_NO_SELFMASK=1 is overridden in {} mode: the supervisor masks \
              its own /proc entry after the fork, so secret {} is readable in its argv or \
-             environment only until then, not for the whole run; keep the command out of the \
-             supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME",
+             environment only until then, not for the whole run{}",
             mode.as_str(),
-            list
+            list,
+            advice
         );
         return;
     }
@@ -148,10 +161,10 @@ fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
     eprintln!(
         "pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for \
          the whole run in {} mode, so secret {} is in its argv or environment the entire time; \
-         every local account can read it.  Keep the command out of the supervisor's argv with \
-         --args-from-fd, or use file:PATH or agent:NAME",
+         every local account can read it{}",
         mode.as_str(),
-        list
+        list,
+        advice
     );
 }
 

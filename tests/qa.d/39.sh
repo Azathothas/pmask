@@ -2,7 +2,7 @@
 # Issue 39: the supervisor's own /proc entry, and PMASK_NO_SELFMASK.
 #
 # The self-mask is the documented shape: comm == label cut to 15 bytes,
-# cmdline == label + one NUL, empty environment window, a `pmask-tracer`
+# cmdline == label + one NUL, empty environment window, a tracer task
 # task, and PR_SET_DUMPABLE=0 (so a same-uid read of exe/environ fails).
 # A same-uid reader gets `0 0 0 0` for stat fields 48-51; only root sees
 # the relocated window.
@@ -87,11 +87,14 @@ else
 $(spans_self "$SUP")
 EOT
     # The tracer task is the narrow part: a process can set its own
-    # PR_SET_NAME and PR_SET_MM_MAP, but not create a thread named
-    # pmask-tracer.
+    # PR_SET_NAME and PR_SET_MM_MAP, but the session is also a second
+    # thread of the supervisor.  Its name is issue 38's channel (asserted
+    # there); here it only has to be present and to carry the label, which
+    # is the shape this issue measures.
     tracer=no
     for t in /proc/"$SUP"/task/*; do
-        [ "$(cat "$t/comm" 2>/dev/null)" = "pmask-tracer" ] && tracer=yes
+        [ "$(basename "$t")" = "$SUP" ] && continue
+        [ "$(cat "$t/comm" 2>/dev/null)" = "$L" ] && tracer=yes
     done
     if [ "$comm" = "$L" ] && [ "$cmdline" = "$L|" ] \
         && [ "$self_as" = 0 ] && [ "$self_es" = 0 ] && [ "$tracer" = yes ]; then

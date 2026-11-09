@@ -169,8 +169,15 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
         i += 1;
     }
 
+    // An empty requirement is an assertion that anything passes: the CI
+    // job that wrote `--require ''` gets exit 0 whatever this host lacks.
+    // Refuse it rather than answer a question nobody asked.
     if saw_require && require.is_empty() {
-        eprintln!("pmask: doctor: --require names nothing");
+        eprintln!(
+            "pmask: doctor: --require needs at least one guarantee name; an empty list \
+             asserts nothing (drop --require, or name redact, isolate, exact, secret-mem, \
+             mlock, no-new-privs, non-dumpable or landlock)"
+        );
         return 255;
     }
 

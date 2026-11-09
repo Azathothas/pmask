@@ -23,9 +23,10 @@
 #        always available.
 #   44e  liveness: the payload was alive while 44b ran, so 44b is not
 #        the EACCES of a process that had already died.
-#   44f  the supervisor is in the same refused set and runs a
-#        `pmask-tracer` thread: the tree relation the issue names as the
-#        specific pair.
+#   44f  the supervisor is in the same refused set and runs a second
+#        thread (the tracer): the tree relation the issue names as the
+#        specific pair.  The thread's *name* is issue 38's channel and is
+#        asserted there, not here.
 #   44g  a mode that cannot apply the flag says so: `--no-redact
 #        --no-dumpable` prints the note and leaves the payload dumpable.
 #        This is the note half of issue 44; issue 21 owns the report
@@ -229,16 +230,21 @@ else
     else
         fail "44f-supervisor-in-the-same-set ($SUP_REFUSED of 5 refused:$SUP_SET)"
     fi
+    # The tracer is a thread of the supervisor; its *name* is issue 38's
+    # channel (asserted in tests/qa.d/38.sh) and is deliberately not the
+    # retired fixed string.  What this row needs is that the thread exists
+    # and that the name is still one of the session's own.
     tracer=0
+    tracer_names=""
     for t in /proc/"$SUP"/task/*; do
-        case "$(cat "$t/comm" 2>/dev/null)" in
-            pmask-tracer*) tracer=$((tracer + 1)) ;;
-        esac
+        [ "$(basename "$t")" = "$SUP" ] && continue
+        tracer=$((tracer + 1))
+        tracer_names="$tracer_names $(cat "$t/comm" 2>/dev/null)"
     done
     if [ "$tracer" -ge 1 ]; then
-        pass "44f-tracer-thread-named (pmask-tracer x$tracer)"
+        pass "44f-tracer-thread-present ($tracer thread(s):$tracer_names)"
     else
-        fail "44f-tracer-thread-named (no pmask-tracer thread under $SUP)"
+        fail "44f-tracer-thread-present (no tracer thread under $SUP)"
     fi
     kill -9 "$SUP" 2>/dev/null
     wait "$SUP" 2>/dev/null
