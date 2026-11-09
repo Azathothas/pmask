@@ -1,7 +1,7 @@
 ################ qa: qa.d/44.sh
 PASS 44a-control-readable environ=ok maps=ok auxv=ok exe=ok fd=ok
-PASS 44c-control-stat-not-zero (stat48_51=139744043257856 139744043257869 139744043257871 139744043257871)
-PASS 44-control-payload-visible (cmdline=[qa44-1500700|])
+PASS 44c-control-stat-not-zero (stat48_51=140568080785408 140568080785421 140568080785423 140568080785423)
+PASS 44-control-payload-visible (cmdline=[qa44-3145233|])
 PASS 44b-nodumpable-refuses-five environ=denied maps=denied auxv=denied exe=denied fd=denied
 PASS 44b-rest-of-the-entry-readable cmdline=ok comm=ok stat=ok status=ok
 PASS 44c-stat-zeros (stat48_51=0 0 0 0)
@@ -15,22 +15,22 @@ PASS 44g-plain-payload-is-dumpable (PR_GET_DUMPABLE=1)
 PASS 44g-redact-payload-is-not-dumpable (PR_GET_DUMPABLE=0)
 == VERDICT: FAIL=0 ==
 ################ qa: qa.d/49.sh
-PASS 49a-default-redacted cmdline=[qa49-1502649|] comm=[qa49-1502649] env=0 tracer=1502700
+PASS 49a-default-redacted cmdline=[qa49-3147304|] comm=[qa49-3147304] env=0 tracer=3147359
 PASS 49b-plain-real cmdline=[/bin/sleep|20|] comm=[sleep] environ-has-marker tracer=0
 PASS 49b-plain-note (the payload's label was not applied: plain mode does not redact the pa)
 PASS 49c-isolate-real cmdline=[/bin/sleep|20|] comm=[sleep] environ-has-marker tracer=0
-PASS 49c-isolate-procfs-fingerprint (mountinfo: 1003 975 0:89 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=invisible)
-PASS 49c-isolate-nspid-fingerprint (NSpid=[1504748	1])
-PASS 49c-isolate-intermediate-labelled (supervisor cmdline=[qa49-1502649|])
-PASS 49d-unshare-fixed cmdline=[qa49-1502649|] env=0 tracer=1505923 NSpid=[1505926	1]
+PASS 49c-isolate-procfs-fingerprint (mountinfo: 711 389 0:76 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=invisible)
+PASS 49c-isolate-nspid-fingerprint (NSpid=[3149586	1])
+PASS 49c-isolate-intermediate-labelled (supervisor cmdline=[qa49-3147304|])
+PASS 49d-unshare-fixed cmdline=[qa49-3147304|] env=0 tracer=3150917 NSpid=[3150920	1]
 PASS 49d-unshare-procfs-fingerprint (hidepid=invisible present)
-PASS 49d-unshare-nspid-fingerprint (NSpid=[1505926	1])
-PASS 49e-redact-isolate-fixed cmdline=[qa49-1502649|] env=0 tracer=1507003 NSpid=[1507006	1]
+PASS 49d-unshare-nspid-fingerprint (NSpid=[3150920	1])
+PASS 49e-redact-isolate-fixed cmdline=[qa49-3147304|] env=0 tracer=3152078 NSpid=[3152081	1]
 PASS 49e-redact-isolate-procfs-fingerprint (hidepid=invisible present)
-PASS 49e-redact-isolate-nspid-fingerprint (NSpid=[1507006	1])
-PASS 49f-32bit-real-argv cmdline=[./testcases32|sleeper|MK49B-MK49-1502649|]
+PASS 49e-redact-isolate-nspid-fingerprint (NSpid=[3152081	1])
+PASS 49f-32bit-real-argv cmdline=[./testcases32|sleeper|MK49B-MK49-3147304|]
 PASS 49f-32bit-exe-names-the-image (exe=/workspace/wt/bteam3/tests/testcases32)
-PASS 49f-32bit-refusal-is-loud (pmask: warning: pid 1511259: 32-bit (foreign ABI) program is not redacted)
+PASS 49f-32bit-refusal-is-loud (pmask: warning: pid 3156512: 32-bit (foreign ABI) program is not redacted)
 PASS 49f-32bit-summary-counts-foreign-arch (pmask: 1 of 1 execs degraded (foreign-arch))
 PASS 49g-unshare-report-mode-and-execs (mode=redact execs=1)
 == VERDICT: FAIL=0 ==
