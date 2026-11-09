@@ -62,9 +62,12 @@ line exactly:
 them. `environ`, `exe`, `maps`, `fd/*` and `cwd` require
 `PTRACE_MODE_READ_FSCREDS`, which a process of the same uid passes. Yama
 restricts `PTRACE_MODE_ATTACH` only, so it does not stop the same-uid
-read; `PR_SET_DUMPABLE=0` does. The supervisor sets it for itself for the
-life of the session, because it holds the real argv of every tracee it
-has swapped, and `--no-dumpable` extends the treatment to the payload.
+read; `PR_SET_DUMPABLE=0` does. On the redaction and isolate paths the
+supervisor sets it for itself for the life of the session, because it
+holds the real argv of every tracee it has swapped, and `--no-dumpable`
+extends the treatment to the payload. A plain run holds no secret, does
+not mask itself, and says `mode=plain`; its supervisor is an ordinary
+process of the caller's uid.
 
 So: confidentiality against other tenants and against casual inspection,
 not against the host operator. That is the same trust boundary a
@@ -108,7 +111,7 @@ Options that matter most:
 | `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
 | `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
 | `--no-exact` | leave the kernel's argv window where it is instead of relocating it; `cmdline` is the label plus one NUL per argument slot (measured: the extent is the label plus the slot count, not the original extent; a script payload keeps the original extent on its post-exec path), and `environ` is a NUL block |
-| `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `auxv`, `exe` and `fd`, and `/proc/<pid>/mem` is refused, so the real argv cannot be recovered from payload memory. The refusal is itself a fingerprint: five `EACCES` opens where an ordinary same-uid process succeeds. The supervisor is non-dumpable in every mode |
+| `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `auxv`, `exe` and `fd`, and `/proc/<pid>/mem` is refused, so the real argv cannot be recovered from payload memory. The refusal is itself a fingerprint: five `EACCES` opens where an ordinary same-uid process succeeds. On the redaction and isolate paths the supervisor is non-dumpable for the session; a plain run holds no secret, does not mask itself, and its report says `mode=plain` |
 | `--no-new-privs` | set-uid and file capabilities gain nothing |
 | `--watch-rename` | keep the label when a program renames itself |
 | `--rexec` | run from a sealed memfd, so `exe` names the label; the ordered chain falls back to `/proc/self/fd/N`, then an `O_TMPFILE` or named temporary file on an executable mount, reporting each failed step |
@@ -300,7 +303,7 @@ available one.
 | mode | selected by | redacts | does not |
 |---|---|---|---|
 | redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary unless `--rexec` is added, and the payload's memory holds its real argv unless `--no-dumpable` is added |
-| isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the intermediate process under the label; the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
+| isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the supervisor and the intermediate process under the label (two labelled processes); the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
 | plain | `--no-redact`, or a host that does not allow `ptrace` for a run that needs the runner | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
 
 - `--redact --isolate=LIST` composes the two. It redacts the tree and
