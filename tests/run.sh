@@ -24,6 +24,25 @@ if command -v python3 >/dev/null 2>&1 && [ -f "$BIN_DIR/../scripts/unwrap_audit.
 else
     echo "SKIP unwrap-audit (no python3 or scripts/ staged)"
 fi
+# The completions are static tables for a hand-written parser, so the only
+# way they stay correct is a check that reads the parser.  It needs no
+# binary and no host capability, so a missing script is a failure.
+echo "################ completions"
+if [ -f "$BIN_DIR/../scripts/check-completions.sh" ]; then
+    sh "$BIN_DIR/../scripts/check-completions.sh" || FAIL=1
+else
+    echo "FAIL completions (scripts/check-completions.sh is absent)"
+    FAIL=1
+fi
+# The per-issue QA fragments.  run.sh orchestrates the suites and qa.sh
+# orchestrates the fragments, so one gate cannot silently skip the other.
+echo "################ qa fragments"
+if [ -f qa.sh ]; then
+    sh qa.sh || FAIL=1
+else
+    echo "FAIL qa fragments (tests/qa.sh is absent)"
+    FAIL=1
+fi
 # compare.sh and conformance.sh are measurements and honesty checks rather
 # than pass/fail suites, so they run near the end and their verdict line
 # decides.  The speed and zapper comparisons live in measurements/ and are

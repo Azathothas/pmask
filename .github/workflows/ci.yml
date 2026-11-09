@@ -36,6 +36,11 @@ jobs:
         run: sh scripts/check-rename.sh
       - name: third-party notices
         run: python3 scripts/notices.py --check
+      - name: completions
+        # The completions are static tables for a hand-written parser.
+        # This reads src/cli.rs and src/bin/pmaskd.rs and fails when a
+        # table has drifted; it needs no build and no host capability.
+        run: sh scripts/check-completions.sh
       - name: format
         run: cargo fmt --all -- --check
       - name: clippy
