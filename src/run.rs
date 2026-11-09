@@ -25,6 +25,13 @@
 //! `agent:`; [`Runner::allow_argv_secret`] restores the old behaviour and
 //! prints the warning.  In redact mode the value is still briefly in
 //! pmask's argv, so the run warns once.
+//!
+//! No mode reaches the other three copies of the value: the kernel's
+//! audit record of pmask's own exec (written before pmask can rewrite
+//! anything), the shell history and any wrapper's argv.  The CLI prints
+//! one warning about them, before the run starts, through
+//! [`argv_secret_warning`]; it is louder when the host answers that the
+//! audit subsystem is enabled, because then the record already exists.
 
 use crate::caps::Caps;
 use crate::isolate::{self, Isolate};
@@ -203,6 +210,278 @@ pub struct SecretReport {
     pub locked: bool,
     pub secret_mem: bool,
     pub fd: libc::c_int,
+}
+
+// ------------------------------------------------- the audit-log exposure
+
+/// `AUDIT_GET` from `linux/audit.h`: the message type that asks the kernel
+/// for its audit status.
+const AUDIT_GET: u16 = 1000;
+/// `NLM_F_REQUEST` from `linux/netlink.h`.
+const NLM_F_REQUEST: u16 = 0x01;
+/// `NLM_F_ACK` from `linux/netlink.h`.
+const NLM_F_ACK: u16 = 0x04;
+/// `NLMSG_ERROR` from `linux/netlink.h`.
+const NLMSG_ERROR: u16 = 0x02;
+/// `struct nlmsghdr` is 16 bytes on every Linux ABI.
+const NLMSG_HDR: usize = 16;
+/// `struct audit_status` starts with `mask`, then `enabled`, so the word
+/// this probe reads is the second `u32` after the header.
+const AUDIT_STATUS_ENABLED: usize = NLMSG_HDR + 4;
+
+/// What this host's kernel audit subsystem will do with an exec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditState {
+    /// The kernel answered with its audit status: auditing is on, so a
+    /// rule that covers this exec has already written it to the audit
+    /// log.  Whether a rule covers it is the deployment's business.
+    Enabled,
+    /// The kernel refused the query with `ECONNREFUSED`, which is how it
+    /// answers every audit request while auditing is off.
+    Disabled,
+    /// The question could not be put or the answer was neither of the
+    /// two above: no `NETLINK_AUDIT` socket, a seccomp filter, a locked
+    /// subsystem this process may not read.  Callers warn without
+    /// claiming either state.
+    Unknown,
+}
+
+/// Ask the kernel whether its audit subsystem is enabled.
+///
+/// The probe is the one `auditctl -s` makes: a `NETLINK_AUDIT` socket and
+/// an `AUDIT_GET` request.  It needs no privilege (the kernel answers
+/// `ECONNREFUSED` to an unprivileged caller while auditing is off), which
+/// is why it is done here rather than by running `auditctl`, whose own
+/// root check fails for the account pmask usually runs as.
+///
+/// The receive timeout bounds the probe: a kernel that never answers must
+/// not hang the run.  A probe that cannot answer is [`AuditState::Unknown`]
+/// and the caller warns without the stronger wording, so a failed probe
+/// never turns a warning into a refusal.
+///
+/// `PMASK_PROBE_AUDIT=1` (enabled) or `0` (disabled) replaces the answer
+/// and skips the syscalls.  It is the test hook for the two wordings, read
+/// once per call, in the same spirit as the `PMASK_PROBE_*` host-profile
+/// overrides in [`crate::caps`]; it changes no production behaviour beyond
+/// the adjective in one warning.
+pub fn audit_state() -> AuditState {
+    match std::env::var("PMASK_PROBE_AUDIT").as_deref() {
+        Ok("1") => return AuditState::Enabled,
+        Ok("0") => return AuditState::Disabled,
+        _ => {}
+    }
+    // SAFETY: a netlink socket owned by this call; it is closed below.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_AUDIT,
+        )
+    };
+    if fd < 0 {
+        return AuditState::Unknown;
+    }
+    let state = audit_state_on(fd);
+    // SAFETY: the descriptor is ours and is not used again.
+    unsafe { libc::close(fd) };
+    state
+}
+
+/// The body of [`audit_state`], on an open netlink socket.
+fn audit_state_on(fd: libc::c_int) -> AuditState {
+    // A zeroed `sockaddr_nl` binds the socket to this process, so the
+    // reply is addressed to it and not to another audit reader.
+    // SAFETY: `sockaddr_nl` is plain old data.
+    let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // SAFETY: binding our own socket to a zeroed address.
+    let bound = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if bound < 0 {
+        return AuditState::Unknown;
+    }
+    // A kernel that never answers must not hang the run.
+    let timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 200_000,
+    };
+    // SAFETY: a timeout on our own socket.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &timeout as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+
+    // struct nlmsghdr: len, type, flags, seq, pid.  Native endian, as
+    // netlink requires.
+    let mut request = [0u8; NLMSG_HDR];
+    request[0..4].copy_from_slice(&(NLMSG_HDR as u32).to_ne_bytes());
+    request[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+    request[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_ACK).to_ne_bytes());
+    request[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    // SAFETY: sending our own 16-byte request to the kernel.
+    let sent = unsafe {
+        libc::sendto(
+            fd,
+            request.as_ptr() as *const libc::c_void,
+            request.len(),
+            0,
+            &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if sent < 0 {
+        return AuditState::Unknown;
+    }
+    let mut reply = [0u8; 256];
+    // SAFETY: receiving into a buffer we own.
+    let n = unsafe { libc::recv(fd, reply.as_mut_ptr() as *mut libc::c_void, reply.len(), 0) };
+    if n < 0 {
+        return AuditState::Unknown;
+    }
+    parse_audit_reply(&reply[..n as usize])
+}
+
+/// Classify one netlink reply to the `AUDIT_GET` request.
+///
+/// Split from the socket code so the wire format is testable without a
+/// kernel that answers.  A status reply (`AUDIT_GET`) means auditing is
+/// on; `NLMSG_ERROR` with `ECONNREFUSED` is the kernel's "auditing is
+/// off" answer; a bare acknowledgement, another errno, or a short message
+/// is [`AuditState::Unknown`].
+fn parse_audit_reply(reply: &[u8]) -> AuditState {
+    if reply.len() < NLMSG_HDR {
+        return AuditState::Unknown;
+    }
+    let msg_type = u16::from_ne_bytes([reply[4], reply[5]]);
+    if msg_type == AUDIT_GET {
+        if reply.len() < AUDIT_STATUS_ENABLED + 4 {
+            return AuditState::Unknown;
+        }
+        let enabled = u32::from_ne_bytes([
+            reply[AUDIT_STATUS_ENABLED],
+            reply[AUDIT_STATUS_ENABLED + 1],
+            reply[AUDIT_STATUS_ENABLED + 2],
+            reply[AUDIT_STATUS_ENABLED + 3],
+        ]);
+        // 0 is off, 1 is on, 2 is on and locked.  Any other value is a
+        // kernel this probe does not know.
+        return match enabled {
+            1 | 2 => AuditState::Enabled,
+            0 => AuditState::Disabled,
+            _ => AuditState::Unknown,
+        };
+    }
+    if msg_type == NLMSG_ERROR && reply.len() >= NLMSG_HDR + 4 {
+        let err = i32::from_ne_bytes([
+            reply[NLMSG_HDR],
+            reply[NLMSG_HDR + 1],
+            reply[NLMSG_HDR + 2],
+            reply[NLMSG_HDR + 3],
+        ]);
+        if err == -libc::ECONNREFUSED {
+            return AuditState::Disabled;
+        }
+    }
+    AuditState::Unknown
+}
+
+/// The one warning a `literal:` or `env:` secret source earns, or `None`
+/// when every source is out of plain sight.
+///
+/// The text names the artefacts pmask cannot reach and points at the two
+/// ways out: a non-argv source for the value and `--args-from-fd` for the
+/// payload's own arguments.  It never includes a value, only names and
+/// source kinds.
+///
+/// A `literal:` value is in pmask's argv, so the kernel's exec record
+/// (`type=EXECVE` and `PROCTITLE`) holds it when the audit subsystem is
+/// enabled, and it is already written by the time pmask runs.  An `env:`
+/// value is in pmask's environment instead; the kernel's exec record does
+/// not carry the environment, so the audit clause is only claimed for a
+/// `literal:` source.
+///
+/// The text is stronger when [`audit_state`] answers
+/// [`AuditState::Enabled`] and a `literal:` source is present, because
+/// then the record exists and is permanent.  It never refuses: `literal:`
+/// is documented, and the operator may have a reason to keep it.
+pub fn argv_secret_warning(sources: &[(String, Source)]) -> Option<String> {
+    argv_secret_warning_with(sources, audit_state())
+}
+
+/// The body of [`argv_secret_warning`], with the audit answer supplied so
+/// the three wordings are testable on one host.
+fn argv_secret_warning_with(sources: &[(String, Source)], audit: AuditState) -> Option<String> {
+    let plain: Vec<&(String, Source)> = sources
+        .iter()
+        .filter(|(_, src)| src.is_in_plain_sight())
+        .collect();
+    if plain.is_empty() {
+        return None;
+    }
+    let list = plain
+        .iter()
+        .map(|(name, src)| format!("{}={}", name, src.describe()))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let literal = plain
+        .iter()
+        .any(|(_, src)| matches!(src, Source::Literal(_)));
+    let env = plain.iter().any(|(_, src)| matches!(src, Source::Env(_)));
+    let one = plain.len() == 1;
+    let mut text = format!(
+        "secret {}{} {} the value in pmask's own {}",
+        if one { "source " } else { "sources " },
+        list,
+        if one { "puts" } else { "put" },
+        match (literal, env) {
+            (true, true) => "argv or environment",
+            (false, true) => "environment",
+            (true, false) => "argv",
+            (false, false) => unreachable!("a plain-sight source is literal: or env:"),
+        }
+    );
+    if literal {
+        text.push_str(", where the shell history and any wrapper's argv keep a copy");
+        match audit {
+            AuditState::Enabled => text.push_str(
+                ", and this host's audit subsystem is enabled, so the kernel has already \
+                 written that argv into its audit log (type=EXECVE and PROCTITLE) for the life \
+                 of the log",
+            ),
+            AuditState::Disabled => text.push_str(
+                ", and the kernel audit log would hold it too if this host's audit subsystem \
+                 were enabled",
+            ),
+            AuditState::Unknown => text.push_str(
+                ", and the kernel audit log holds it too when this host's audit subsystem is \
+                 enabled (this run could not ask)",
+            ),
+        }
+    }
+    if env {
+        text.push_str(if literal { ", and" } else { ", where" });
+        text.push_str(
+            " /proc/<pmask-pid>/environ serves it until pmask masks itself and the shell \
+             history or a wrapper's environment may keep a copy; the kernel's exec record \
+             carries argv, not the environment",
+        );
+    }
+    text.push_str(
+        ". pmask cannot reach the copies outside its own process: use file:PATH, agent:NAME or \
+         stdin for the value, and --args-from-fd N to keep the payload's own arguments out of \
+         pmask's argv",
+    );
+    Some(text)
 }
 
 /// Builder for one supervised run.
@@ -619,7 +898,19 @@ impl Runner {
         }
 
         // 0. Refuse a source that plain mode cannot protect, before any
-        //    value is read.
+        //    value is read.  The copies pmask cannot reach at all are the
+        //    CLI's loud warning, printed once to stderr before the run;
+        //    the report also records the exposure, so a CI job that reads
+        //    `--report=json` sees it without scraping stderr (invariant
+        //    13).
+        if !self.secrets.is_empty() && self.secrets.iter().any(|(_, src)| src.is_in_plain_sight()) {
+            notes.push(
+                "a literal: or env: secret value is in pmask's own argv or environment, \
+                 and the kernel audit log, the shell history and any wrapper's argv keep a \
+                 copy of it"
+                    .to_string(),
+            );
+        }
         notes.extend(self.check_sources(mode)?);
 
         // 1. Load secrets into protected memory.
@@ -1022,6 +1313,118 @@ mod tests {
             .allow_argv_secret();
         assert!(allowed.check_sources(Mode::Isolate).is_ok());
         assert_eq!(allowed.check_sources(Mode::Isolate).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_literal_source_warns_about_the_audit_log_and_the_arg_ways_out() {
+        let src = vec![("T".to_string(), Source::Literal("CANARY-9".into()))];
+        let text = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(text.contains("T=literal:"), "{}", text);
+        assert!(text.contains("shell history"), "{}", text);
+        assert!(text.contains("wrapper's argv"), "{}", text);
+        assert!(text.contains("kernel audit log"), "{}", text);
+        assert!(text.contains("--args-from-fd N"), "{}", text);
+        assert!(text.contains("file:PATH, agent:NAME or stdin"), "{}", text);
+        // The value is never in the warning.
+        assert!(!text.contains("CANARY-9"), "{}", text);
+    }
+
+    #[test]
+    fn an_enabled_audit_subsystem_makes_the_warning_stronger() {
+        let src = vec![("T".to_string(), Source::Literal("v".into()))];
+        let enabled = argv_secret_warning_with(&src, AuditState::Enabled).unwrap();
+        let unknown = argv_secret_warning_with(&src, AuditState::Unknown).unwrap();
+        let disabled = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(enabled.contains("has already written"), "{}", enabled);
+        assert!(!unknown.contains("has already written"), "{}", unknown);
+        assert!(unknown.contains("could not ask"), "{}", unknown);
+        assert!(disabled.contains("would hold it too"), "{}", disabled);
+    }
+
+    #[test]
+    fn an_env_source_claims_no_audit_record() {
+        let src = vec![("T".to_string(), Source::Env("TOKEN".into()))];
+        let text = argv_secret_warning_with(&src, AuditState::Enabled).unwrap();
+        assert!(text.contains("T=env:TOKEN"), "{}", text);
+        assert!(text.contains("/proc/<pmask-pid>/environ"), "{}", text);
+        assert!(text.contains("shell history"), "{}", text);
+        assert!(text.contains("wrapper's environment"), "{}", text);
+        // The kernel's exec record carries argv, not the environment.
+        assert!(!text.contains("type=EXECVE"), "{}", text);
+        assert!(
+            text.contains("carries argv, not the environment"),
+            "{}",
+            text
+        );
+    }
+
+    #[test]
+    fn a_mixed_source_list_names_both_places() {
+        let src = vec![
+            ("A".to_string(), Source::Literal("v".into())),
+            ("B".to_string(), Source::Env("TOKEN".into())),
+        ];
+        let text = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(
+            text.contains("sources A=literal:, B=env:TOKEN put"),
+            "{}",
+            text
+        );
+        assert!(text.contains("argv or environment"), "{}", text);
+    }
+
+    #[test]
+    fn a_source_out_of_plain_sight_earns_no_warning() {
+        let src = vec![
+            ("T".to_string(), Source::File(PathBuf::from("/tmp/x"))),
+            ("U".to_string(), Source::Stdin),
+        ];
+        assert!(argv_secret_warning_with(&src, AuditState::Enabled).is_none());
+    }
+
+    #[test]
+    fn the_netlink_reply_parser_reads_the_three_shapes() {
+        // A status reply: header, mask, enabled.
+        let mut status = [0u8; 16 + 8];
+        status[0..4].copy_from_slice(&24u32.to_ne_bytes());
+        status[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+        status[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&1u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&status), AuditState::Enabled);
+
+        // The same reply with auditing off, and with the locked value.
+        let mut off = status;
+        off[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&0u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&off), AuditState::Disabled);
+        let mut locked = status;
+        locked[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&2u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&locked), AuditState::Enabled);
+
+        // An error reply: the kernel's answer while auditing is off.
+        let mut err = [0u8; 20];
+        err[4..6].copy_from_slice(&NLMSG_ERROR.to_ne_bytes());
+        err[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&(-libc::ECONNREFUSED).to_ne_bytes());
+        assert_eq!(parse_audit_reply(&err), AuditState::Disabled);
+
+        // Another errno, a bare acknowledgement and a short message are
+        // all "cannot tell", never "enabled" or "disabled".
+        let mut eperm = err;
+        eperm[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&(-libc::EPERM).to_ne_bytes());
+        assert_eq!(parse_audit_reply(&eperm), AuditState::Unknown);
+        let mut ack = err;
+        ack[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&0i32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&ack), AuditState::Unknown);
+        assert_eq!(parse_audit_reply(&[0u8; 8]), AuditState::Unknown);
+    }
+
+    #[test]
+    fn the_probe_answers_on_this_host() {
+        // The answer depends on the host, so the assertion is that the
+        // probe returns at all and never invents a state it cannot know.
+        let state = audit_state();
+        assert!(matches!(
+            state,
+            AuditState::Enabled | AuditState::Disabled | AuditState::Unknown
+        ));
     }
 
     #[test]

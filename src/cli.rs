@@ -732,6 +732,19 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         .map(|(_, a)| a.clone())
         .collect();
 
+    // A `literal:` or `env:` source carries the value in pmask's own argv
+    // or environment, where artefacts pmask cannot reach keep a copy: the
+    // kernel's audit record of this exec (written before pmask runs), the
+    // shell history and any wrapper's argv.  Warn once, loudly, before the
+    // run starts; `-q` is the documented way to suppress diagnostics.  A
+    // `--daemon` job refuses `--secret` in `main`, so it gets no warning
+    // about a run that will not happen.
+    if !quiet && daemon.is_none() {
+        if let Some(warning) = pmask::run::argv_secret_warning(&secrets) {
+            eprintln!("pmask: warning: {}", warning);
+        }
+    }
+
     let (program, args) = if args_fd.is_some() {
         if i < argv.len() {
             die("--args-from-fd replaces COMMAND: no command may follow the options");
