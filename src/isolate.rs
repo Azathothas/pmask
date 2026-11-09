@@ -967,6 +967,11 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
         unsafe { libc::close(held[i]) };
     }
     if out.bound == 0 && first_errno != 0 {
+        // SAFETY: descriptors opened above and not yet closed.
+        unsafe {
+            libc::close(held[basic]);
+            libc::close(held[basic + 1]);
+        }
         return Err(first_errno);
     }
     if held[basic] >= 0 {
