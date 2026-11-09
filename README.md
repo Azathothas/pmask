@@ -205,6 +205,12 @@ The token exists in the daemon's memory and in the job's redacted
 environment block. It does not exist in the client's argv, the client's
 environment, or the job's `/proc/<pid>/{cmdline,environ}`.
 
+The environment file is not the encrypted store. `pmaskd` accepts no
+`--store` and no `--passphrase-file`, and a unit that adds either exits
+255 with `unknown option --store`. The store belongs to `pmask agent`,
+which holds it unlocked and answers a `--secret NAME=agent:NAME` source
+over its own socket.
+
 Access is decided by `SO_PEERCRED`: the daemon's own uid and root only,
 plus whatever `--allow-uid` adds. The socket is mode 0600 and the client
 verifies the peer uid of the socket it connected to. Where the kernel
