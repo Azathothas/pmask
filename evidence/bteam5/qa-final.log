@@ -1,0 +1,65 @@
+################ qa: qa.d/45.sh
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS q1-default-secret-fd-name (/memfd:pmask-secret)
+PASS q1b-control-sweep-sees-pmask-secret (hits=1)
+PASS q2-secret-fd-name (secret-deadbeef)
+PASS q2a-no-default-literal-left
+PASS q2b-sweep-finds-no-pmask-secret (hits=0)
+PASS q2c-payload-read-the-secret (bytes=8)
+PASS q3-rexec-memfd-name (/memfd:image-1a2b3c4d (deleted), maps=4)
+PASS q3b-control-rexec-default-name (/memfd:qa45-label (deleted))
+PASS q4-image-memfd-name (/memfd:image-1a2b3c4d (deleted))
+PASS q5-exec-once-carrier-tag (exe=/dev/shm/.pmask-rexec-image-1a2b3c4d-2535882-c969bb9e-0 ino=331)
+PASS q6a-empty-refused (rc=255: pmask: --secret-fd-name: memfd name must not be empty)
+PASS q6b-slash-refused (rc=255: pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes)
+PASS q6c-lf-refused (rc=255: pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes)
+PASS q6d-cr-refused (rc=255: pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes)
+PASS q6e-201-bytes-refused (rc=255: pmask: --secret-fd-name: memfd name is 201 bytes; the limit is 200)
+PASS q6f-memfd-name-slash-refused (rc=255)
+PASS q7-200-byte-name-accepted
+== QA45: PASS
+################ qa: qa.d/46.sh
+    Finished `release` profile [optimized] target(s) in 0.05s
+PASS s1-watch-rename-filter-shape (filters=2 nnp=1 comm=qa46-label)
+PASS s1b-control-without-the-flag (filters=1 nnp=0 comm=qa46-label)
+PASS s1c-control-plain-process (filters=1 nnp=0 comm=sleep)
+PASS s2-redirect-keeps-the-label (comm=qa46-sec, payload saw qa46-sec)
+PASS s2b-control-rename-takes-effect (comm=other, payload saw other)
+PASS s3-no-new-privs-alone-one-filter (filters=1 nnp=1 comm=qa46-label)
+PASS s4-supervisor-row (filters=1 nnp=0 comm=qa46-label)
+PASS s5-watch-rename-no-dumpable (defect #60 open: comm=other payload=other)
+NOTE s5 saw the open defect shape (issue #60, fix1 owns the fix):
+     pmask: warning: pid 2556665: cannot redirect a rename to the label
+== QA46: PASS
+################ qa: qa.d/57.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+SKIP e1-ebpf-map-create (bpf(BPF_MAP_CREATE) refused as uid 1000: refused -1 errno=1)
+SKIP e2-process-connector (subscribe refused errno=111)
+PASS e3-tracer-pid-names-the-tree (payload TracerPid=2560596)
+PASS e3b-supervisor-has-the-tracer-task
+PASS e4-control-plain-process-has-no-tracer
+SKIP e5-sched-process-exec-has-no-argv (tracefs not readable: ls: cannot open directory '/sys/kernel/tracing': Permission denied)
+PASS e6-detach-zeroes-tracerpid
+NOTE e6 does not make the tree invisible: the PTRACE_SEIZE that a
+     sys_enter_ptrace sensor would record already happened, and the
+     supervisor's pmask-tracer task remains.
+== QA57: PASS
+################ qa: qa.d/58.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS d1-masked-pid-has-all-four-views (pid=2563568 getdents64=present readdir=present stat=present kill0=present)
+NOTE d1 masked payload comm=[qa58-label] cmdline=[qa58-label|]; this family
+     never reads them, which is why it cannot fire
+PASS d2-control-unmasked-pid-has-the-same-views (pid=2563964 getdents64=present readdir=present stat=present kill0=present)
+SKIP d3-processdecloak (sandfly-processdecloak: command not found)
+SKIP d4-unhide-sees-no-pmaks-pid (unhide: command not found)
+SKIP d5-chkproc-does-not-name-the-payload (chkproc: command not found)
+SKIP d6-rkhunter-hidden-procs (rkhunter: command not found)
+SKIP d7-pspy-prints-the-label (pspy: command not found)
+SKIP d8-zapper (zapper: command not found)
+SKIP d9-lsrootkit (lsrootkit: command not found)
+PASS d10-strace-attaches-to-the-control-only (control=[strace: Process 2564625 attached])
+== QA58: PASS
+################ QA: PASS cases=4
