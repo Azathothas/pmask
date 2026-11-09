@@ -177,14 +177,20 @@ else
     else
         fail "e3-tracer-pid-names-the-tree (TracerPid=[$tracer])"
     fi
+    # The tracer is a thread of the supervisor, and the payload's
+    # TracerPid names it.  The thread's *name* is issue 38's channel and
+    # is asserted by tests/qa.d/38.sh; this case asserts the relation,
+    # which survives any name the session chooses.
     found=no
     for t in /proc/"$SUP"/task/*; do
-        [ "$(cat "$t/comm" 2>/dev/null)" = "pmask-tracer" ] && found=yes
+        tid=$(basename "$t")
+        [ "$tid" = "$SUP" ] && continue
+        [ "$tid" = "$tracer" ] && found=yes
     done
     if [ "$found" = yes ]; then
-        pass "e3b-supervisor-has-the-tracer-task"
+        pass "e3b-supervisor-has-the-tracer-task (tid=$tracer name=$(cat /proc/$tracer/comm 2>/dev/null))"
     else
-        fail "e3b-supervisor-has-the-tracer-task (no task named pmask-tracer under pid $SUP)"
+        fail "e3b-supervisor-has-the-tracer-task (TracerPid=[$tracer] is not a task of $SUP)"
     fi
 fi
 kill "$SUP" 2>/dev/null
