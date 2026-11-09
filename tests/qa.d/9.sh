@@ -152,6 +152,34 @@ else
     fail "qa9-no-report-without-flag (stdout=[$(cat "$D/none.out")])"
 fi
 
+# ---- A report nobody reads must not change the run's status (issue 17's
+# ---- class on the report path): `| head -1` closes the pipe after the
+# ---- first line, and the payload's status must still be the run's.
+# POSIX sh has no `PIPESTATUS`, so the status is recorded by the
+# subshell on the left side of the pipe, which is the process that runs
+# the tool.  `head -1` closes the pipe on the next write.
+( "$TOOL" -q --report=json --secret T=file:/etc/hostname -- \
+    /bin/sh -c 'exit 5' 2>/dev/null; echo $? > "$D/rc" ) | head -1 >/dev/null
+rc=$(cat "$D/rc" 2>/dev/null)
+if [ "$rc" = 5 ]; then
+    pass "qa9-closed-pipe-keeps-the-payload-status"
+else
+    fail "qa9-closed-pipe-keeps-the-payload-status (rc=$rc, want 5)"
+fi
+
+# ---- The payload must not inherit the report descriptor: a shell
+# ---- redirect is not close-on-exec, so without the flag the payload
+# ---- could write into the document a consumer parses.
+"$TOOL" -q --report-fd 9 --secret T=file:/etc/hostname -- \
+    /bin/sh -c 'echo FORGED >&9 2>/dev/null || echo closed' \
+    9>"$D/fd.json" >"$D/fd.out" 2>/dev/null
+if [ "$(cat "$D/fd.out")" = closed ] \
+    && python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$D/fd.json" 2>/dev/null; then
+    pass "qa9-report-fd-is-not-inherited"
+else
+    fail "qa9-report-fd-is-not-inherited (out=[$(cat "$D/fd.out")])"
+fi
+
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ] || exit 1
 exit 0

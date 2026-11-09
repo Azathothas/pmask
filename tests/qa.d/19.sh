@@ -135,6 +135,21 @@ case "$nog" in
         fail "qa19-refused-namespace-set-is-reported ($(printf '%s' "$nog" | tr '\n' '|' | cut -c1-300))" ;;
 esac
 
+# --unshare and --redact --isolate=net compose: the pid namespace comes
+# from --unshare, the net namespace from the list.  Taking one request and
+# dropping the other is the defect issue 19 removed from the CLI, and it
+# is just as silent inside the fork helper.
+both=$("$TOOL" -q --unshare --redact --isolate=net -- /bin/sh -c \
+    'echo "net=$(readlink /proc/self/ns/net) pid=$(readlink /proc/self/ns/pid)"' 2>/dev/null)
+b_net=$(printf '%s' "$both" | tr ' ' '\n' | sed -n 's/^net=//p')
+b_pid=$(printf '%s' "$both" | tr ' ' '\n' | sed -n 's/^pid=//p')
+if [ -n "$b_net" ] && [ "$b_net" != "$HOST_NET" ] \
+    && [ -n "$b_pid" ] && [ "$b_pid" != "$HOST_PID" ]; then
+    pass "qa19-unshare-composes-with-the-isolate-list (net=$b_net pid=$b_pid)"
+else
+    fail "qa19-unshare-composes-with-the-isolate-list (net=[$b_net] host-net=[$HOST_NET] pid=[$b_pid] host-pid=[$HOST_PID])"
+fi
+
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ] || exit 1
 exit 0

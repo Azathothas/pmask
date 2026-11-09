@@ -282,6 +282,35 @@ case "$out" in
         fail "q7-200-byte-name-accepted ($(printf '%s' "$out" | tr '\n' '|'); stderr=$(head -1 "$D/q7.err"))" ;;
 esac
 
+# ------------------------- q8: --memfd-name reaches every image carrier
+# The path carrier was covered by q4.  The stdin and descriptor carriers
+# build the spool in a different function, and that is exactly where the
+# name was dropped: `/proc/<pid>/exe` must read the requested name on all
+# three, or the hardening the flag promises is absent on two of them.
+# The probe prints `exe=<link> ino=<n>`; the link is the first field.
+exe_link() {
+    sed -n 's/^exe=\([^ ][^ ]*\).*/\1/p'
+}
+stdin_exe=$("$TOOL" -q --image - --memfd-name qa45stdin -l qa45s -- \
+    exe-id <"$CASES" 2>/dev/null | exe_link)
+fd_exe=$("$TOOL" -q --image-from-fd 3 --memfd-name qa45fd -l qa45f -- \
+    exe-id 3<"$CASES" 2>/dev/null | exe_link)
+path_exe=$("$TOOL" -q --image "$CASES" --memfd-name qa45path -- \
+    exe-id 2>/dev/null | exe_link)
+for pair in "stdin:$stdin_exe" "fd:$fd_exe" "path:$path_exe"; do
+    which=${pair%%:*}
+    got=${pair#*:}
+    # The `(deleted)` suffix reaches the probe through a shell redirect, so
+    # only the prefix is asserted here; q4 asserts the exact link on the
+    # secret descriptor.
+    case "$got" in
+        "/memfd:qa45$which")
+            pass "q8-memfd-name-on-$which-carrier" ;;
+        *)
+            fail "q8-memfd-name-on-$which-carrier (exe=[$got], want /memfd:qa45$which)" ;;
+    esac
+done
+
 echo "== QA45: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL)"
 [ "$FAIL" = 0 ] || exit 1
 exit 0
