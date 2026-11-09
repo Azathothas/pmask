@@ -1,0 +1,8 @@
+sandfly-processdecloak   command not found
+unhide                   command not found
+chkproc                  command not found
+rkhunter                 command not found
+lsrootkit                command not found
+pspy                     command not found
+zapper                   command not found
+strace                   /usr/bin/strace

@@ -1,0 +1,13 @@
+control hidden pids: 47
+masked hidden pids:  47
+supervisor=1421877 payload=1421886
+supervisor in the hidden set: no
+payload in the hidden set:    no
+new pids in the masked set that are not in the control set:
+1421885
+pids in the control set but not the masked one:
+1243857
+
+and the payload's existence views, from the probe:
+pid=1421886 getdents64=present readdir=present stat=present kill0=present
+payload comm=b58set cmdline=b58set|
