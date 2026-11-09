@@ -104,7 +104,7 @@ Options that matter most:
 | `--keep-env` | leave `environ` visible in full, values included, so every variable the caller passed is readable again; a later `--keep-env=NAME` narrows it to the named variables |
 | `--keep-env=NAME` | keep only the named variables visible, repeatable; each named value is readable again, at its original position inside a window that otherwise reads as NUL padding |
 | `--env K=V`, `--env-file PATH` | set the child environment |
-| `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the descriptor stays open for the payload and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
+| `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the caller's descriptor stays open and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
 | `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
 | `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
 | `--no-exact` | keep the kernel's original argv window instead of relocating it; `cmdline` is the label plus one NUL per argument |
@@ -255,8 +255,8 @@ the descriptor directly works in every mode and has no such requirement.
 The source decides what the host can still read. `file:`, `agent:` and
 `stdin` keep the value out of every command line that starts pmask;
 `--args-from-fd` keeps the payload's own argument vector out of it. A
-`literal:` value travels in pmask's own argv until
-pmask masks itself, and the kernel audit subsystem writes the exec record
+`literal:` value travels in pmask's own argv until pmask masks itself,
+and the kernel audit subsystem writes the exec record
 (`type=EXECVE` and `type=PROCTITLE`) before that point. The cleartext
 value is therefore in the audit log for the retention of the log, not for
 the life of the run. The same string is in the
@@ -292,7 +292,7 @@ that kept the run below the strongest available one.
 
 | mode | selected by | redacts | does not |
 |---|---|---|---|
-| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary, and the payload's memory holds its real argv, unless `--rexec` and `--no-dumpable` are added |
+| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary unless `--rexec` is added, and the payload's memory holds its real argv unless `--no-dumpable` is added |
 | isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the intermediate process under the label; the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
 | plain | `--no-redact`, or a host that does not allow `ptrace` | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
 
@@ -513,8 +513,8 @@ read the conditions they print.
   so every descendant inherits it, and `/proc/<child>/fd/<N>` names a
   sealed `memfd` that a same-uid peer can open.
   `--secret-close-on-exec` closes it in each of the payload's direct
-  children at its fork, while the
-  payload keeps it; a process that shares the payload's descriptor table
+  children at its fork, while the payload keeps it; a process that shares
+  the payload's descriptor table
   (`clone(CLONE_FILES)` without `CLONE_THREAD`) is reported as a
   degradation. `--detach` cannot enforce the close below the payload, and
   the run warns. `--secret-burn` narrows the window to the reader's own
