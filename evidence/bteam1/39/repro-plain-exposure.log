@@ -1,0 +1,28 @@
+# PMASK_NO_SELFMASK: exposure per mode
+# kernel 6.12.113+deb13-amd64 uid 1000
+
+== plain mode + literal secret: the supervisor's argv, whole run
+pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for the whole run in plain mode, so secret 'T' (literal:) is in its argv or environment the entire time; every local account can read it.  Keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--no-redact|--allow-argv-secret|--secret|T=literal:hunter2|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+
+== plain mode + env secret: the supervisor's argv, whole run
+pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for the whole run in plain mode, so secret 'T' (env:) is in its argv or environment the entire time; every local account can read it.  Keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--no-redact|--allow-argv-secret|--secret|T=env:HUSH|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+bash: line 16: /proc/101778/environ: Permission denied
+environ:  (non-dumpable supervisor)
+
+== redact mode, no NO_SELFMASK: the supervisor's cmdline, sampled from t=0
+# The first samples catch the startup state, where zero_argv_block has run and
+# the label has not been written yet; that is a separate, shorter window.
+sample  0 bytes=153  [||||||||||||||||||||||||||||||||||||||||]
+sample  1 bytes=10   [proc-evid|]
+sample  2 bytes=10   [proc-evid|]
+sample  3 bytes=10   [proc-evid|]
+sample  4 bytes=10   [proc-evid|]
+sample  5 bytes=10   [proc-evid|]
+sample  6 bytes=10   [proc-evid|]
+sample  7 bytes=10   [proc-evid|]
+sample  8 bytes=10   [proc-evid|]
+sample  9 bytes=10   [proc-evid|]
+sample 10 bytes=10   [proc-evid|]
+sample 11 bytes=10   [proc-evid|]

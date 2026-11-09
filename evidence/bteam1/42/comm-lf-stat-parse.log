@@ -1,0 +1,14 @@
+# --comm with LF: the raw stat line, and what a naive parse sees
+pid=85274
+--- raw /proc/85274/stat (first 2 lines via od):
+0000000   8   5   2   7   4       (   a  \n   b   )       S       8   5
+0000020   2   7   0       8   5   2   6   4       0       0       -   1
+0000040       4   1   9   4   3   0   4       9   2       0       0    
+0000060   0       0       0       0       0       2   0       0       1
+--- comm file bytes: 610a620a
+--- awk field count on the raw file: 2
+51 (a normal stat is 52)
+--- python parse: fields after last ): 50
+arg_start,arg_end: [b'140433348542464', b'140433348542470']
+--- comm_read: `ps` shows:
+  85274 a?b

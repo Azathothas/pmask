@@ -1,0 +1,3 @@
+selfmask-on : samples=40 with_canary=0 last=[||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||]
+pmask: warning: PMASK_NO_SELFMASK=1 is overridden in redact mode: the supervisor masks its own /proc entry after the fork, so secret 'U' (literal:) is readable in its argv or environment only until then, not for the whole run; keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+NO_SELFMASK : samples=40 with_canary=40 last=[/workspace/wt/bteam1/target/release/pmask|-q|-l|wtest|--secret|T=stdin|--secret|U=literal:CANARY-LITERAL|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|M|]

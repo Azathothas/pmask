@@ -1,0 +1,24 @@
+# label limits and the comm/cmdline/exe split
+# kernel 6.12.113+deb13-amd64 uid 1000
+
+label=qa42-sshd        cmdline_bytes=10   comm_bytes=10  comm=[qa42-sshd] exe=/workspace/wt/bteam1/target/release/pmask-testcases tracer=85123
+-l-                    cmdline_bytes=2    comm_bytes=2   comm=[ ] exe=/workspace/wt/bteam1/target/release/pmask-testcases tracer=85137
+--label-empty          cmdline_bytes=1    comm_bytes=2   comm=[ ] exe=/workspace/wt/bteam1/target/release/pmask-testcases tracer=85151
+comm=123456789012345   cmdline_bytes=10   comm_bytes=16  comm=[123456789012345] exe=/workspace/wt/bteam1/target/release/pmask-testcases tracer=85165
+
+## label 254 bytes
+254-byte label         cmdline_bytes=255  comm_bytes=16  comm=[LLLLLLLLLLLLLLL] exe=/workspace/wt/bteam1/target/release/pmask-testcases tracer=85181
+## label 255 bytes (warning expected on stderr)
+cmdline_bytes=256
+pmask: warning: label is 255 bytes; the exec entry scratch keeps the first 254 bytes until the exec completes, and the settled /proc/<pid>/cmdline carries the whole label unless the kernel refuses the window relocation
+
+## --comm 16 bytes (refused)
+pmask: /workspace/wt/bteam1/target/release/pmask-testcases: comm must be at most 15 bytes
+rc=255
+
+## --comm with LF (accepted today; fix1 #33)
+comm hex: 610a620a
+stat fields after ') ' strip:  
+139960293588992 139960293588998
+ps -o args output:
+lf.sh

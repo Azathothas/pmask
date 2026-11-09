@@ -61,6 +61,153 @@ fn warn_daemon_options(opts: &[&'static str], quiet: bool) {
     );
 }
 
+/// The secret names whose source puts the value where `/proc` shows it.
+fn plain_sight_secrets(cli: &cli::Cli) -> Vec<(&str, &str)> {
+    cli.secrets
+        .iter()
+        .filter(|(_, src)| src.is_in_plain_sight())
+        .map(|(name, src)| {
+            (
+                name.as_str(),
+                match src {
+                    pmask::secret::Source::Literal(_) => "literal:",
+                    pmask::secret::Source::Env(_) => "env:",
+                    _ => "a plain-sight source",
+                },
+            )
+        })
+        .collect()
+}
+
+/// `PMASK_NO_SELFMASK` is a documented debugging escape: it leaves this
+/// process's own argv, environment and `comm` readable.
+///
+/// Measured (`evidence/bteam1/39/window-measure.log`): the escape is
+/// honoured on the plain path, and overridden on every path that runs the
+/// secret-side runner — the redact and isolate branches of `run` apply
+/// the self-mask unconditionally after the fork.  So the exposure is
+/// "for the whole run" in plain mode and "until the self-mask runs" in
+/// redact mode, and the warning must say which, or it is a claim the
+/// measurement refutes.
+///
+/// In plain mode the value stays in this process's argv for the whole
+/// run.  On a host whose audit subsystem answers, the supervisor's own
+/// exec is also written to the audit log, so the exposure becomes a
+/// durable record; that combination is refused unless
+/// `--allow-argv-secret` accepts it.  Where audit is blocked
+/// (containers, most CI sandboxes) a refusal would only make the
+/// documented escape unusable, so the run warns instead.  The warning
+/// ignores `-q`: a quiet run that publishes a secret is the silent
+/// degradation invariant 13 forbids.
+fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
+    if !no_selfmask {
+        return;
+    }
+    let exposed = plain_sight_secrets(cli);
+    if exposed.is_empty() {
+        return;
+    }
+    let named: Vec<String> = exposed
+        .iter()
+        .map(|(name, kind)| format!("'{}' ({})", name, kind))
+        .collect();
+    let list = named.join(", ");
+    // The same selection rule `run` uses, so the message describes the
+    // mode this invocation will actually take.
+    let mut runner = pmask::run::Runner::new();
+    if cli.no_redact {
+        runner = runner.no_redaction();
+    }
+    if let Some(iso) = cli.isolate {
+        runner = runner.isolate(iso);
+    }
+    let mode = runner.mode();
+    if mode != pmask::run::Mode::Plain {
+        eprintln!(
+            "pmask: warning: PMASK_NO_SELFMASK=1 is overridden in {} mode: the supervisor masks \
+             its own /proc entry after the fork, so secret {} is readable in its argv or \
+             environment only until then, not for the whole run; keep the command out of the \
+             supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME",
+            mode.as_str(),
+            list
+        );
+        return;
+    }
+    if !cli.allow_argv_secret && pmask::caps::kernel_audit_reachable() {
+        eprintln!(
+            "pmask: PMASK_NO_SELFMASK=1 with secret {} leaves the value in this process's own \
+             argv or environment for the whole run ({} mode does not mask it), and this host's \
+             audit subsystem is reachable, so the supervisor's exec is also written to the audit \
+             log; drop PMASK_NO_SELFMASK, use file:PATH or agent:NAME, or pass \
+             --allow-argv-secret to run anyway",
+            list,
+            mode.as_str()
+        );
+        std::process::exit(255);
+    }
+    eprintln!(
+        "pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for \
+         the whole run in {} mode, so secret {} is in its argv or environment the entire time; \
+         every local account can read it.  Keep the command out of the supervisor's argv with \
+         --args-from-fd, or use file:PATH or agent:NAME",
+        mode.as_str(),
+        list
+    );
+}
+
+/// `--keep-env` and `--keep-env=NAME` leave `/proc/<pid>/environ` visible
+/// on purpose.  An `env:` secret source reads its value from the
+/// environment, so those two asks contradict each other: the operator
+/// asked to hide the value and to publish the place it lives.
+///
+/// Only `env:` is warned about, and that is a measurement, not a
+/// simplification: the payload's environment carries the variable itself
+/// plus `PMASK_SECRET_<N>=<fd>`, never a `literal:` value (see
+/// `evidence/bteam1/41/`).  A `literal:` value lives in the supervisor's
+/// own argv, which the self-mask removes; `--keep-env` does not publish
+/// it, so warning there would be false.
+///
+/// The variables are still kept.  This is a warning, not a refusal:
+/// keeping them is the documented behaviour of the flag.
+fn warn_keep_env_secret(cli: &cli::Cli) {
+    if !cli.keep_env_all && cli.keep_env_names.is_empty() {
+        return;
+    }
+    let exposes: Vec<String> = {
+        let mut v = Vec::new();
+        for (name, src) in &cli.secrets {
+            let pmask::secret::Source::Env(var) = src else {
+                continue;
+            };
+            let kept = cli.keep_env_all
+                || cli
+                    .keep_env_names
+                    .iter()
+                    .any(|n| n.as_bytes() == var.as_bytes());
+            if kept {
+                v.push(format!("'{}' (env:{})", name, var));
+            }
+        }
+        v
+    };
+    if exposes.is_empty() {
+        return;
+    }
+    let scope = if cli.keep_env_all {
+        "the whole inherited environment".to_string()
+    } else {
+        cli.keep_env_names.join(",")
+    };
+    eprintln!(
+        "pmask: warning: --keep-env publishes /proc/<pid>/environ, and secret {} takes its value \
+         from a variable this run keeps visible, so the value is readable there for the whole run \
+         ({} stays visible); drop --keep-env, or use file:PATH or agent:NAME, which deliver over a \
+         descriptor",
+        exposes.join(", "),
+        scope
+    );
+}
+
 /// Re-exec once through `systemd-run --scope`.  The re-exec argv has no
 /// `--scope-name`, so the second run cannot take this path again.
 fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) {
@@ -297,6 +444,20 @@ fn main() {
             reexec_in_scope(&name, &cli.reexec_argv, cli.quiet);
         }
     }
+    // Two documented escapes publish the place a `literal:` or `env:`
+    // secret lives: `PMASK_NO_SELFMASK` leaves the supervisor's own
+    // /proc entry real, and `--keep-env` leaves the payload's environ
+    // visible.  Name the exposure before any secret is read, so the
+    // operator can still change the command.  This runs after every
+    // refusal that makes the run impossible (`--daemon` with a local-only
+    // flag, a contradictory `--redact`/`--no-redact`, `--report` on a
+    // path with no report), so a warning never describes a run that will
+    // not happen.  The check is CLI policy; a library caller chooses for
+    // itself.
+    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
+    check_no_selfmask(&cli, no_selfmask);
+    warn_keep_env_secret(&cli);
+
     // Read the command before every path that needs it: the runner path
     // and the mask path both consume it, so `--secret` with
     // `--args-from-fd` runs the program the descriptor names.
@@ -335,7 +496,6 @@ fn main() {
     // snapshot of the environment) first, redact this process, and only
     // then fork.  The secrets are never in this process's argv or
     // environ once the fork has happened.
-    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
     let prepared = match cli.mask.prepare(&cli.program, &cli.args) {
         Ok(p) => p,
         Err(e) => {

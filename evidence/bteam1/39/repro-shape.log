@@ -1,0 +1,18 @@
+== default self-mask
+sup=57129
+cmdline: proc-evid|
+comm: [proc-evid]
+argspan=0 envspan=0 threads=2
+task proc-evid
+task pmask-tracer
+exe: 
+environ: 44 bytes
+== PMASK_NO_SELFMASK
+sup=57143
+cmdline: /workspace/wt/bteam1/target/release/pmask|-q|-l|proc-evid|--|/workspace/wt/bteam1/target/release/pmask-testcases|sleeper|MARK|
+comm: [pmask]
+argspan=126 envspan=39 threads=2
+exe: /workspace/wt/bteam1/target/release/pmask
+== PMASK_NO_SELFMASK + literal secret
+sup=57165
+cmdline: proc-evid|

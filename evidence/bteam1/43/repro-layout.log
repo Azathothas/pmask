@@ -1,0 +1,18 @@
+execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+== label=abcd len=4
+AT_EXECFN ptr 0x7f285ab55008 offset_from_arg_start 8
+AT_EXECFN str abcd
+env_end - AT_EXECFN = 0
+arg_span=5 env_span=0
+execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+== label=abcdefgh len=8
+AT_EXECFN ptr 0x7febb034100c offset_from_arg_start 12
+AT_EXECFN str abcdefgh
+env_end - AT_EXECFN = 0
+arg_span=9 env_span=0
+execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+== label=abcdefghijkl len=12
+AT_EXECFN ptr 0x7fc18471c010 offset_from_arg_start 16
+AT_EXECFN str abcdefghijkl
+env_end - AT_EXECFN = 0
+arg_span=13 env_span=0

@@ -1,0 +1,7 @@
+# audit reachability probe, kernel 6.12.113+deb13-amd64, uid 1000
+## uid 1000: python3 NETLINK_AUDIT socket + AUDIT_GET
+reply len 80 hex 5000000002000000000000000f45010091ffffff3c000000e803010300000000
+## root: same probe
+type 2 err -111
+## CapEff uid 1000: CapEff:	0000000000000000
+## CapEff root:      CapEff:	000001ffffffffff

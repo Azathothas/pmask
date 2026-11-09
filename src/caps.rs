@@ -28,6 +28,14 @@ const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 const SYS_PIDFD_OPEN: libc::c_long = 434;
 /// `LANDLOCK_CREATE_RULESET_VERSION`: turn the call into a query.
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
+/// `NETLINK_AUDIT`: the kernel audit netlink protocol.
+const NETLINK_AUDIT: libc::c_int = 9;
+/// `AUDIT_GET`: read the audit status.
+const AUDIT_GET: u16 = 1000;
+/// `NLM_F_REQUEST`: this datagram is a request.
+const NLM_F_REQUEST: u16 = 1;
+/// `NLMSG_ERROR`: the kernel's answer to a refused request.
+const NLMSG_ERROR: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -631,6 +639,115 @@ impl Caps {
     }
 }
 
+/// True when the kernel audit subsystem answers a status query here.
+///
+/// A `literal:` or `env:` secret whose value is in the supervisor's own
+/// argv or environment is a transient `/proc` exposure.  On a host whose
+/// audit subsystem is live, the exec of the supervisor itself can also be
+/// written to the audit log, which turns the exposure into a durable
+/// record.  That difference is why `PMASK_NO_SELFMASK` refuses the
+/// combination there and only warns elsewhere.
+///
+/// The probe is a `NETLINK_AUDIT` `AUDIT_GET` query, not a guess from the
+/// release string: a container that blocks audit answers `ECONNREFUSED`
+/// and the caller warns.  `PMASK_PROBE_AUDIT` replaces the answer for the
+/// suites, like the other `PMASK_PROBE_<NAME>` hooks.
+pub fn kernel_audit_reachable() -> bool {
+    if let Some(v) = bool_probe("PMASK_PROBE_AUDIT") {
+        return v;
+    }
+    probe_audit()
+}
+
+/// One `sockaddr_nl`; libc does not export the type on every target.
+#[repr(C)]
+struct SockaddrNl {
+    nl_family: libc::sa_family_t,
+    nl_pad: u16,
+    nl_pid: u32,
+    nl_groups: u32,
+}
+
+/// Ask the audit subsystem for its status and treat any answer other
+/// than "there is no audit subsystem here" as reachable.
+fn probe_audit() -> bool {
+    // SAFETY: every call operates on storage owned by this function; the
+    // descriptor is closed on every path.
+    unsafe {
+        let fd = libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            NETLINK_AUDIT,
+        );
+        if fd < 0 {
+            return false;
+        }
+        let addr = SockaddrNl {
+            nl_family: libc::AF_NETLINK as libc::sa_family_t,
+            nl_pad: 0,
+            nl_pid: 0,
+            nl_groups: 0,
+        };
+        let addr_len = std::mem::size_of::<SockaddrNl>() as libc::socklen_t;
+        if libc::bind(
+            fd,
+            &addr as *const SockaddrNl as *const libc::sockaddr,
+            addr_len,
+        ) != 0
+        {
+            libc::close(fd);
+            return false;
+        }
+        // nlmsghdr plus a zeroed audit_status; AUDIT_GET only reads the
+        // header, and the kernel sizes the reply itself.
+        let mut msg = [0u8; 16 + 44];
+        let msg_len = msg.len() as u32;
+        msg[0..4].copy_from_slice(&msg_len.to_ne_bytes());
+        msg[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+        msg[6..8].copy_from_slice(&NLM_F_REQUEST.to_ne_bytes());
+        let sent = libc::sendto(
+            fd,
+            msg.as_ptr() as *const libc::c_void,
+            msg.len(),
+            0,
+            &addr as *const SockaddrNl as *const libc::sockaddr,
+            addr_len,
+        );
+        if sent < 0 {
+            libc::close(fd);
+            return false;
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // A live subsystem answers at once; a blocked one answers with
+        // ECONNREFUSED.  A silent one is treated as absent.
+        if libc::poll(&mut pfd as *mut libc::pollfd, 1, 200) <= 0 {
+            libc::close(fd);
+            return false;
+        }
+        let mut buf = [0u8; 512];
+        let n = libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0);
+        libc::close(fd);
+        // One nlmsghdr plus an audit_status or an int errno.
+        if n < 20 {
+            return false;
+        }
+        let kind = u16::from_ne_bytes([buf[4], buf[5]]);
+        if kind == NLMSG_ERROR {
+            let errno = i32::from_ne_bytes([buf[16], buf[17], buf[18], buf[19]]);
+            // 0 is the ack of a live subsystem; a negative errno is a
+            // refusal.  EPERM and EACCES mean the subsystem is there and
+            // this caller may not read it, which is still a durable
+            // record the operator cannot see.
+            return errno == 0 || errno == -libc::EPERM || errno == -libc::EACCES;
+        }
+        kind == AUDIT_GET
+    }
+}
+
 /// Read a sysctl through `/proc/sys`, trimmed.
 fn sysctl(rel: &str) -> Option<String> {
     std::fs::read_to_string(format!("/proc/sys/{}", rel))
@@ -839,5 +956,24 @@ mod tests {
         assert_eq!(c.memlock_limit, 8388608);
         assert!(!c.proc_hidden);
         assert!(c.peerpidfd);
+    }
+
+    #[test]
+    fn audit_probe_override_decides_without_the_socket() {
+        // The probe is host state; the override is what the QA suite
+        // drives, so the two answers must be honoured exactly.
+        std::env::set_var("PMASK_PROBE_AUDIT", "1");
+        assert!(kernel_audit_reachable());
+        std::env::set_var("PMASK_PROBE_AUDIT", "0");
+        assert!(!kernel_audit_reachable());
+        std::env::remove_var("PMASK_PROBE_AUDIT");
+    }
+
+    #[test]
+    fn audit_probe_is_deterministic_without_an_override() {
+        // A host either answers or it does not; a flapping probe would
+        // make the refusal depend on timing.
+        std::env::remove_var("PMASK_PROBE_AUDIT");
+        assert_eq!(probe_audit(), probe_audit());
     }
 }
