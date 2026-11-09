@@ -649,18 +649,31 @@ fn env_line_error(path: &Path, line: usize, what: &str) -> io::Error {
 
 /// Parse an environment file.
 ///
+/// This is the one `--env-file` grammar in the tree.  `pmask`
+/// (`src/cli.rs`) and `pmaskd` (`src/bin/pmaskd.rs`) both call it, so a
+/// file that works for one works for the other and a line that is
+/// refused is refused by both.  A second parser would drift: the CLI
+/// used to keep a trailing CR and an `export ` prefix as part of the
+/// name, while the daemon stripped them.
+///
 /// Grammar, one entry per line:
 ///
-/// * A blank line or a line whose first non-blank byte is `#` is skipped.
-/// * `KEY=VALUE` or `export KEY=VALUE`.
+/// * A blank line, or a line whose first non-blank byte is `#`, is
+///   skipped.
+/// * One trailing CR is removed, so a file written with CRLF endings
+///   gives the same values as one with LF endings.
+/// * `KEY=VALUE` or `export KEY=VALUE`; the `export ` prefix and the
+///   blanks around it are not part of the name.
 /// * `KEY` has printable ASCII bytes only (0x21 to 0x7e), no space and no
-///   `=`, and is not empty.
+///   `=`, and is not empty.  A blank or control byte in a key is an error
+///   rather than a variable no program can read.
 /// * `VALUE` loses leading and trailing blanks.  When it then starts and
 ///   ends with the same quote (`'` or `"`), the quotes are removed and the
 ///   text between them is kept as it is.  There is no escape processing.
 /// * A NUL byte anywhere in a line is an error.
 ///
-/// Every error names the file and the line (`file:line: message`).
+/// Every error names the file and the line (`file:line: message`), which
+/// is what both surfaces print.
 pub fn parse_env_file(path: &Path) -> io::Result<Vec<(OsString, OsString)>> {
     let mut text = std::fs::read(path)
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
@@ -689,7 +702,11 @@ fn parse_env_text(path: &Path, text: &[u8]) -> io::Result<Vec<(OsString, OsStrin
         };
         let key = &body[..eq];
         if key.is_empty() {
-            return Err(env_line_error(path, lineno, "empty key"));
+            return Err(env_line_error(
+                path,
+                lineno,
+                "expected KEY=VALUE: the key is empty",
+            ));
         }
         if let Some(bad) = key.iter().find(|&&b| !(0x21..=0x7e).contains(&b)) {
             let what = if *bad == b' ' || *bad == b'\t' {
@@ -2379,5 +2396,128 @@ mod tests {
         assert_eq!(st.peer_uid, unsafe { libc::geteuid() });
         assert!(st.peer_identity.contains("peercred") || st.peer_identity.contains("pidfd"));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    // ------------------------------------------------------ env file --
+
+    /// Write `text` to a file in a fresh private directory and parse it.
+    fn parse_text_file(tag: &str, text: &[u8]) -> io::Result<Vec<(OsString, OsString)>> {
+        let d = test_dir(tag);
+        let p = d.join("env");
+        std::fs::write(&p, text).unwrap();
+        let out = parse_env_file(&p);
+        std::fs::remove_dir_all(&d).ok();
+        out
+    }
+
+    fn pairs(v: Vec<(&str, &str)>) -> Vec<(OsString, OsString)> {
+        v.into_iter()
+            .map(|(k, val)| (OsString::from(k), OsString::from(val)))
+            .collect()
+    }
+
+    #[test]
+    fn env_file_accepts_export_and_strips_it_from_the_key() {
+        // Row 1 of issue 7.  The name is `FOO`, not `export FOO`; a
+        // variable called `export FOO` is one no shell and no program
+        // will ever read.
+        let got = parse_text_file("export", b"export FOO=bar\n").unwrap();
+        assert_eq!(got, pairs(vec![("FOO", "bar")]));
+        // Blanks between `export` and the name are dropped too, and a
+        // bare `export` with nothing after it is not a name.
+        let got = parse_text_file("exportspace", b"export   FOO=bar\n").unwrap();
+        assert_eq!(got, pairs(vec![("FOO", "bar")]));
+    }
+
+    #[test]
+    fn env_file_strips_a_trailing_cr() {
+        // Row 2 of issue 7, and the dangerous one: a file written on
+        // Windows or by a templating step used to leave a CR on every
+        // value, so `v\r` was delivered where `v` was meant.
+        let got = parse_text_file("crlf", b"CRLF=v\r\nPLAIN=w\n").unwrap();
+        assert_eq!(got, pairs(vec![("CRLF", "v"), ("PLAIN", "w")]));
+    }
+
+    #[test]
+    fn env_file_refuses_a_key_with_a_blank_or_control_byte() {
+        // Row 3 of issue 7.  A key with a space is a variable no program
+        // can read, so it is refused rather than delivered.
+        let e = parse_text_file("badkey", b"BAD KEY=v\n").unwrap_err();
+        assert!(e.to_string().contains("key contains a space"), "{}", e);
+        assert!(e.to_string().ends_with(":1: key contains a space"), "{}", e);
+        // A control byte is refused by the same rule, and named.
+        let e = parse_text_file("ctrlkey", b"BAD\x01KEY=v\n").unwrap_err();
+        assert!(e.to_string().contains("0x01"), "{}", e);
+        let e = parse_text_file("tabkey", b"BAD\tKEY=v\n").unwrap_err();
+        assert!(e.to_string().contains("space"), "{}", e);
+    }
+
+    #[test]
+    fn env_file_removes_one_pair_of_matching_quotes() {
+        // Row 4 of issue 7.  The quotes are the CLI's documented
+        // grammar, and the daemon already had them; neither surface can
+        // differ any more.
+        let got = parse_text_file("quoted", b"K=\"quoted value\"\nS='single'\n").unwrap();
+        assert_eq!(got, pairs(vec![("K", "quoted value"), ("S", "single")]));
+        // Mismatched or unpaired quotes stay as written.
+        let got = parse_text_file("unquoted", b"A=\"x'\nB=\"\nC=\"\n").unwrap();
+        assert_eq!(got, pairs(vec![("A", "\"x'"), ("B", "\""), ("C", "\"")]));
+    }
+
+    #[test]
+    fn env_file_and_cli_agree_on_the_same_bytes() {
+        // The property issue 7 asks for: one file, one environment.  The
+        // table is the issue's own, plus the blank/control rows; every
+        // accepted line must produce the same pair whichever surface
+        // reads it, and every refused line must be refused by both.
+        let accepted: &[(&[u8], &[(&str, &str)])] = &[
+            (b"export FOO=bar\n", &[("FOO", "bar")]),
+            (b"CRLF=v\r\n", &[("CRLF", "v")]),
+            (b"K=\"quoted value\"\n", &[("K", "quoted value")]),
+            (b"# comment\n\nA=1\n", &[("A", "1")]),
+        ];
+        for (text, want) in accepted {
+            let got = parse_text_file("agree", text).unwrap_or_else(|e| {
+                panic!("{:?} was refused: {}", String::from_utf8_lossy(text), e)
+            });
+            assert_eq!(
+                got,
+                pairs(want.to_vec()),
+                "{:?}",
+                String::from_utf8_lossy(text)
+            );
+        }
+        let refused: &[&[u8]] = &[b"BAD KEY=v\n", b"=v\n", b"noseparator\n", b"A=\0b\n"];
+        for text in refused {
+            assert!(
+                parse_text_file("refuse", text).is_err(),
+                "{:?} was accepted",
+                String::from_utf8_lossy(text)
+            );
+        }
+    }
+
+    #[test]
+    fn env_file_reports_the_file_and_the_line() {
+        let d = test_dir("lineno");
+        let p = d.join("env");
+        std::fs::write(&p, b"A=1\nB=2\nBAD KEY=3\n").unwrap();
+        let e = parse_env_file(&p).unwrap_err().to_string();
+        assert!(e.contains("env:3:"), "{}", e);
+        assert!(e.contains(&d.display().to_string()), "{}", e);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn env_file_refuses_a_nul_byte_and_an_empty_key() {
+        let e = parse_text_file("nul", b"A=1\nB=2\0\n").unwrap_err();
+        assert!(e.to_string().contains("NUL byte"), "{}", e);
+        assert!(
+            e.to_string().ends_with(":2: line contains a NUL byte"),
+            "{}",
+            e
+        );
+        let e = parse_text_file("emptykey", b"=v\n").unwrap_err();
+        assert!(e.to_string().contains("expected KEY=VALUE"), "{}", e);
     }
 }

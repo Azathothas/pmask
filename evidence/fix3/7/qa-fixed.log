@@ -1,0 +1,12 @@
+PASS qa7-fixture-has-a-cr
+PASS qa7-cli-export (FOO=bar)
+PASS qa7-cli-no-variable-named-export
+PASS qa7-cli-crlf (CRLF=v)
+PASS qa7-cli-bad-key-refused (rc=255)
+PASS qa7-daemon-bad-key-refused (rc=255)
+PASS qa7-cli-quotes (K=[quoted value])
+PASS qa7-daemon-export (FOO=bar)
+PASS qa7-daemon-crlf (CRLF=v)
+PASS qa7-daemon-quotes (K=[quoted value])
+PASS qa7-same-file-same-env
+== VERDICT: 0 failure(s) ==
