@@ -1,4 +1,4 @@
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.03s
 PASS qa13-probe-with-denied-ptrace-exits-zero
 PASS qa13-exact-row-is-na [  exact cmdline window     n/a          prctl(PR_SET_MM_MAP) works here, but there is no redaction for it to make exact; the row is unused without a redaction mode]
 PASS qa13-exact-row-explains

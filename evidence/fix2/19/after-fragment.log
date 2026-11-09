@@ -1,8 +1,9 @@
     Finished `release` profile [optimized] target(s) in 0.02s
 PASS qa19-control-host-ns (net=net:[4026532667] pid=pid:[4026532664])
-PASS qa19-net-private (inside=net:[4026533050] host=net:[4026532667])
+PASS qa19-net-private (inside=net:[4026533016] host=net:[4026532667])
 PASS qa19-pid-is-the-host (pid:[4026532664])
 PASS qa19-cmdline-is-exactly-the-label
 PASS qa19-environ-empty
-PASS qa19-unshare-control-creates-a-pid-namespace (pid:[4026532969])
+PASS qa19-unshare-control-creates-a-pid-namespace (pid:[4026532739])
+PASS qa19-refused-namespace-set-is-reported
 == VERDICT: FAIL=0 ==

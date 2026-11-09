@@ -1,4 +1,4 @@
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.03s
 PASS qa32-host-plain-audit-refused (exit 255)
 PASS qa32-refusal-names-the-mode
 PASS qa32-refusal-names-the-reason
