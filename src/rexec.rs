@@ -389,8 +389,58 @@ pub fn prepare_path(program: &CStr, label: &str, opts: Options) -> io::Result<Im
     result
 }
 
+/// Build an ordinary memfd to retry a failed hugetlb write on, with the
+/// degradation note that names `cause`.
+///
+/// A hugetlb memfd can be created while the pool is empty; the write then
+/// fails (EINVAL or ENOSPC).  `--hugetlb` is documented never to fail a run
+/// for lack of huge pages, so every carrier-creation site retries here and
+/// reports the note at the default verbosity.
+fn ordinary_retry(name: &str, cause: &io::Error) -> io::Result<(RawFd, Option<String>)> {
+    let mut name = sanitize_name(name).into_bytes();
+    name.push(0);
+    let fd = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
+        .map_err(|e| with_context(e, "memfd_create refused"))?;
+    Ok((
+        fd,
+        Some(format!(
+            "--hugetlb unavailable: {}; using an ordinary memfd",
+            cause
+        )),
+    ))
+}
+
+/// Create a hugetlb memfd named after `label`.
+fn huge_memfd(label: &str) -> io::Result<RawFd> {
+    let mut name = sanitize_name(label).into_bytes();
+    name.push(0);
+    memfd(
+        &name,
+        MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_HUGE_2MB,
+    )
+}
+
+/// Copy a seekable source from offset 0.
+fn copy_from_start(src: RawFd, dst: RawFd) -> io::Result<()> {
+    // SAFETY: the source is one of our own memfds.
+    let start = unsafe { libc::lseek(src, 0, libc::SEEK_SET) };
+    if start != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    copy_into(src, dst)
+}
+
 /// Copy the bytes readable from `fd` into a sealed image.  The descriptor
 /// is not closed and its offset advances to end of file.
+///
+/// A hugetlb carrier that cannot be filled falls back to an ordinary
+/// memfd, as [`fill_from`] does: `--hugetlb` never fails a run for lack of
+/// huge pages.  The bytes are spooled into an ordinary memfd first,
+/// because a source that cannot seek (a pipe, a socket, `--image -`)
+/// cannot be read twice: the spool is what makes the retry possible, and
+/// it becomes the image itself when the huge pages are refused.  A
+/// successful hugetlb run therefore copies the image twice, which costs
+/// one image of memory for the duration of the prepare.
 pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
     let mut magic = [0u8; 4];
     let mut got = 0usize;
@@ -407,27 +457,86 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             "not an ELF image",
         ));
     }
-    let (image_fd, backing, note) = create_image(label, &opts)?;
-    let filled = write_all_fd(image_fd, &magic).and_then(|_| copy_into(fd, image_fd));
-    match filled {
-        Ok(()) => {}
-        Err(e) => {
-            // SAFETY: the descriptor is ours.
-            unsafe { libc::close(image_fd) };
-            return Err(e);
-        }
-    }
-    if let Err(e) = seal(image_fd) {
+    let mut name = sanitize_name(label).into_bytes();
+    name.push(0);
+    let spool = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
+        .map_err(|e| with_context(e, "memfd_create refused"))?;
+    let filled = write_all_fd(spool, &magic).and_then(|()| copy_into(fd, spool));
+    if let Err(e) = filled {
         // SAFETY: the descriptor is ours.
-        unsafe { libc::close(image_fd) };
+        unsafe { libc::close(spool) };
+        return Err(e);
+    }
+    if opts.hugetlb {
+        return finish_hugetlb(label, spool);
+    }
+    if let Err(e) = seal(spool) {
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(spool) };
         return Err(e);
     }
     Ok(Image {
-        fd: image_fd,
-        backing,
-        note,
+        fd: spool,
+        backing: Backing::Memfd,
+        note: None,
         path: None,
     })
+}
+
+/// Seal `spool`, closing it if the seal is refused.
+fn seal_spool(spool: RawFd) -> io::Result<RawFd> {
+    match seal(spool) {
+        Ok(()) => Ok(spool),
+        Err(e) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(spool) };
+            Err(e)
+        }
+    }
+}
+
+/// Move a fully filled `spool` onto huge pages, or return it as the image.
+///
+/// A huge memfd can be created while the pool is empty; the copy then
+/// fails part-way.  `spool` still holds the whole image, so the ordinary
+/// memfd returned here is complete.  Every failure is a note, never an
+/// error: `--hugetlb` does not fail a run for lack of huge pages.
+fn finish_hugetlb(label: &str, spool: RawFd) -> io::Result<Image> {
+    let fallback = |cause: String| -> io::Result<Image> {
+        Ok(Image {
+            fd: seal_spool(spool)?,
+            backing: Backing::Memfd,
+            note: Some(format!(
+                "--hugetlb unavailable: {}; using an ordinary memfd",
+                cause
+            )),
+            path: None,
+        })
+    };
+    let huge = match huge_memfd(label) {
+        Ok(fd) => fd,
+        Err(e) => return fallback(e.to_string()),
+    };
+    let moved = copy_from_start(spool, huge).and_then(|()| seal(huge));
+    match moved {
+        Ok(()) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(spool) };
+            Ok(Image {
+                fd: huge,
+                backing: Backing::HugeTlb {
+                    page_size: HUGETLB_PAGE,
+                },
+                note: None,
+                path: None,
+            })
+        }
+        Err(e) => {
+            // SAFETY: the descriptor is ours.
+            unsafe { libc::close(huge) };
+            fallback(e.to_string())
+        }
+    }
 }
 
 /// Copy an already open source into a fresh image.
@@ -445,12 +554,9 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             // write then fails with ENOSPC.  Fall back rather than fail.
             // SAFETY: the descriptor is ours.
             unsafe { libc::close(fd) };
-            // The fallback keeps the same name: a hugetlb refusal must not
-            // change what `/memfd:` reads.
-            let mut name = opts.image_name(label).into_bytes();
-            name.push(0);
-            let fd = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
-                .map_err(|e| with_context(e, "memfd_create refused"))?;
+            // The fallback keeps the same name: a hugetlb refusal must
+            // not change what `/memfd:` reads.
+            let (fd, note) = ordinary_retry(&opts.image_name(label), &e)?;
             // SAFETY: the source offset is reset for the retry.
             unsafe { libc::lseek(src, 0, libc::SEEK_SET) };
             let filled = fill(fd, src);
@@ -462,10 +568,7 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             Ok(Image {
                 fd,
                 backing: Backing::Memfd,
-                note: Some(format!(
-                    "--hugetlb unavailable: {}; using an ordinary memfd",
-                    e
-                )),
+                note,
                 path: None,
             })
         }
@@ -1252,5 +1355,104 @@ mod tests {
             std::fs::read(format!("/proc/self/fd/{}", temp.fd)).unwrap(),
             std::fs::read(&exe).unwrap()
         );
+    }
+
+    // Issue 28: a source that cannot seek (a pipe) must not lose the
+    // hugetlb fallback.  `prepare_fd` carries the bytes it already read
+    // into the ordinary memfd, so the retry does not depend on `lseek`.
+    // Mutation control: returning the hugetlb write error instead of
+    // retrying makes the `Ok` arm unreachable on a host without huge
+    // pages, which is the defect this guards.
+    #[test]
+    fn prepare_fd_falls_back_on_a_pipe_source() {
+        let data = std::fs::read(std::env::current_exe().expect("current_exe")).expect("read exe");
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: a pipe pair of our own.
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe: {}", io::Error::last_os_error());
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        // A pipe holds 64 KiB, so the writer must run beside the reader:
+        // a single-threaded fill would block on the image bytes.
+        let to_write = data.clone();
+        let writer = std::thread::spawn(move || {
+            let mut off = 0usize;
+            while off < to_write.len() {
+                // SAFETY: writing the image bytes into our own pipe.
+                let n = unsafe {
+                    libc::write(
+                        write_fd,
+                        to_write[off..].as_ptr() as *const libc::c_void,
+                        to_write.len() - off,
+                    )
+                };
+                if n <= 0 {
+                    break;
+                }
+                off += n as usize;
+            }
+            // SAFETY: our own descriptor; the reader sees the end of file.
+            unsafe { libc::close(write_fd) };
+        });
+
+        let opts = Options { hugetlb: true };
+        let image = match prepare_fd(read_fd, "pipe hugetlb", opts) {
+            Ok(i) => i,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                // SAFETY: our own descriptor.
+                unsafe { libc::close(read_fd) };
+                let _ = writer.join();
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => {
+                // SAFETY: our own descriptor.
+                unsafe { libc::close(read_fd) };
+                let _ = writer.join();
+                panic!("prepare_fd on a pipe with --hugetlb failed: {}", e);
+            }
+        };
+        // SAFETY: our own descriptor.
+        unsafe { libc::close(read_fd) };
+        writer.join().expect("writer thread");
+        assert_eq!(
+            std::fs::read(format!("/proc/self/fd/{}", image.fd)).unwrap(),
+            data,
+            "the fallback lost bytes the first carrier had already taken"
+        );
+        // On a host without huge pages the note must say what happened;
+        // on one with them the backing stays hugetlb and there is no note.
+        match (&image.backing, &image.note) {
+            (Backing::HugeTlb { .. }, None) => {}
+            (Backing::Memfd, Some(note)) => {
+                assert!(
+                    note.contains("--hugetlb unavailable") && note.contains("ordinary memfd"),
+                    "note was {:?}",
+                    note
+                );
+            }
+            (b, n) => panic!("backing {:?} does not match note {:?}", b, n),
+        }
+    }
+
+    // `ordinary_retry` is the single place the fallback note is built, so
+    // both carriers that can lose their huge pages name the run the same
+    // way.  Mutation control: dropping the cause from the note makes this
+    // fail.
+    #[test]
+    fn ordinary_retry_builds_the_fallback_note() {
+        let cause = io::Error::from_raw_os_error(libc::EINVAL);
+        let (fd, note) = match ordinary_retry("fallback", &cause) {
+            Ok(v) => v,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => panic!("memfd refused: {}", e),
+        };
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(fd) };
+        let note = note.expect("a fallback carries a note");
+        assert!(note.contains("--hugetlb unavailable"), "{}", note);
+        assert!(note.contains("ordinary memfd"), "{}", note);
     }
 }

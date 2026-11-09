@@ -16,7 +16,8 @@
 #   I5  the IPC namespace is not the host's
 #   I6  the cgroup namespace is not the host's
 #   I7  the private /tmp is empty and the host's is not claimed
-#   I8  /dev holds only the bound device nodes, and they work
+#   I8  /dev holds only the bound device nodes and the members issue 25
+#       added, and they work
 #   I9  a refused mount is named and does not abort the run
 #   I10 Landlock denies a path outside its allowlist (with a positive control)
 #   I11 the payload's exit status and stdout pass through unchanged
@@ -520,15 +521,16 @@ fi
 
 # ------------------------------------------------------- I8: fresh /dev
 # Catches: the host's /dev left in place, or a tmpfs mounted over it with no
-# usable device nodes.
+# usable device nodes.  `/dev/pts`, `/dev/ptmx` and `/dev/shm` are part of
+# the fresh /dev since issue 25 (a pty-using payload needs them), so they
+# are expected rather than leaks; each is checked for usability below.
 iso_run "$T/dev.out" "$T/dev.err" /bin/sh -c 'ls /dev'
 dev_list=$(tr '\n' ' ' <"$T/dev.out")
 if has "$probe_rep" "dev"; then
     unexpected=""
     for n in $dev_list; do
         case "$n" in
-            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr) ;;
-            pts|ptmx|shm) ;;
+            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr|pts|ptmx|shm) ;;
             *) unexpected="$unexpected $n" ;;
         esac
     done
@@ -560,7 +562,7 @@ if has "$probe_rep" "dev"; then
         fi
     done
     if [ -z "$leak" ]; then
-        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue shm pts fuse net console log core initctl ptmx"
+        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue fuse net console log core initctl"
     else
         case " $dev_list " in
             *" $leak "*)

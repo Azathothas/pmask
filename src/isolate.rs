@@ -1020,6 +1020,9 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
     // named as a degradation, and the run continues: failing it here would
     // turn a host detail into a refused payload.
     if held[basic] >= 0 {
+        // An optional member that fails is a degradation of that member
+        // alone, so it does not set `first_errno`: the basic set is what
+        // decides whether the fresh /dev exists at all.
         if bind_held_as(held[basic], DEV_PTS, true).is_ok() {
             out.extra |= DE_PTS;
         }
@@ -1039,18 +1042,17 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
     // there.  The mount point has to exist in the fresh tmpfs first.
     // SAFETY: creating a directory inside our own tmpfs.
     let mkdir_rc = unsafe { libc::mkdir(DEV_SHM.as_ptr(), 0o1777 as libc::mode_t) };
-    let shm_dir = mkdir_rc == 0 || last_errno() == libc::EEXIST;
-    if shm_dir
-        && mount_checked(
+    if mkdir_rc == 0 || last_errno() == libc::EEXIST {
+        let shm = mount_checked(
             c"tmpfs".as_ptr(),
             DEV_SHM.as_ptr(),
             c"tmpfs".as_ptr(),
             (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
             c"mode=1777".as_ptr() as *const libc::c_void,
-        )
-        .is_ok()
-    {
-        out.extra |= DE_SHM;
+        );
+        if shm.is_ok() {
+            out.extra |= DE_SHM;
+        }
     }
     // Paths that resolve through /proc, so a payload written for a normal
     // /dev keeps working.  A host that already had them is not the case
@@ -1712,6 +1714,69 @@ mod tests {
         let deg = r.degradations();
         assert!(deg[0].contains("network namespace"), "{:?}", deg);
         assert!(deg[1].contains("uts namespace"), "{:?}", deg);
+    }
+
+    /// A `dev` entry with all six basic nodes bound and the given extras.
+    fn dev_report(nodes: u8, extra: u8) -> Report {
+        let mut frame = [ST_OFF; FRAME_LEN];
+        set_ok(&mut frame, I_DEV, nodes);
+        let mut r = Report::from_frame(&frame);
+        r.dev_extra = extra;
+        r
+    }
+
+    // Issue 25: a fresh /dev with six nodes and no pty support reported no
+    // degradation, so a payload broke with "out of pty devices" under a
+    // report that claimed the mechanism applied.  Each member now shows up
+    // in the degradation list by name when it is absent.
+    // Mutation control: dropping the extras loop makes this fail.
+    #[test]
+    fn dev_without_pts_is_named_as_degraded() {
+        let r = dev_report(6, 0);
+        let deg = r.degradations();
+        let joined = deg.join("\n");
+        assert!(joined.contains("no /dev/pts"), "{:?}", deg);
+        assert!(joined.contains("no /dev/ptmx"), "{:?}", deg);
+        assert!(joined.contains("no /dev/shm"), "{:?}", deg);
+        assert!(joined.contains("no /dev/fd"), "{:?}", deg);
+        // The basic-count line is not printed when all six are bound, so
+        // the four extras are the whole list.
+        assert_eq!(deg.len(), 4, "{:?}", deg);
+    }
+
+    // The other half: a fresh /dev with every member reports no
+    // degradation at all, so the lines above cannot be printed
+    // unconditionally.
+    #[test]
+    fn complete_dev_reports_no_degradation() {
+        let all = DE_PTS | DE_PTMX | DE_SHM | DE_LINKS;
+        assert!(dev_report(6, all).degradations().is_empty());
+    }
+
+    // A `dev` entry that is not applied says nothing about its members:
+    // the refusal is already named once, for the mechanism as a whole.
+    #[test]
+    fn refused_dev_does_not_name_its_members() {
+        let mut frame = [ST_OFF; FRAME_LEN];
+        set_refused(&mut frame, I_DEV, libc::EPERM);
+        let deg = Report::from_frame(&frame).degradations();
+        assert_eq!(deg.len(), 1, "{:?}", deg);
+        assert!(deg[0].contains("the fresh /dev"), "{:?}", deg);
+    }
+
+    #[test]
+    fn dev_extras_cover_every_optional_member() {
+        // Every bit `DE_*` is present in the table that names it, or a
+        // member would be silently dropped from the report.
+        let table: u8 = DEV_EXTRAS.iter().map(|(bit, _)| *bit).sum();
+        assert_eq!(
+            table,
+            DE_PTS | DE_PTMX | DE_SHM | DE_LINKS,
+            "a DE_ bit has no entry in DEV_EXTRAS"
+        );
+        assert_eq!(DEV_LINKS.len(), 4);
+        // The six original nodes are never removed.
+        assert_eq!(DEV_NODES.len(), 6);
     }
 
     #[test]
