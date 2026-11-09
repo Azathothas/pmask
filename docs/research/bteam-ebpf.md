@@ -4,7 +4,7 @@ Scope: what a kernel-side observer can see of a `pmask` process tree, and
 what this host allows of the attempt. Host: Debian 13, kernel
 `6.12.113+deb13-amd64`, x86_64, LXC container, uid 1000 with passwordless
 sudo. Raw output: `evidence/bteam5/57/` (`probe.log`, `refusal.log`,
-`substitute-strace.log`).
+`why-strace-cannot-substitute.log`).
 
 This note answers issue #57. It does not restate the project's threat
 model; it records the channel-by-channel result and the blocker.
@@ -185,11 +185,18 @@ supervisor task names:
   498782 pmask-tracer
 ```
 
-Two facts a sensor gets from `sys_enter_ptrace` are visible without it: the
-payload's `TracerPid` names a process inside the tree, and the supervisor
-has a task literally named `pmask-tracer`. Neither is visible to an eBPF
-program on this host, but both are visible from userland, which is why the
-eBPF row is not the load-bearing one for detecting pmask.
+Two facts a sensor gets from `sys_enter_ptrace` are visible here without it:
+the payload's `TracerPid` names a process inside the tree, and the
+supervisor has a task literally named `pmask-tracer`.  Neither was visible
+through eBPF on this host (no program could be loaded), and both are
+visible from userland — which is why the eBPF row is not the load-bearing
+one for detecting pmask.
+
+`strace` cannot stand in for the tracer-syscall channels either.  It is a
+second tracer: `strace -f` makes pmask's own `PTRACE_SEIZE` fail with
+`EPERM`, and `strace -p <payload>` is refused for the same reason.  The
+isolated probe and its output are in
+`evidence/bteam5/57/why-strace-cannot-substitute.log`.
 
 ## What could not be measured, and what would unblock it
 

@@ -48,6 +48,27 @@ masking tool from a sandbox.
 
 ## The `--watch-rename --no-dumpable` dependency (issue #60)
 
+`qa/fix1` gained commits after this note was first written (`cd389fd fix:
+redirect rename to the mapped label, no write`), so `s5` was widened to
+decide from the observed shape and to name which one it took.  Both were
+run against a real binary:
+
+```
+this branch (fix1 not merged):
+  PASS s5-watch-rename-no-dumpable (defect #60 open: comm=other payload=other)
+  NOTE s5 saw the open defect shape (issue #60, fix1 owns the fix)
+
+fix1's built binary (/tmp/fix1-target/release/pmask):
+  PASS s5-watch-rename-no-dumpable (fixed: comm=qa46-sec payload=qa46-sec)
+  NOTE s5 saw the fixed shape (issue #60): the redirect needed no write
+```
+
+The side-by-side run used a copy of the fragment and fix1's binaries in a
+scratch directory (`/tmp/fixsim`), so the worktree's own binary was not
+swapped.  A divergence with no warning is a FAIL in either branch: that
+would be a silent degradation (invariant 13).
+
+
 `--watch-rename --no-dumpable` is a broken combination: the redirect is a
 tracee memory write, and a non-dumpable tracee refuses it. Measured shape
 on this branch:
@@ -85,6 +106,19 @@ stays green and the branch it took is printed.
   pmask's flag adds one to whatever the sandbox installed, so the absolute
   number is not portable across hosts. The differential (same host, same
   payload, with and without the flag) is.
+
+## A flake found and fixed in the fragment
+
+The first version of `s2` looked up the payload's pid, then slept inside a
+`wait_report` loop, then read `comm` from that pid. On a loaded host the
+lookup could return a pid that had already exited by the time the report
+was read, and the case failed with `payload=[...] self=[]`. That is a
+fragment bug, not a pmask one: six consecutive runs of the direct command
+always reported `renamer-comm=qa46-sec` and `comm=qa46-sec`. The fixed
+fragment waits for the payload's own report first — which it prints only
+after the rename and before it parks — and only then re-finds the pid.
+Six consecutive fragment runs after the fix all printed
+`== QA46: PASS`.
 
 ## Re-run, verbatim
 

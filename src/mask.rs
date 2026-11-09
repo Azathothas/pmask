@@ -559,7 +559,8 @@ impl Mask {
     /// unchanged; only the string a reader sees changes.  The name is
     /// checked by [`crate::mem::validate_memfd_name`] at `run`/`spawn`.
     /// It does not imply [`Mask::rexec`]: a run that never prepares an
-    /// image ignores it.
+    /// image names nothing, and says so once at the default verbosity
+    /// rather than looking applied.
     pub fn memfd_name(mut self, name: impl Into<String>) -> Mask {
         self.rexec_memfd_name = Some(name.into());
         self
