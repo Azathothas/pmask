@@ -1,4 +1,6 @@
 $ git log --oneline d2f331a..HEAD
+eab58be docs: say when the mode line is printed
+644522b docs: refresh the docs1 commit log
 42443c4 docs: note the gate is run unprivileged in DEPLOY
 8a23e4b docs: tighten the secret and mode wording
 155fd4a docs: add the docs1 evidence index
@@ -18,11 +20,11 @@ c08e32c docs: add the audit and wrapper exposure to SECURITY
 f8ccfbc docs: state the audit-log exposure of literal secrets
 
 $ git diff --stat d2f331a..HEAD
- README.md                       | 198 +++++++++++++++++++++++++++++++++++-----
+ README.md                       | 201 +++++++++++++++++++++++++++++++++++-----
  SECURITY.md                     |  29 +++++-
  docs/DEPLOY.md                  |  24 +++++
  evidence/docs1/README.md        |  78 ++++++++++++++++
  evidence/docs1/check-rename.log |   2 +
- evidence/docs1/commits.log      |  21 +++++
+ evidence/docs1/commits.log      |  28 ++++++
  evidence/docs1/style-checks.log |   5 +
- 7 files changed, 328 insertions(+), 29 deletions(-)
+ 7 files changed, 338 insertions(+), 29 deletions(-)

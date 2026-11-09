@@ -285,16 +285,19 @@ mode that cannot redact unless `--allow-argv-secret` is given.
 
 ## Modes: what each one redacts
 
-pmask selects one of three modes. The run prints `mode=` and, at the
-default verbosity, one note per request the mode could not apply. The
-JSON report carries the same `mode` and a `mode_reason` naming the axis
-that kept the run below the strongest available one.
+pmask selects one of three modes. A run on the secret or isolation path
+prints `mode=` and, at the default verbosity, one note per request the
+mode could not apply. A run with no secret and no isolation takes the
+redaction path directly and prints no mode line; its summary counts the
+execs that degraded. The JSON report carries the same `mode` and a
+`mode_reason` naming the axis that kept the run below the strongest
+available one.
 
 | mode | selected by | redacts | does not |
 |---|---|---|---|
 | redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary unless `--rexec` is added, and the payload's memory holds its real argv unless `--no-dumpable` is added |
 | isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the intermediate process under the label; the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
-| plain | `--no-redact`, or a host that does not allow `ptrace` | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
+| plain | `--no-redact`, or a host that does not allow `ptrace` for a run that needs the runner | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
 
 - `--redact --isolate=LIST` composes the two. It redacts the tree and
   gives the payload exactly the namespaces the list names (`pid`, `net`,
