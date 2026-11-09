@@ -296,6 +296,7 @@ fn errno_text(e: i32) -> String {
         libc::ENOMEM => "ENOMEM",
         libc::EROFS => "EROFS",
         libc::EMFILE => "EMFILE",
+        libc::EIO => "EIO",
         _ => return format!("errno {}", e),
     };
     name.to_string()
@@ -1377,6 +1378,16 @@ fn report_and_print(report_r: libc::c_int) {
         if report.dev.state == State::Applied {
             report.dev_extra = frame[FRAME_LEN + 2];
         }
+    } else if report.dev.state == State::Applied {
+        // A truncated frame does not say which optional /dev members are
+        // in place.  Claiming they are absent would be a false
+        // degradation, so the entry says the count is unknown instead.
+        eprintln!(
+            "pmask: isolation: the report was cut short ({} of {} status bytes); \
+             the /dev member counts are unknown",
+            got, total
+        );
+        report.dev.state = State::Skipped(libc::EIO);
     }
     eprintln!("pmask: isolation: {}", report.describe());
     for line in report.degradations() {
