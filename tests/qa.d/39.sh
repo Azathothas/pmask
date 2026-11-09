@@ -155,18 +155,26 @@ SUP=""
 env PMASK_NO_SELFMASK=1 "$TOOL" -q -l "$L" --no-redact --allow-argv-secret \
     --secret T=literal:"$SECRET" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
 SUP=$!
-sleep 0.9
-if kill -0 "$SUP" 2>/dev/null; then
+# The escape leaves this process's own argv real for the whole run, so the
+# value appears as soon as it is exec'd.  Poll for it: on a loaded host
+# the single sample below could land in the fork/exec window.
+s4_i=0
+argv=""
+while [ "$s4_i" -lt 40 ]; do
     argv=$(tr '\0' ' ' < "/proc/$SUP/cmdline" 2>/dev/null)
     case "$argv" in
-        *"$SECRET"*) pass "s4-control-literal-secret-readable-in-argv" ;;
-        *) fail "s4-control-literal-secret-readable-in-argv (argv=[$argv])" ;;
+        *"$SECRET"*) break ;;
     esac
-    kill "$SUP" 2>/dev/null
-    wait "$SUP" 2>/dev/null
-else
-    fail "s4-control-literal-secret-readable-in-argv (supervisor gone)"
-fi
+    kill -0 "$SUP" 2>/dev/null || break
+    sleep 0.05 2>/dev/null || sleep 1
+    s4_i=$((s4_i + 1))
+done
+case "$argv" in
+    *"$SECRET"*) pass "s4-control-literal-secret-readable-in-argv" ;;
+    *) fail "s4-control-literal-secret-readable-in-argv (argv=[$argv])" ;;
+esac
+kill -9 "$SUP" 2>/dev/null
+wait "$SUP" 2>/dev/null
 SUP=""
 
 # ------------------------------- S5: the warning, plain, literal source
