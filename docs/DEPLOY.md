@@ -171,6 +171,13 @@ directives, not of a running job. Treat a directive this document names
 but the installed systemd does not know as a version mismatch to resolve
 rather than a line to delete.
 
+Run the test gate as an unprivileged uid, not as root. `CAP_SYS_PTRACE`
+lets a root observer read what a same-uid peer cannot, so the suites that
+assert a same-uid refusal (`tests/isolation.sh`, `tests/conformance.sh`)
+cannot be decided as root. They print `SKIP` and name the root case
+instead of failing. `vm/run.sh` runs both passes, as root and as uid
+1000.
+
 The `contrib/` directory is excluded from the published crate; it is
 deployment material, not a build dependency. It ships in the release
 tarball and in the repository.
