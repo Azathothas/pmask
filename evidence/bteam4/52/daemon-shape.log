@@ -1,0 +1,7 @@
+daemon pid=716488 comm=b4d cmdline=b4d|
+environ EACCES
+maps EACCES
+auxv EACCES
+exe EACCES
+fd EACCES
+task b4d

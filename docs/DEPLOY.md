@@ -34,8 +34,9 @@ What this shape does not close: another process of the same account can
 open `/proc/<payload>/fd/3` and read the value, because the payload is
 dumpable after `exec`. `--no-dumpable` closes that for the payload at the
 cost of the payload's own ability to debug itself. The run report's
-`payload_dumpable` is `true` unless `--no-dumpable` is set and `false`
-when it is, so a watcher can assert on it.
+`payload_dumpable` describes the payload's `PR_GET_DUMPABLE`, not the
+flag: it is `true` in plain and isolate modes even with `--no-dumpable`,
+because those modes do not apply the flag, and the run says so in a note.
 
 ## 2. A dedicated holder account
 

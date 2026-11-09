@@ -118,14 +118,18 @@ Options that matter most:
 | `--exec-once` | reuse one sealed image per distinct program, keyed by resolved path and mtime, across the execs of the session; implies `--rexec` |
 | `--hugetlb` | ask for a hugetlbfs-backed image and report the backing; falls back to an ordinary memfd; implies `--rexec` |
 | `--unshare` | private user, pid and mount namespaces with a private procfs, when the kernel allows it |
-| `--isolate[=LIST]` | run the payload in fresh pid, net and tmp namespaces (default `all`) |
+| `--isolate[=LIST]` | run the payload in fresh pid, net and tmp namespaces (default `all`); `none` means no isolation at all: no namespace, no `no_new_privs`, no Landlock; the private `/dev` carries `/dev/pts`, `/dev/ptmx` and a private `/dev/shm` when the host has them |
 | `--no-redact` | never touch `/proc` metadata, even where ptrace works |
 | `--scope-name NAME` | one transient systemd scope named NAME |
 | `--secret N=SRC` | deliver a secret on descriptor 3, 4, ...; `PMASK_SECRET_<NAME>=<fd>` names it in the child |
 | `--secret-burn` | let a cooperating reader truncate the value once and never grow it back |
 | `--secret-close-on-exec` | close the descriptor in each direct child of the payload at its fork, not in the payload; needs the ptrace supervisor, so plain and isolate modes refuse it |
+| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing |
+| `--memfd-name NAME` | name the image memfd NAME instead of the label; applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and `--hugetlb` |
 | `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
-| `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
+| `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; the payload shares fd 1, so a consumer that has to parse the document uses `--report-file` or `--report-fd`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
+| `--report-file PATH` | write the `--report` document to PATH instead of stdout; the payload keeps fd 1 |
+| `--report-fd N` | write the `--report` document to descriptor N; checked before the payload runs |
 | `--audit` | print one residue row per tracee at each exec completion, then a residue count naming the interfaces the tree still discloses; needs the redaction mode |
 
 `--args-from-fd` matters for shell history as well: a command read from
@@ -214,9 +218,17 @@ each job with the client's own uid and gid instead.
 `--secret NAME=SRC` delivers a value to the job on a sealed memfd
 descriptor at fd 3, 4, ... and sets `PMASK_SECRET_<NAME>=<fd>` in the
 child's environment. The value never enters the child's `argv` or
-`environ`; a `literal:` or `env:` source is briefly in pmask's own
-argv or environment until the supervisor masks itself. The program reads
-it with `pmask read NAME` or from the descriptor.
+`environ`. The program reads it with `pmask read NAME` or from the
+descriptor.
+
+A `literal:` or `env:` source is different: the value is in pmask's own
+argv or environment until the supervisor masks itself, and the kernel's
+audit record of pmask's own exec, the shell history and any wrapper's
+argv keep a copy that pmask cannot reach. The run says so once at the
+default verbosity. Use `file:`, `agent:` or `stdin` for the value, and
+`--args-from-fd` for the payload's own arguments; `--args-from-fd` is
+also the documented way to keep a `sudo pmask ...` command line out of
+`sudo`'s `/proc` entry.
 Sources are `file:PATH`, `env:VAR`, `agent:NAME`, `stdin` and
 `literal:VALUE`; a bare value is a literal. `--secret-burn` lets a
 cooperating reader truncate the value once and never grow it back.

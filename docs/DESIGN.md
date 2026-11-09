@@ -172,10 +172,14 @@ apply the label to the payload's own `argv`, `environ` or `comm`. When a
 label is set in isolate mode, the supervisor masks its own `/proc` entry
 with it, and the run prints one note at the default verbosity: "the
 payload's label was not applied: isolate mode does not redact the
-payload's `/proc` metadata". `--redact --isolate` is the composed
-spelling of `--unshare`: the redaction path with a private pid namespace
-and procfs, so the label applies there. Plain mode applies the label
-nowhere. The combination is reported, not refused. `--daemon` is
+payload's `/proc` metadata". `--redact --isolate` composes the two: the
+tracer owns the tree and the child is forked into exactly the namespaces
+the list names, so the label applies and the requested set is what the
+payload gets. A set the host cannot grant is reported as a degradation,
+never replaced by a different set. `--no-redact --isolate` runs the
+isolate path, because isolation does not need ptrace. `--isolate=none`
+creates no namespace at all, sets no `no_new_privs` and applies no
+Landlock policy. Plain mode applies the label nowhere. `--daemon` is
 different: the client refuses `--isolate`, `--secret`, `--no-redact` and
 `--image` outright, because the daemon owns the masking policy and the
 job environment, and a flag it cannot honour would otherwise be dropped.
