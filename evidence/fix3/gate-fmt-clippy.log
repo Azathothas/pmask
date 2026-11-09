@@ -1,0 +1,7 @@
+$ cargo fmt --all -- --check
+exit=0
+
+$ cargo clippy --locked --all-targets --features testbins -- -D warnings
+    Checking pmask v0.1.0-beta.1 (/workspace/wt/fix3)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.92s
+exit=0 (see Finished line above)

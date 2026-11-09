@@ -1,0 +1,28 @@
+################ tests/daemon.sh
+PASS d10-quiet-daemon-stays-quiet
+== VERDICT: FAIL=0 ==
+
+################ tests/daemon_neg.sh
+PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.678468/visible is mode 0755; group or other can read and traverse it)
+== VERDICT: FAIL=0 ==
+
+################ tests/options.sh
+PASS o38-empty-env-key-is-refused-by-name
+== VERDICT: FAIL=0 ==
+
+################ tests/secrets.sh
+PASS e2-squeezed-memlock-is-reported (heap)
+== VERDICT: PASS=33 FAIL=0 SKIP=0 ==
+
+################ tests/core.sh
+PASS k14-thread-starts-settled (settled=4 slow=0)
+== VERDICT: FAIL=0 ==
+
+################ tests/validate.sh
+PASS cli-spy-6: control=1 wrapped=0
+== VERDICT: ALL-PASS ==
+
+################ tests/store.sh
+PASS s14-oversize-passphrase-refused
+== VERDICT: FAIL=0 ==
+
