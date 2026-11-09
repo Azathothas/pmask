@@ -96,7 +96,7 @@ fragment bug, not a pmask one: six consecutive runs of the direct command
 always reported `renamer-comm=qa46-sec` and `comm=qa46-sec`. The fixed
 fragment waits for the payload's own report first — which it prints only
 after the rename and before it parks — and only then re-finds the pid.
-Twenty consecutive fragment runs after the fix all printed
+Six consecutive fragment runs after the fix all printed
 `== QA46: PASS`.
 
 ## Re-run, verbatim
