@@ -104,7 +104,7 @@ Options that matter most:
 | `--keep-env` | leave `environ` visible |
 | `--keep-env=NAME` | keep only the named variables visible, repeatable |
 | `--env K=V`, `--env-file PATH` | set the child environment |
-| `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB |
+| `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the descriptor stays open for the payload and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
 | `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
 | `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
 | `--no-exact` | keep the kernel's original argv window instead of relocating it; `cmdline` is the label plus one NUL per argument |
@@ -214,12 +214,27 @@ each job with the client's own uid and gid instead.
 `--secret NAME=SRC` delivers a value to the job on a sealed memfd
 descriptor at fd 3, 4, ... and sets `PMASK_SECRET_<NAME>=<fd>` in the
 child's environment. The value never enters the child's `argv` or
-`environ`; a `literal:` or `env:` source is briefly in pmask's own
-argv or environment until the supervisor masks itself. The program reads
-it with `pmask read NAME` or from the descriptor.
-Sources are `file:PATH`, `env:VAR`, `agent:NAME`, `stdin` and
-`literal:VALUE`; a bare value is a literal. `--secret-burn` lets a
-cooperating reader truncate the value once and never grow it back.
+`environ`. The program reads it with `pmask read NAME` inside the payload
+or from the descriptor. Sources are `file:PATH`, `env:VAR`,
+`agent:NAME`, `stdin` and `literal:VALUE`; a bare value is a literal.
+
+The source decides what the host can still read. `file:`, `agent:`,
+`stdin` and `--args-from-fd` keep the value out of every command line
+that starts pmask. A `literal:` value travels in pmask's own argv until
+pmask masks itself, and the kernel audit subsystem writes the exec record
+(`type=EXECVE` and `type=PROCTITLE`) before that point. The cleartext
+value is therefore in the audit log for the retention of the log, not for
+the life of the run. The same string is in the
+`/proc/<pid>/cmdline` of any wrapper that held the command line, `sudo`
+included, for as long as the wrapper lives, and in the interactive
+shell's history file. An `env:` source travels in the caller's
+environment instead: the exec record carries argv and not environ, so the
+value is not in that record, but the shell and every wrapper on the way
+already hold it. Use `file:` or `agent:` where the value can be read from
+a path or the agent, `stdin` where it can be piped, and `--args-from-fd`
+where the whole payload vector must stay off pmask's command line.
+`--secret-burn` lets a cooperating reader truncate the value once and
+never grow it back.
 `--secret-close-on-exec` closes the descriptor in each of the payload's
 direct children at its fork, while the payload keeps it. The guarantee is
 for an ordinary fork/exec tree: a process that shares the payload's
@@ -390,11 +405,21 @@ read the conditions they print.
 - What still tells the truth after the window moves is listed one
   interface at a time in `docs/research/detection-residue.md`, with the
   condition that reveals it in each row.
-- A `--secret` value is absent from `cmdline`, `environ` and `ps`. It is
-  still readable by the host: the payload holds it on an inherited
-  descriptor whose `FD_CLOEXEC` is cleared on purpose, so every
-  descendant inherits it, and `/proc/<child>/fd/<N>` names a sealed
-  `memfd` that a same-uid peer can open. `--secret-close-on-exec` closes
+- A `literal:` secret is in pmask's own argv until the self-mask runs,
+  and the kernel audit record for that exec is written before the
+  self-mask. `type=EXECVE` and `type=PROCTITLE` hold the value in
+  cleartext for the retention of the log. The value is also in the
+  `/proc/<pid>/cmdline` of a wrapper such as `sudo` for the wrapper's
+  whole life, and in the interactive shell's history file. `--args-from-fd`
+  keeps the payload vector out of pmask's argv; `file:`, `agent:` and
+  `stdin` sources never put the value in pmask's own argv. An `env:`
+  source is in the caller's environment, which is where the shell and the
+  wrapper already hold it.
+- A delivered `--secret` value is absent from the payload's `cmdline`,
+  `environ` and `ps`. It is still readable by the host: the payload holds
+  it on an inherited descriptor whose `FD_CLOEXEC` is cleared on purpose,
+  so every descendant inherits it, and `/proc/<child>/fd/<N>` names a
+  sealed `memfd` that a same-uid peer can open. `--secret-close-on-exec` closes
   it in each of the payload's direct children at its fork, while the
   payload keeps it; a process that shares the payload's descriptor table
   (`clone(CLONE_FILES)` without `CLONE_THREAD`) is reported as a
