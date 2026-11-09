@@ -146,6 +146,10 @@ impl Tracer {
             t.clear_exec_state();
             t.av_addr = av;
             t.ev_addr = ev;
+            // The exec is about to replace the address space, so the
+            // presentation block that held the comm label goes with it.
+            // The completion stop records the new block's address.
+            t.rename_addr = 0;
         }
 
         // A vfork child shares its parent's address space until the exec.
@@ -668,6 +672,15 @@ impl Tracer {
             }
         };
         let _ = orig_regs.put(pid);
+
+        // From here until the tracee's next exec, a `prctl(PR_SET_NAME)`
+        // redirect can point at the label that already sits in this
+        // block.  `--watch-rename` uses that instead of writing a fresh
+        // copy into the tracee, which a `--no-dumpable` tracee refuses
+        // (issue 60).
+        if let Some(t) = self.table.get_mut(&pid) {
+            t.rename_addr = block.comm_addr;
+        }
 
         // 4. repoint the inline arrays at the hidden strings
         let mut repoint_ok = true;

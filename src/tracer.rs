@@ -138,6 +138,11 @@ pub struct SessionStats {
     pub unredacted: u32,
     /// Execs that skipped only the `comm` rename.
     pub comm_skipped: u32,
+    /// `prctl(PR_SET_NAME)` calls the redirect could not aim at the
+    /// label, so the kernel refused them with `EFAULT` and `comm` kept
+    /// the label.  Counted rather than letting the payload's own name
+    /// through (`--watch-rename`, issue 60).
+    pub rename_refused: u32,
     /// Foreign-architecture execs refused.
     pub foreign_arch: u32,
     /// Execs of an already settled process: redacted after the exec, with
@@ -214,6 +219,16 @@ pub struct Tracee {
     /// (`--exec-once`).  Kept until the exec completes so the descriptor
     /// stays open for the tracee's `/proc/<tracer>/fd/N` path.
     pub rexec_image: Option<std::sync::Arc<crate::rexec::Image>>,
+    /// Absolute address of the NUL-terminated `comm` label in this
+    /// tracee's presentation block, or 0 when no block is mapped (an
+    /// unredacted exec, `--no-follow`, or before the first completion).
+    ///
+    /// `--watch-rename` points the trapped `prctl(PR_SET_NAME)` name
+    /// argument here, so the redirect needs no tracee memory write.  A
+    /// write is what a `--no-dumpable` tracee refuses to a non-root
+    /// tracer, which turned the natural flag pair into a silent leak
+    /// (issue 60).
+    pub rename_addr: u64,
 }
 
 impl Tracee {
@@ -232,6 +247,7 @@ impl Tracee {
             secret_fds_open: false,
             vfork_child: false,
             rexec_image: None,
+            rename_addr: 0,
         }
     }
 
@@ -779,6 +795,16 @@ impl Tracer {
                 s.rexec_fallback, s.rexec_disk
             );
         }
+        // A rename the redirect had to refuse left `comm` at the label,
+        // so the promise held, but the payload's own `PR_SET_NAME` did
+        // not take effect.  That is a degradation, and it is counted.
+        if s.rename_refused > 0 {
+            eprintln!(
+                "pmask: {} rename(s) refused because the label address was not available \
+                 (comm kept the label)",
+                s.rename_refused
+            );
+        }
     }
 
     fn seize(&self, pid: libc::pid_t) -> io::Result<()> {
@@ -1307,25 +1333,85 @@ impl Tracer {
         self.resume_state(pid, 0);
     }
 
-    /// Point `prctl(PR_SET_NAME, ...)` at a label buffer just below the
-    /// tracee's stack pointer (outside the red zone).
+    /// Point the tracee's `prctl(PR_SET_NAME)` name argument at the label,
+    /// without writing into the tracee when the label is already mapped
+    /// there.
+    ///
+    /// The preferred target is the comm label the completion stop left in
+    /// this tracee's presentation block (`Tracee::rename_addr`).  It is a
+    /// constant of the session that is already in the tracee's address
+    /// space, so pointing at it needs no `process_vm_writev` and no
+    /// `PTRACE_POKEDATA`.  That matters under `--no-dumpable`: a
+    /// non-dumpable tracee refuses both writes to a non-root tracer, and
+    /// the old write-only redirect therefore let the payload's rename
+    /// through, leaving `comm` disagreeing with `cmdline` (issue 60).
+    ///
+    /// Three outcomes, in order:
+    ///
+    /// 1. the recorded block address holds the label — point at it;
+    /// 2. no usable block (this exec was not redacted, or the block is
+    ///    gone) — write a fresh copy below the stack pointer and point at
+    ///    that, which is what the previous code always did;
+    /// 3. neither is available — point at an unmapped address, so the
+    ///    kernel refuses the rename with `EFAULT` and `comm` keeps the
+    ///    label.  The promise holds, and the session summary counts the
+    ///    refusal.  The payload's own name pointer is never left in place.
     fn redirect_rename(&mut self, pid: libc::pid_t, si: &SyscallInfo) {
         let Ok(mut regs) = Regs::get(pid) else { return };
-        let mut buf = [0u8; 16];
         let n = self.cfg.label_comm.len().min(15);
-        buf[..n].copy_from_slice(&self.cfg.label_comm[..n]);
-        let addr = (si.stack_pointer.wrapping_sub(512)) & !15u64;
-        if crate::remote::write_mem(pid, addr, &buf) != buf.len() as isize {
-            self.warn(format_args!(
-                "pid {}: cannot redirect a rename to the label",
-                pid
-            ));
-            return;
-        }
-        regs.set_arg(2, addr);
+        let block_addr = self
+            .table
+            .get(&pid)
+            .map(|t| t.rename_addr)
+            .filter(|a| *a != 0);
+        let target = match block_addr {
+            Some(a) if self.block_holds_label(pid, a, n) => a,
+            _ => {
+                let mut buf = [0u8; 16];
+                buf[..n].copy_from_slice(&self.cfg.label_comm[..n]);
+                let addr = (si.stack_pointer.wrapping_sub(512)) & !15u64;
+                if crate::remote::write_mem(pid, addr, &buf) == buf.len() as isize {
+                    addr
+                } else {
+                    // Fail closed: address 1 is never mapped, so
+                    // `PR_SET_NAME` returns `EFAULT` and `comm` keeps the
+                    // label.  Letting the payload's own pointer through
+                    // is the leak this filter exists to stop.
+                    self.stats.rename_refused += 1;
+                    self.warn(format_args!(
+                        "pid {}: cannot redirect a rename to the label; the rename is refused \
+                         so comm keeps the label",
+                        pid
+                    ));
+                    1
+                }
+            }
+        };
+        regs.set_arg(2, target);
         if regs.put(pid).is_ok() {
-            vlog!(self, "pid {}: rename redirected to the label", pid);
+            vlog!(self, "pid {}: rename redirected to {:#x}", pid, target);
         }
+    }
+
+    /// Does the tracee's memory at `addr` still start with the comm label?
+    ///
+    /// When the read fails the answer is "yes".  For a live tracee the
+    /// read fails because it is non-dumpable, which is exactly the
+    /// `--no-dumpable` case this redirect exists for; treating that as
+    /// "no block" would replace a working redirect with a refused rename
+    /// and count a degradation that did not happen.  The address is
+    /// bookkeeping the tracer wrote itself at the completion stop and is
+    /// cleared at the tracee's next exec entry.
+    fn block_holds_label(&self, pid: libc::pid_t, addr: u64, n: usize) -> bool {
+        if n == 0 {
+            return true;
+        }
+        let mut buf = [0u8; 16];
+        let want = n.min(buf.len());
+        if crate::remote::read_mem(pid, addr, &mut buf[..want]) != want as isize {
+            return true;
+        }
+        buf[..want] == self.cfg.label_comm[..want]
     }
 
     fn on_syscall_stop(&mut self, pid: libc::pid_t) {
