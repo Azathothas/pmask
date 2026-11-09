@@ -92,7 +92,18 @@ match on the quoted text, not the number.
   `// redaction mode unless the operator asked otherwise.`
 - Why: same field and same `qa/fix2` change as item 6.
 
-### 8. `read_main` exit status is incomplete
+### 8. Same false field claim in the CLI
+
+- File: `src/cli.rs`, line 249
+- Current:
+  ``/// `--no-dumpable`: the run report's `payload_dumpable` is false.``
+- Replacement:
+  ``/// `--no-dumpable`: the redaction mode makes `payload_dumpable` false;``
+  ``/// isolate and plain mode ignore it and leave the payload dumpable.``
+- Why: same `qa/fix2` change as items 6 and 7. The per-option note list
+  already says the flag was not applied outside redaction.
+
+### 9. `read_main` exit status is incomplete
 
 - File: `src/secret.rs`, line 719
 - Current:
@@ -110,7 +121,7 @@ match on the quoted text, not the number.
 These comments are wrong in `qa-base` and already deleted by `qa/fix1`.
 Listed so the reconciler does not restore them while resolving conflicts.
 
-### 9. `SIGSTOP` handshake
+### 10. `SIGSTOP` handshake
 
 - File: `src/tracer.rs`, lines 360 to 362
 - Current:
@@ -119,7 +130,7 @@ Listed so the reconciler does not restore them while resolving conflicts.
 - State after merge: the whole paragraph is replaced by the
   `PTRACE_INTERRUPT` description in `qa/fix1` commit `d0cadd7`.
 
-### 10. Second `SIGSTOP` mention
+### 11. Second `SIGSTOP` mention
 
 - File: `src/tracer.rs`, line 484
 - Current:
@@ -144,7 +155,7 @@ Listed so the reconciler does not restore them while resolving conflicts.
   `--memfd-name` flag; if that branch is dropped, the comments are already
   correct and the two replacements must not be applied.
 - Whether the reconciler keeps the `qa/fix1` handshake hunk verbatim. Items
-  9 and 10 are correct only if that hunk survives the merge.
+  10 and 11 are correct only if that hunk survives the merge.
 
 ## Evidence
 

@@ -32,3 +32,5 @@
     pub fn supervise(
 --- src/tracer.rs:484
         // Signal 0 suppresses the handshake SIGSTOP.
+--- src/cli.rs:249
+    /// `--no-dumpable`: the run report's `payload_dumpable` is false.
