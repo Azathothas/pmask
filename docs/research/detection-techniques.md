@@ -276,6 +276,11 @@ A userland reader with the same uid can prove, from files alone:
   setproctitle path and the byte at `arg_end - 1` is non-zero. Measured: mode 2
   gives a span of 10 and a `cmdline` of 10, consistent; mode 4 gives a span of
   58 and a `cmdline` of 10, inconsistent. `[observed]`
+  This rule does not fire on pmask's relocation mode: `PR_SET_MM_MAP` moves
+  `arg_start` and `arg_end` onto the label block, so the span equals the
+  `cmdline` length (see the table in section 5). A checker written on the
+  rule alone therefore clears a masked process; it is useful only against
+  the in-place modes. `[observed]`
 * **The span is not in `[stack]`.** `[stack]` is where the kernel puts `argv`
   at exec. A span in an anonymous mapping, or in a mapping with no name, was
   placed there after exec. Measured: mode 2 reports `vma_after=[anonymous]`

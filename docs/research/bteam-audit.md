@@ -182,8 +182,12 @@ Counts from the same capture: `ptrace` 507 records (506 with
 163, `process_vm_readv` 150, `PR_SET_MM_MAP` 21, `PTRACE_SEIZE` 11 for 11
 launches, 11 `OBJ_PID` records naming 11 distinct targets.
 
-The tracer thread's `comm` is set by pmask (`pmask-tracer`), which is
-what makes these records attributable. The `comm` is attacker-controlled,
+The tracer thread's `comm` is set by pmask, which is what makes these
+records attributable. In the capture these rows quote the name was the
+fixed `pmask-tracer` of the pre-#38 build; from #38 on the thread takes
+the session's `comm`, so a rule keyed on the literal `pmask-tracer` no
+longer fires, while the `ptrace`/`process_vm_*` syscall shape and the
+tracer-to-tracee relation still do. The `comm` is attacker-controlled,
 so it is a discriminator only against a detector that is not being
 deceived on purpose; for a torn-off binary the records are the strongest
 signal, because `ptrace` from an unexpected parent is unusual by itself.
