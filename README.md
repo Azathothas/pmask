@@ -218,6 +218,17 @@ child's environment. The value never enters the child's `argv` or
 or from the descriptor. Sources are `file:PATH`, `env:VAR`,
 `agent:NAME`, `stdin` and `literal:VALUE`; a bare value is a literal.
 
+```sh
+token=$(pmask read DEPLOY_TOKEN)
+```
+
+That works inside a masked payload. The requirement is that the payload
+runs a `pmask` that snapshots its own arguments from the runtime's copy
+before it zeroes the kernel argv block. A build that reads
+`/proc/self/cmdline` instead sees only the label when it runs under a
+mask, finds no subcommand, prints the help text and exits 255. Reading
+the descriptor directly works in every mode and has no such requirement.
+
 The source decides what the host can still read. `file:`, `agent:`,
 `stdin` and `--args-from-fd` keep the value out of every command line
 that starts pmask. A `literal:` value travels in pmask's own argv until
