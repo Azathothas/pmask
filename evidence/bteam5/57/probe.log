@@ -1,0 +1,65 @@
+== host ==
+Linux errand-pyztg9rss42g 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+uid=1000(agent) gid=1000(agent) groups=1000(agent)
+container hint: 0
+kernel.unprivileged_bpf_disabled=2
+
+== 1. is tracefs mounted, and can this uid read it ==
+ls: cannot access '/sys/kernel/debug/tracing': Permission denied
+drwx------ 6 nobody nogroup 0 Oct 31 09:40 /sys/kernel/tracing
+ls: cannot open directory '/sys/kernel/tracing': Permission denied
+-- as root --
+ls: cannot open directory '/sys/kernel/tracing': Permission denied
+
+== 2. mount tracefs fresh ==
+mount: /tmp/b57-trace: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+mount-exit=32
+umount: /tmp/b57-trace: not mounted.
+
+== 3. remount debugfs/tracefs ==
+mount: /sys/kernel/tracing: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+remount-exit=32
+
+== 4. tools ==
+bpftool    MISSING
+bpftrace   MISSING
+perf       MISSING
+
+== 5. bpftool feature probe (as root), when it exists ==
+bpftool: not installed; the container image has no bpftool
+
+== 6. bpftrace tracepoint load (as root), when it exists ==
+bpftrace: not installed
+
+== 7. raw bpf(2) from a tiny C program ==
+-- as uid 1000 --
+bpf(BPF_MAP_CREATE) = -1 errno=1 (Operation not permitted)
+-- as root --
+bpf(BPF_MAP_CREATE) = -1 errno=1 (Operation not permitted)
+
+== 8. perf_event_open for a tracepoint ==
+-- as uid 1000 --
+perf_event_open(tracepoint) = -1 errno=13 (Permission denied)
+-- as root --
+perf_event_open(tracepoint) = -1 errno=13 (Permission denied)
+
+== 9. the process connector ==
+/proc/net/netlink
+probe.sh: 115: modinfo: not found
+0
+-- as uid 1000 --
+subscribe send = -1 errno=111 (Connection refused)
+-- as root --
+subscribe send = -1 errno=111 (Connection refused)
+
+== 10. kernel config rows ==
+CONFIG_BPF_SYSCALL=(no /boot/config-6.12.113+deb13-amd64)
+CONFIG_BPF_EVENTS=(no /boot/config-6.12.113+deb13-amd64)
+CONFIG_FTRACE=(no /boot/config-6.12.113+deb13-amd64)
+CONFIG_TRACEPOINTS=(no /boot/config-6.12.113+deb13-amd64)
+CONFIG_CONNECTOR=(no /boot/config-6.12.113+deb13-amd64)
+CONFIG_PROC_EVENTS=(no /boot/config-6.12.113+deb13-amd64)
+ls: cannot access '/sys/kernel/tracing/events/sched/sched_process_exec/id': Permission denied
+cat: /sys/kernel/tracing/events/sched/sched_process_exec/id: Permission denied
