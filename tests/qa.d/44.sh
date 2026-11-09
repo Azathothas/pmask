@@ -21,8 +21,8 @@
 #        one the detector must use.  A host where they agree is a PASS
 #        that says so; it is not a SKIP, because the open() answer is
 #        always available.
-#   44e  liveness: the payload was alive for the whole observation and
-#        exits 0 at the end, so 44b is not the EACCES of a dead process.
+#   44e  liveness: the payload was alive while 44b ran, so 44b is not
+#        the EACCES of a process that had already died.
 #   44f  the supervisor is in the same refused set and runs a
 #        `pmask-tracer` thread: the tree relation the issue names as the
 #        specific pair.
