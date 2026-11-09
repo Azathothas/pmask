@@ -96,8 +96,20 @@ sweep_literal() {
     for f in /proc/[0-9]*/fd/*; do
         t=$(readlink "$f" 2>/dev/null) || continue
         case "$t" in
-            *"$1"*) n=$((n + 1)) ;;
+            *"$1"*) ;;        
+            *) continue ;;
         esac
+        # A descriptor of another checkout's run is not this case's
+        # evidence: count only a process that started after this fragment
+        # did, so a leaked memfd in a parallel worktree cannot turn a pass
+        # into a fail (and a stale one from an earlier run cannot either).
+        sl_pid=${f#/proc/}
+        sl_pid=${sl_pid%%/*}
+        sl_st=$(proc_start "$sl_pid")
+        if [ -n "$sl_st" ] && [ -n "$SUITE_START" ] \
+            && [ "$sl_st" -ge "$SUITE_START" ] 2>/dev/null; then
+            n=$((n + 1))
+        fi
     done
     echo "$n"
 }
