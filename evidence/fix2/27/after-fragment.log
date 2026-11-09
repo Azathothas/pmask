@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa27-payload-still-runs (exit 7 passed through)
+PASS qa27-quiet-isolate
+PASS qa27-quiet-isolate-no-degradation-lines
+PASS qa27-quiet-redact-isolate
+PASS qa27-control-not-quiet-prints-the-line
+PASS qa27-control-quiet-mask-summary
+== VERDICT: FAIL=0 ==

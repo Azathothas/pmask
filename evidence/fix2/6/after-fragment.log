@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa6-control-a-verb-without-a-passphrase-prompts (rc=255)
+PASS qa6-store-help---help
+PASS qa6-store-help--h
+PASS qa6-get-help---help
+PASS qa6-get-help--h
+PASS qa6-unknown-verb-refused-before-the-passphrase
+PASS qa6-unknown-store-option-named
+PASS qa6-help-after-the-verb
+== VERDICT: FAIL=0 ==

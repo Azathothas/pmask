@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa32-host-plain-audit-refused (exit 255)
+PASS qa32-refusal-names-the-mode
+PASS qa32-refusal-names-the-reason
+PASS qa32-no-audit-rows-before-the-refusal
+PASS qa32-explicit-plain-refused
+PASS qa32-isolate-refused
+PASS qa32-control-redact-audit-ok
+== VERDICT: FAIL=0 ==

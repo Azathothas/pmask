@@ -1,0 +1,20 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa14-n1-control-redact-names-the-program
+PASS qa14-n1-plain-names-the-program (rc=255)
+PASS qa14-n1-isolate-names-the-program (rc=126)
+PASS qa14-n2-long-comm-refused-redact
+PASS qa14-n2-long-comm-refused-plain
+PASS qa14-n2-long-comm-refused-isolate
+PASS qa14-n3-keep-env-space-form-before-a-command-is-refused
+PASS qa14-n3-control-bare-keep-env-keeps-everything
+PASS qa14-n3-control-inline-form-keeps-one-name
+PASS qa14-n4-args-from-fd-names-the-value
+PASS qa14-n4-image-from-fd-names-the-value
+PASS qa14-n5-help-short-is-smaller (short=3237 full=13535)
+PASS qa14-n5-help-short-lists-the-options
+PASS qa14-n5-help-topic-isolate
+PASS qa14-n5-unknown-topic-is-refused
+PASS qa14-n6-examples-name-ptrace
+PASS qa14-n7-verbose-lines-carry-a-timestamp ([pmask 3848175 +0.000276s] pid 3848178: )
+PASS qa14-n8-vm-run-builds-offline
+== VERDICT: FAIL=0 ==

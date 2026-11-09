@@ -116,7 +116,9 @@ Options:
                        an interpreter that opens a path.  Implies --rexec.
       --image-from-fd N
                        Read the program bytes from descriptor N.  Implies
-                       --rexec.
+                       --rexec.  The payload's argv[0] is the placeholder
+                       '<fd image>' unless --argv0 gives one, because a
+                       descriptor has no path to name.
       --exec-once      Reuse one sealed image per distinct program, keyed
                        by the resolved path and its mtime, across the
                        execs of the session.  Later execs use a guarded
@@ -394,6 +396,24 @@ fn parse_on_exit(v: &[u8]) -> SessionEnd {
     }
 }
 
+/// True when `s` is a plausible `--keep-env` name list: one or more
+/// non-empty names of `[A-Za-z0-9_]`, separated by commas.  Used only to
+/// explain a command line that almost certainly meant the inline form.
+fn looks_like_env_names(s: &[u8]) -> bool {
+    !s.is_empty()
+        && s.split(|&b| b == b',').all(|n| {
+            !n.is_empty()
+                && n.iter()
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.')
+        })
+}
+
+/// Check a `comm` name the way `Mask::validate` does, at parse time.
+///
+/// `--no-redact` and `--isolate` never build a `Mask`, so the mask's own
+/// validation never runs in those modes: `--comm` over 15 bytes was
+/// accepted by plain mode and refused by redaction mode (issues 14 N2 and
+/// 33).  The parser is the one place every mode shares.
 fn note_opt(list: &mut Vec<&'static str>, name: &'static str) {
     if !list.contains(&name) {
         list.push(name);
@@ -503,6 +523,29 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 "keep-env" => {
                     match inline {
                         None => {
+                            // `--keep-env PATH` (the space form) keeps the
+                            // whole environment and makes PATH the program.
+                            // When the word after the value is the `--`
+                            // separator and a command follows it, the
+                            // value cannot be the program the operator
+                            // meant: they wrote the inline form with a
+                            // space, and the run would fail on a name that
+                            // looks like a program (issue 14 N3).  Name the
+                            // spelling rather than guess.
+                            if let (Some(next), Some(after)) = (argv.get(i + 1), argv.get(i + 2)) {
+                                if after.as_bytes() == b"--"
+                                    && argv.len() > i + 3
+                                    && looks_like_env_names(next.as_bytes())
+                                {
+                                    die(&format!(
+                                        "--keep-env takes no value; did you mean \
+                                         --keep-env={}?  The space form keeps the whole \
+                                         environment and treats the next word as the program",
+                                        next.to_string_lossy()
+                                    ));
+                                }
+                            }
+                            mask = mask.keep_environ_visible();
                             mask = mask.keep_environ_visible();
                             keep_env_all = true;
                         }
@@ -526,11 +569,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     match v.iter().position(|&b| b == b'=') {
                         // An empty key (`--env =VALUE`) is not a variable:
                         // execve would see a leading '=' and every backend
-                        // treats it differently (the redaction path refuses
-                        // it, the plain path used to pass it through).  The
-                        // parser is the one place every mode shares.
-                        Some(0) | None => die(&format!(
-                            "--env needs KEY=VALUE with a non-empty KEY, not '{}'",
+                        // treats it differently.  The parser refuses it in
+                        // every mode, with the message the mask's own
+                        // validation prints, so there is one wording
+                        // (issue 30).
+                        Some(0) => die("environment variable name \"\" must not be empty"),
+                        None => die(&format!(
+                            "--env needs KEY=VALUE, not '{}'",
                             String::from_utf8_lossy(&v)
                         )),
                         Some(p) => {

@@ -1,0 +1,17 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa10-plain-notes---comm
+PASS qa10-plain-notes---argv0
+PASS qa10-plain-notes---no-exact
+PASS qa10-plain-notes---detach
+PASS qa10-plain-notes---watch-rename
+PASS qa10-plain-notes---rexec
+PASS qa10-plain-notes---exec-once
+PASS qa10-plain-notes---hugetlb
+PASS qa10-plain-notes---on-exit
+PASS qa10-plain-notes---no-follow
+PASS qa10-plain-notes---unshare
+PASS qa10-plain-notes---no-new-privs
+PASS qa10-isolate-notes---comm
+PASS qa10-control-redact-mode-has-no-dropped-notes
+PASS qa10-report-json-is-produced
+== VERDICT: FAIL=0 ==

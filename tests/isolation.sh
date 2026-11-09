@@ -326,6 +326,17 @@ case "$probe_rep" in
     *) fail "i1-set-starts-with-the-unconditional-namespaces (got [$probe_rep])" ;;
 esac
 
+# A partial list names the switches it did not apply (issue 10: a
+# degradation is visible).  `--isolate=pid` applies pid and leaves net and
+# tmp off, and the report says so.
+iso_run "$T/pid.out" "$T/pid.err" --isolate=pid "$CASES" true
+pid_rep=$(report_of "$T/pid.err")
+if has "$pid_rep" "net=off" && has "$pid_rep" "tmp=off"; then
+    pass "i1-off-switches-are-named-not-omitted"
+else
+    fail "i1-off-switches-are-named-not-omitted (got [$pid_rep])"
+fi
+
 # `--isolate=none` means no isolation at all (issue 26): no namespace, no
 # no_new_privs, no Landlock, and therefore no isolation report to name the
 # switches it did not apply.  A report that names `pid=off` is the old
@@ -336,6 +347,19 @@ if [ -z "$none_rep" ]; then
     pass "i1-none-prints-no-isolation-report"
 else
     fail "i1-none-prints-no-isolation-report (got [$none_rep])"
+fi
+
+# `--isolate=none` means no isolation at all: no namespace, no
+# `no_new_privs`, no Landlock and no `pmask: isolation:` report (issue 26).
+# It is not "the three switchable namespaces off", which still creates the
+# unconditional user, mount, UTS, IPC and cgroup namespaces.
+iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" show-nnp
+none_rep=$(report_of "$T/none.err")
+none_nnp=$(tr -d '[:space:]' <"$T/none.out")
+if [ -z "$none_rep" ] && [ "$none_nnp" = "NoNewPrivs:0" ]; then
+    pass "i1-none-means-no-isolation (no report, NoNewPrivs=0)"
+else
+    fail "i1-none-means-no-isolation (report=[$none_rep] status=[$none_nnp])"
 fi
 
 # --------------------------------------------------- I2: no_new_privs
@@ -403,8 +427,9 @@ else
 fi
 
 # control: with the UTS namespace off the payload must NOT be renamed.
-# `--isolate=none` still creates a UTS namespace (it costs nothing to
-# refuse and cannot weaken the view), so the control is the unisolated run.
+# `--isolate=pid,net,tmp` switches the three selectable namespaces off but
+# still creates the unconditional UTS namespace, and `--isolate=none`
+# creates nothing at all (issue 26), so the control is the unisolated run.
 # Catches: a hostname that was already neutral, which would make the case
 # above pass for the wrong reason.
 "$TOOL" -q /bin/sh -c 'uname -n' >"$T/nouts.out" 2>/dev/null

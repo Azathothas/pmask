@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa30-control-a-valid-env-pair-is-accepted
+PASS qa30-redact-refuses-an-empty-key
+FAIL qa30-plain-refuses-an-empty-key (rc=0 err=)
+FAIL qa30-isolate-refuses-an-empty-key (rc=0 err=pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2|)
+FAIL qa30-message-names-the-empty-key (err=)
+PASS qa30-env-file-still-refuses-an-empty-key
+== VERDICT: FAIL=3 ==

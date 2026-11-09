@@ -431,19 +431,36 @@ impl ReportSink {
     }
 }
 
-/// The reason a failed ptrace session gives, when the cached probe can
-/// name one.  Empty when the probe says ptrace works, so a genuine EPERM
-/// from elsewhere is not misattributed.
+/// The reason a failed ptrace session gives, when the probe names one.
+///
+/// The interesting hosts are the ones where `PTRACE_TRACEME` (what the
+/// probe calls) succeeds but seizing another process is refused: a
+/// seccomp filter that filters by request, or `kernel.yama.ptrace_scope`
+/// at 3.  Those are the cases where the bare errno is most confusing, so
+/// they are named even though `caps.ptrace` is true.  `None` when nothing
+/// in the probe explains an `EPERM`, so a genuine failure elsewhere is
+/// not misattributed.
 fn ptrace_refusal() -> Option<String> {
     let caps = pmask::caps::Caps::cached();
+    if caps.seccomp_filter {
+        return Some(
+            "ptrace is banned by a seccomp filter here; command lines stay visible".to_string(),
+        );
+    }
+    if caps.ptrace_scope.is_some_and(|scope| scope >= 3) {
+        return Some(
+            "the kernel refuses ptrace attaches here (kernel.yama.ptrace_scope >= 3); \
+             command lines stay visible"
+                .to_string(),
+        );
+    }
     if caps.ptrace {
         return None;
     }
-    let row = caps
-        .rows()
+    caps.rows()
         .into_iter()
-        .find(|(n, _)| *n == "metadata redaction")?;
-    Some(row.1.reason().to_string())
+        .find(|(n, _)| *n == "metadata redaction")
+        .map(|(_, st)| st.reason().to_string())
 }
 
 fn main() {
