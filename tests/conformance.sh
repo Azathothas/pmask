@@ -395,7 +395,12 @@ SPAY=$(await_child "$SSUP" "$LABEL") || SPAY=""
 # the plaintext, so it calls harden_self before the session starts.  The
 # holder must be alive for the observation; a gone holder would look refised
 # for the wrong reason and is reported as a failure of the session instead.
-if [ ! -d "/proc/$SSUP" ]; then
+if root_peer_observer; then
+    # Root with CAP_SYS_PTRACE is not the same-uid peer this row is about:
+    # the capability check succeeds before the dumpable check, so the read
+    # is allowed by design and the refusal is not observable (issue #35).
+    skip holder-environ-refused "$ROOT_PEER_REASON"
+elif [ ! -d "/proc/$SSUP" ]; then
     fail holder-environ-refused "the holder pid $SSUP is gone, so nothing was observed"
 elif peer_read "$SSUP" environ; then
     fail holder-environ-refused "a same-uid peer read the holder's environ while it held a secret"
@@ -530,6 +535,11 @@ else
     [ -n "$NPAY" ] && track "$NPAY"
     if [ -z "$NPAY" ]; then
         fail nodumpable-refuses "no payload carrying [$LABEL] under holder pid $NSUP ($(note_text))"
+    elif root_peer_observer; then
+        # Same reason as holder-environ-refused: root with CAP_SYS_PTRACE
+        # reads the payload's environ by design, so the refusal this row
+        # asserts cannot be observed from root (issue #35).
+        skip nodumpable-refuses "$ROOT_PEER_REASON"
     elif peer_read "$NPAY" environ; then
         fail nodumpable-refuses "a same-uid peer read /proc/$NPAY/environ with --no-dumpable set"
     else

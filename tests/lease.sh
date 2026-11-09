@@ -560,7 +560,11 @@ if [ -S "$SOCK" ]; then
         fail "d1-directory-and-socket-modes (dir=$dmode sock=$smode)"
     fi
     # D5: not dumpable.  A plain process of this uid allows these files;
-    # the agent must refuse all four.
+    # the agent must refuse all four.  Root with CAP_SYS_PTRACE is not the
+    # same-uid peer this row is about: the capability check succeeds before
+    # the dumpable check, so all four reads are allowed by design and the
+    # assertion is not decidable from there (issue #35, same class as
+    # isolation.sh i21-i36).
     plain_sleep_ok=0
     sleep 30 &
     ctl=$!
@@ -570,7 +574,9 @@ if [ -S "$SOCK" ]; then
     readable "$ctl" environ && plain_sleep_ok=$((plain_sleep_ok + 1))
     kill -9 "$ctl" 2>/dev/null
     wait "$ctl" 2>/dev/null
-    if [ "$plain_sleep_ok" = 3 ]; then
+    if root_peer_observer; then
+        skip "d5-agent-refuses-mem-maps-smaps-environ: $ROOT_PEER_REASON"
+    elif [ "$plain_sleep_ok" = 3 ]; then
         pass "d5-negative-control (a plain process of this uid is readable)"
         refused=0
         for f in mem maps smaps_rollup environ; do

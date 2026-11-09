@@ -1,0 +1,21 @@
+PASS qa54-report-exits-0 (rc=0)
+PASS qa54-section-present: store
+PASS qa54-section-present: sockets
+PASS qa54-section-present: live memfd names
+PASS qa54-section-present: exec-once carrier
+PASS qa54-section-present: packaging
+PASS qa54-section-present: release binary fingerprint
+PASS qa54-section-present: ARTIFACTS: report complete
+PASS qa54-store-init-succeeds
+PASS qa54-empty-store-is-98-bytes
+PASS qa54-store-magic-is-PMASKSTORE1
+PASS qa54-store-mode-is-0600
+PASS qa54-lock-mode-is-0600
+PASS qa54-report-reads-the-store-magic
+PASS qa54-report-shows-mode-and-size
+PASS qa54-report-flags-no-tmpfiles-store-line
+PASS qa54-report-shows-the-comment-section
+PASS qa54-report-shows-the-build-id
+PASS qa54-report-counts-the-pmask-strings
+PASS qa54-shipped-build-names-the-toolchain-in-.comment
+QA54: PASS

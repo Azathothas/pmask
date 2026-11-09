@@ -188,6 +188,24 @@ kill_label() {
     done
 }
 
+# kill_owned PID START
+# SIGKILL PID only when it is still the process the caller started: same
+# uid and same start time in clock ticks.  This is the cleanup for a
+# process kill_comm cannot reach because its comm is not the suite's
+# label -- an unmasked control payload is `testcases`, not `mkiso...` --
+# and it is what makes that cleanup safe, because a pid that was recycled
+# between the spawn and the cleanup matches neither the uid nor the start
+# time and is left alone.
+kill_owned() {
+    ko_pid=$1
+    ko_start=$2
+    [ -n "$ko_pid" ] || return 0
+    [ -d "/proc/$ko_pid" ] || return 0
+    [ "$(proc_uid "$ko_pid")" = "$MY_UID" ] || return 0
+    [ "$(proc_start "$ko_pid")" = "$ko_start" ] || return 0
+    kill -9 "$ko_pid" 2>/dev/null
+}
+
 # comm_exe_count COMM-PREFIX EXE-BASENAME
 # Processes whose comm starts with COMM-PREFIX and whose /proc/<pid>/exe
 # names EXE-BASENAME.  Liveness that cannot be satisfied by the
@@ -237,6 +255,44 @@ environ_hits() {
 fresh_marker() {
     dd if=/dev/urandom bs=6 count=1 2>/dev/null | base64 2>/dev/null | tr -dc 'a-zA-Z0-9'
     echo -n ""
+}
+
+# ------------------------------------------------- root observer (issue 35)
+# A case whose assertion is "a same-uid peer is refused /proc/<pid>/environ"
+# cannot be decided by a process that the kernel lets read it anyway.  Root
+# with CAP_SYS_PTRACE (bit 19 of CapEff) reads a non-dumpable process's
+# environ, maps and fd through the capability check in `ptrace_may_access`
+# before the dumpable check is reached, so those refusals are simply not
+# observable from there.  `isolation.sh` i21-i36 and `conformance.sh`'s
+# holder-environ-refused / nodumpable-refuses print SKIP with this reason
+# instead of a false FAIL (and instead of a false PASS).
+#
+# The test is exactly the one issue #35 names: uid 0 and bit 19 set.  It is
+# deliberately not "uid is 0": a root in a user namespace or a container
+# that dropped CAP_SYS_PTRACE is still a same-uid-dumpable-limited observer,
+# and those cases must keep running there.
+ROOT_PEER_REASON=""
+# cap_has_sys_ptrace HEX -> 0 when bit 19 (CAP_SYS_PTRACE) is set.
+# The decode is a hex digit, not arithmetic: a 64-bit CapEff overflows a
+# shell integer, and CAP_SYS_PTRACE is the high bit of the fifth hex digit
+# from the right, so the digit is the whole test.
+cap_has_sys_ptrace() {
+    cp_low=$(printf '%s' "$1" | sed 's/.*\(.....\)$/\1/')
+    [ "${#cp_low}" = 5 ] || return 1
+    cp_nib=${cp_low%"${cp_low#?}"}
+    case "$cp_nib" in
+        8|9|a|b|c|d|e|f|A|B|C|D|E|F) return 0 ;;
+    esac
+    return 1
+}
+
+root_peer_observer() {
+    [ "$(id -u 2>/dev/null || echo 1)" = 0 ] || return 1
+    rp_cap=$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status 2>/dev/null | tr -d ' ')
+    [ -n "$rp_cap" ] || return 1
+    cap_has_sys_ptrace "$rp_cap" || return 1
+    ROOT_PEER_REASON="uid 0 with CAP_SYS_PTRACE reads a non-dumpable process's /proc entry, so a same-uid refusal cannot be observed from here"
+    return 0
 }
 
 # ---------------------------------------------------------------- binaries

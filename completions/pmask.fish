@@ -39,7 +39,7 @@ complete -c pmask -l memfd-name -d 'Name the image memfd' -x
 complete -c pmask -l allow-argv-secret -d 'Keep a literal: or env: source and warn'
 complete -c pmask -l secret-burn -d 'Seal without F_SEAL_SHRINK so the reader can truncate'
 complete -c pmask -l secret-close-on-exec -d 'Close the descriptor in every descendant at its fork'
-complete -c pmask -l report -d 'Output format' -x -a 'json text plain'
+complete -c pmask -l report -d 'Output format (json only)' -x -a 'json'
 complete -c pmask -s q -l quiet -d 'Suppress diagnostics'
 complete -c pmask -s v -l verbose -d 'Trace every event'
 complete -c pmask -s V -l version -d 'Print version'
