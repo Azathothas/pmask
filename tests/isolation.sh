@@ -56,6 +56,12 @@ skip() { echo "SKIP $*"; }
 
 cleanup() {
     kill_comm mkiso KILL 2>/dev/null
+    # The I19 matrix runs its control as the bare probe binary, whose comm
+    # is `testcases`, not `mkiso`, so the prefix kill above misses it.  An
+    # unreaped control carries its canary in a real argv and the next
+    # suite's masked-run scan (edge.sh e6) reads it as a leak.
+    [ -n "${MATRIX_SUP:-}" ] && kill -9 "$MATRIX_SUP" 2>/dev/null
+    [ -n "${MATRIX_CTL:-}" ] && kill -9 "$MATRIX_CTL" 2>/dev/null
     rm -rf "$T"
 }
 trap cleanup EXIT
