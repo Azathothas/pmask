@@ -326,12 +326,16 @@ case "$probe_rep" in
     *) fail "i1-set-starts-with-the-unconditional-namespaces (got [$probe_rep])" ;;
 esac
 
+# `--isolate=none` means no isolation at all (issue 26): no namespace, no
+# no_new_privs, no Landlock, and therefore no isolation report to name the
+# switches it did not apply.  A report that names `pid=off` is the old
+# behaviour, where the unconditional namespaces were still created.
 iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" true
 none_rep=$(report_of "$T/none.err")
-if has "$none_rep" "pid=off" && has "$none_rep" "net=off" && has "$none_rep" "tmp=off"; then
-    pass "i1-off-switches-are-named-not-omitted"
+if [ -z "$none_rep" ]; then
+    pass "i1-none-prints-no-isolation-report"
 else
-    fail "i1-off-switches-are-named-not-omitted (got [$none_rep])"
+    fail "i1-none-prints-no-isolation-report (got [$none_rep])"
 fi
 
 # --------------------------------------------------- I2: no_new_privs

@@ -446,14 +446,25 @@ kill_comm mko-oxkill KILL
 [ "$n" = 0 ] && pass o14-on-exit-kill-terminates-background-child \
     || fail "o14-on-exit-kill-terminates-background-child (alive=$n)"
 
-t0=$(date +%s)
+# Milliseconds: `date +%s` truncates, so a 3 s wait that starts 0.9 s into
+# a second and ends 0.1 s into the next reads as 2 and a fast detach reads
+# as 1 or 0 depending on where the boundary fell.  The property is that
+# `wait` outlives the payload and `detach` does not.
+now_ms() {
+    _ns=$(date +%s%N 2>/dev/null)
+    case "$_ns" in
+        *N*|"") echo $(( $(date +%s) * 1000 )) ;;
+        *) echo $(( _ns / 1000000 )) ;;
+    esac
+}
+t0=$(now_ms)
 "$TOOL" -q -l mko-oxdet2 --on-exit detach /bin/sh -c "sleep 3 </dev/null >/dev/null 2>&1 & exit 0" >/dev/null 2>&1
-t1=$(date +%s)
-d_detach=$((t1 - t0))
-t0=$(date +%s)
+t1=$(now_ms)
+d_detach=$(( (t1 - t0) / 1000 ))
+t0=$(now_ms)
 "$TOOL" -q -l mko-oxwait --on-exit wait /bin/sh -c "sleep 3 </dev/null >/dev/null 2>&1 & exit 0" >/dev/null 2>&1
-t1=$(date +%s)
-d_wait=$((t1 - t0))
+t1=$(now_ms)
+d_wait=$(( (t1 - t0) / 1000 ))
 if [ "$d_wait" -ge 2 ] && [ "$d_detach" -le 1 ]; then
     pass "o14-on-exit-wait-waits (detach=${d_detach}s wait=${d_wait}s)"
 else
