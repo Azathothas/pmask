@@ -529,6 +529,32 @@ read the conditions they print.
 - A masking session owns the calling process's `waitpid(-1)` domain, so
   sessions in one process are serialized.
 
+## What a defender still sees
+
+The rewrite is of `/proc` content, not of the process table. These
+signals survive, and each is a one-line read. The measured detail, with
+the command and the host for each row, is in
+`docs/research/detection-residue.md` and
+`docs/research/detection-measured.md`.
+
+| signal | what it shows | when |
+|---|---|---|
+| the tracer thread | a second thread of the supervisor whose `comm` is `pmask-tracer`; its `Tgid` is the supervisor's pid and its `Pid` is the thread id, so the pair `Tgid != Pid` is visible in `/proc/<sup>/task/<tid>/status` | every mode that keeps the tracer attached; `--detach`, `--isolate` and `--no-redact` have no tracer |
+| `TracerPid` | the tracer's thread id in `/proc/<pid>/status`, which is not the payload's parent and is absent from `readdir("/proc")` | every attached mode; `0` under `--detach` |
+| the label and `exe` split | `comm` and `cmdline` say the label, while `exe` and `maps` name the real binary | default; `--rexec` moves `exe` to `memfd:<label>` and leaves the open files and cgroup real |
+| the memfd names | `/proc/<pid>/exe -> /memfd:<label> (deleted)` for the image family, `/proc/<pid>/fd/N -> /memfd:pmask-secret (deleted)` for a delivered secret, `/secretmem (deleted)` for the supervisor's copy | `--rexec` and `--image`, `--secret`; the supervisor's secret buffer in the CLI path |
+| the empty `environ` | 0 bytes for a live, non-kernel process, or a NUL run under `--no-exact`; `--keep-env` makes it an ordinary environment again | default, `--no-dumpable`, `--detach`, `--rexec` |
+| the supervisor's own entry | a labelled process with a zero-length argv window, 0-byte `environ`, a non-dumpable descriptor table and two threads | every mask run; `PMASK_NO_SELFMASK=1` is the escape |
+| the launch window | the supervisor's argv, an interpreter command line and the payload's real `comm` are readable for a few hundred microseconds to about 1 ms at exec | every mode; measured 747 microseconds for a script payload on the evaluation host |
+| the audit record | the supervisor's `EXECVE`/`PROCTITLE` record holds the real argv and a `literal:` secret; the payload's record holds the label and one empty string per remaining argument | any host with the kernel audit subsystem enabled |
+| modes that do not redact | the real `cmdline`, `comm` and `environ`, because there is no rewrite at all | a 32-bit image, `--no-redact`, `--isolate`, and a host that cannot `ptrace`; the run prints its mode |
+
+None of these is specific on its own. `TracerPid != 0` fires on every
+`strace` user, and stat fields 48 to 51 reading `0 0 0 0` also appear on
+ordinary daemons. A detector that combines the tracer thread, the
+label/`exe` disagreement and the empty `environ` is the one that
+identifies a masked tree.
+
 ## Prior art
 
 `zapper` is the closest tool: it acts at the exec stop, zeroes argv and
