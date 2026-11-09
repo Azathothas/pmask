@@ -1,20 +1,20 @@
 pmask=./target/release/pmask
 kernel=6.12.113+deb13-amd64 uid=1000
-supervisor=1223125 payload=1223174
+supervisor=2925032 payload=2925046
 --- payload status (TracerPid)
-TracerPid:	1223168
-tracer_tid=1223168
+TracerPid:	2925045
+tracer_tid=2925045
 --- tracer status (Name/Tgid/Pid)
 Name:	b2-38-proc-evid
-Tgid:	1223125
-Pid:	1223168
+Tgid:	2925032
+Pid:	2925045
 --- tracer comm
 b2-38-proc-evid
 --- tracer task dirs of supervisor
-1223125 b2-38-proc-evid
-1223168 b2-38-proc-evid
+2925032 b2-38-proc-evid
+2925045 b2-38-proc-evid
 --- sweep for the fixed name, whole host and this session
-OTHER-RUN supervisor: 2842799 tid: 2842807 cmd: lab-d3 
+OTHER-RUN supervisor: 2740551 tid: 2740557 cmd: lab-u2 
 pmask-tracer sightings: in-session=0 host-wide=1
 --- payload comm/cmdline
 b2-38-proc-evid|

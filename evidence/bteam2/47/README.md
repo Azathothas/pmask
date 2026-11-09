@@ -26,16 +26,16 @@ sh tests/qa.d/47.sh                # the QA fragment
 
 ```
 ================ --detach end state
-payload=68726
+payload=2944403
 cmdline: b2-47-detach|
 TracerPid:	0
 comm: b2-47-detach
 environ bytes: 0
 ================ --no-follow
-pid=68759 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=68758
-pid=68760 comm=sleep cmdline=/bin/sleep|5| tracer=68758
+pid=2963538 comm=b2-47-nofollow cmdline=b2-47-nofollow| tracer=2963537
+pid=2963545 comm=sleep cmdline=/bin/sleep|5| tracer=2963537
 ================ --on-exit detach (orphan)
-orphan pid=68796 ppid=1 cmdline=b2-47-orphan| tracer=0
+orphan pid=2967411 ppid=1 cmdline=b2-47-orphan| tracer=0
 ================ --on-exit kill (control)
 survivors=0
 ================ default exit-kill: SIGKILL the supervisor
@@ -44,10 +44,15 @@ payload gone after supervisor SIGKILL
 payload ALIVE after supervisor SIGKILL; tracer=0 cmdline=b2-47-survive|
 ```
 
+The `--no-follow` section of the log also lists `pid=2963704 comm=sleep
+cmdline=sleep|480| tracer=0`: that is an unrelated process on the shared host
+(another agent's), included because the reproducer's sweep is host-wide. The
+two `b2-47-nofollow`/`tracer=2963537` rows are this run.
+
 The `--detach` warning, at the release point:
 
 ```
-pmask: warning: --detach released pid 161578 untraced; a later exec in that
+pmask: warning: --detach released pid 3233530 untraced; a later exec in that
 process is not redacted
 pmask: 1 tracee(s) left detached after their exec (--detach: their later
 execs are not redacted)

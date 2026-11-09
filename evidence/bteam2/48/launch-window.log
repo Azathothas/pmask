@@ -1,24 +1,37 @@
 HOST uname=Linux 6.12.113+deb13-amd64 x86_64 kernel=6.12.113+deb13-amd64 uid=1000 nproc=8 capeff=0000000000000000
 HOST rounds=3 n=60 pmask=/workspace/wt/bteam2/target/release/pmask cc=cc
-SPAWN variant=plain mean_ms=1.8032 median_ms=1.7117 p95_ms=2.4237 n=60 rounds=3
-SPAWN-SPREAD variant=plain round_median_min_ms=1.7059 max_ms=1.7271 spread_pct=1.2 STABLE
-SPAWN variant=env-i mean_ms=2.5682 median_ms=2.4986 p95_ms=3.0426 n=60 rounds=3
-SPAWN-SPREAD variant=env-i round_median_min_ms=2.4692 max_ms=2.5246 spread_pct=2.2 STABLE
-SPAWN variant=masked mean_ms=4.8712 median_ms=4.6726 p95_ms=5.7500 n=60 rounds=3
-SPAWN-SPREAD variant=masked round_median_min_ms=4.6576 max_ms=4.8569 spread_pct=4.3 STABLE
-SPAWN-RATIO masked_over_plain=2.73 masked_over_env_i=1.87
-WINDOW variant=masked payload=script pid=2313192 found_ns=1987192 samples=103393 interval_us=3.413 off_label_total_us=457.888 longest_off_label_us=457.888 label_seen_at_ns=2463096 sequence=payload.sh@2005208>win-2302481@2463096
-WINDOW variant=masked payload=elf pid=2314463 found_ns=3234717 samples=100051 interval_us=3.512 off_label_total_us=424.716 longest_off_label_us=424.716 label_seen_at_ns=3257889 sequence=win-2302481@3257889>payload.elf@3430694>win-2302481@3855410
-WINDOW variant=plain payload=script pid=2315702 found_ns=0 samples=101758 interval_us=3.460 off_label_total_us=534.894 longest_off_label_us=534.894 label_never_seen=1 sequence=env@47739>payload.sh@582633
-WINDOW variant=plain payload=elf pid=2316959 found_ns=0 samples=96706 interval_us=3.630 off_label_total_us=337.005 longest_off_label_us=337.005 label_never_seen=1 sequence=env@47607>payload.elf@384612
-SYSCALL-STARTUP prctl(PR_SET_MM, PR_SET_MM_MAP, 0x7ffede319950, 0x68, 0) = 0
+SPAWN variant=plain mean_ms=2.4321 median_ms=2.2101 p95_ms=3.9741 n=60 rounds=3
+SPAWN-SPREAD variant=plain round_median_min_ms=1.8096 max_ms=2.7289 spread_pct=50.8 UNSTABLE
+SPAWN variant=env-i mean_ms=2.4592 median_ms=2.2758 p95_ms=3.5580 n=60 rounds=3
+SPAWN-SPREAD variant=env-i round_median_min_ms=2.2368 max_ms=2.4127 spread_pct=7.9 STABLE
+SPAWN variant=masked mean_ms=4.7341 median_ms=4.6723 p95_ms=5.5765 n=60 rounds=3
+SPAWN-SPREAD variant=masked round_median_min_ms=4.5190 max_ms=4.7212 spread_pct=4.5 STABLE
+SPAWN-RATIO masked_over_plain=2.11 masked_over_env_i=2.05
+WINDOW-ATTEMPT variant=masked payload=script attempt=1 off_label_us=257.949
+WINDOW-ATTEMPT variant=masked payload=script attempt=2 off_label_us=394.224
+WINDOW-ATTEMPT variant=masked payload=script attempt=3 off_label_us=307.606
+WINDOW-SEEN the attempts that saw a comm change:
+WINDOW variant=masked payload=script pid=296225 found_ns=2962414 samples=94902 interval_us=3.712 off_label_total_us=257.949 longest_off_label_us=257.949 label_seen_at_ns=3250264 sequence=payload.sh@2992315>win-287042@3250264
+WINDOW variant=masked payload=script pid=297404 found_ns=1672329 samples=102412 interval_us=3.444 off_label_total_us=394.224 longest_off_label_us=394.224 label_seen_at_ns=1690886 sequence=win-287042@1690886>payload.sh@1903570>win-287042@2297794
+WINDOW variant=masked payload=script pid=298622 found_ns=1884096 samples=106741 interval_us=3.301 off_label_total_us=307.606 longest_off_label_us=307.606 label_seen_at_ns=2210441 sequence=payload.sh@1902835>win-287042@2210441
+WINDOW variant=masked payload=script attempts=3 caught=3 off_label_us_median=307.606 min=257.949 max=394.224
+WINDOW-ATTEMPT variant=masked payload=elf attempt=1 off_label_us=388.368
+WINDOW-ATTEMPT variant=masked payload=elf attempt=2 off_label_us=647.752
+WINDOW-ATTEMPT variant=masked payload=elf attempt=3 off_label_us=348.686
+WINDOW-SEEN the attempts that saw a comm change:
+WINDOW variant=masked payload=elf pid=299874 found_ns=1652440 samples=100979 interval_us=3.479 off_label_total_us=388.368 longest_off_label_us=388.368 label_seen_at_ns=1672755 sequence=win-287042@1672755>payload.elf@1846425>win-287042@2234793
+WINDOW variant=masked payload=elf pid=301120 found_ns=1754894 samples=102529 interval_us=3.429 off_label_total_us=647.752 longest_off_label_us=647.752 label_seen_at_ns=1776328 sequence=win-287042@1776328>payload.elf@1939187>win-287042@2586939
+WINDOW variant=masked payload=elf pid=302414 found_ns=1899166 samples=103489 interval_us=3.392 off_label_total_us=348.686 longest_off_label_us=348.686 label_seen_at_ns=2269595 sequence=payload.elf@1920909>win-287042@2269595
+WINDOW variant=masked payload=elf attempts=3 caught=3 off_label_us_median=388.368 min=348.686 max=647.752
+WINDOW variant=plain payload=script pid=303699 found_ns=0 samples=100219 interval_us=3.512 off_label_total_us=559.090 longest_off_label_us=559.090 label_never_seen=1 sequence=env@44435>payload.sh@603525
+WINDOW variant=plain payload=elf pid=304936 found_ns=0 samples=101715 interval_us=3.451 off_label_total_us=398.643 longest_off_label_us=398.643 label_never_seen=1 sequence=env@44163>payload.elf@442806
+SYSCALL-STARTUP prctl(PR_SET_MM, PR_SET_MM_MAP, 0x7ffded2fd3e0, 0x68, 0) = 0
 SYSCALL-STARTUP prctl(PR_SET_NAME, "bench")             = 0
 SYSCALL-STARTUP prctl(PR_SET_DUMPABLE, SUID_DUMP_DISABLE) = 0
-SYSCALL-STARTUP clone3(0x7ffede319470, 88)              = 2318187
+SYSCALL-STARTUP clone3(0x7ffded2fcf10, 88)              = 306307
 SYSCALL-STARTUP note=no PTRACE_SEIZE line (the tracer thread was not traced; see the sustained section)
-SYSCALL-SUSTAINED tracer_tid=2318225 attach_secs=6 lines=58765 PTRACE_SEIZE=0 PTRACE_SYSCALL=10834 PTRACE_GET_SYSCALL_INFO=10060 PTRACE_GETREGSET=6191 PTRACE_SETREGSET=5418 PTRACE_CONT=3096 PTRACE_GETEVENTMSG=1548 process_vm_readv=6192 process_vm_writev=7740 PR_SET_NAME=0 PR_SET_MM=0
+SYSCALL-SUSTAINED tracer_tid=306341 attach_secs=6 lines=60485 PTRACE_SEIZE=0 PTRACE_SYSCALL=11246 PTRACE_GET_SYSCALL_INFO=10442 PTRACE_GETREGSET=6426 PTRACE_SETREGSET=5621 PTRACE_CONT=3215 PTRACE_GETEVENTMSG=1608 process_vm_readv=6427 process_vm_writev=8030 PR_SET_NAME=0 PR_SET_MM=0
 SYSCALL-SUSTAINED-NOTE counts cover 6s of a payload that execs /bin/true in a loop; divide by 6 for a per-second rate
-FAILCHECK strace_f_breaks_a_session rc=255 ptrace(PTRACE_SEIZE, 2340785, NULL, PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|PTRACE_O_TRACECLONE|PTRACE_O_TRACEEXEC|PTRACE_O_TRACEEXIT|PTRACE_O_EXITKILL) = -1 EPERM (Operation not permitted)
+FAILCHECK strace_f_breaks_a_session rc=255 ptrace(PTRACE_SEIZE, 328550, NULL, PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|PTRACE_O_TRACECLONE|PTRACE_O_TRACEEXEC|PTRACE_O_TRACEEXIT|PTRACE_O_EXITKILL) = -1 EPERM (Operation not permitted)
 FAILCHECK stderr=pmask: session error: Operation not permitted (os error 1)|
 DONE (issue 48 measurement)
-rc=0

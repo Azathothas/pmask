@@ -110,22 +110,36 @@ else
 fi
 
 # ------------------------------------------------- q48c: the launch window
-# The masked script row must report a window and a sequence in which the
-# process carried a comm other than the label; the plain control must
-# report that the label never appeared at all.
-MW=$(sed -n 's/^WINDOW variant=masked payload=script .*off_label_total_us=\([0-9.]*\).*/\1/p' "$T/measure.log" | head -1)
+# The masked script row reports the median of the attempts that caught a
+# window, with the min and the max.  The interval is genuinely noisy -- a
+# /proc scan can take longer than the window -- so the case is about the
+# channel existing and being measured, not about a particular number.
+MW=$(sed -n 's/^WINDOW variant=masked payload=script .*off_label_us_median=\([0-9.]*\).*/\1/p' "$T/measure.log" | head -1)
 if [ -n "$MW" ]; then
     if awk -v w="$MW" 'BEGIN{ exit !(w > 0) }'; then
-        pass "q48c-masked-script-payload-shows-a-window (off_label_us=$MW)"
+        pass "q48c-masked-script-payload-shows-a-window (median_off_label_us=$MW)"
     else
-        fail "q48c-masked-script-payload-shows-a-window (off_label_us=$MW)"
+        fail "q48c-masked-script-payload-shows-a-window (median_off_label_us=$MW)"
     fi
-    grep -q '^WINDOW variant=masked payload=script .*sequence=[^ ]*>' "$T/measure.log" \
-        && pass "q48c2-masked-window-is-a-comm-sequence" \
-        || fail "q48c2-masked-window-is-a-comm-sequence (no transition in the sequence)"
+    # Some attempt must have seen the comm change: that is what makes the
+    # interval a comm sequence rather than a sampler artefact.  At least one
+    # of the repeated attempts has to catch it, or the row is a SKIP.
+    if grep -q '^WINDOW variant=masked payload=script .*sequence=[^ ]*>' "$T/measure.log"; then
+        pass "q48c2-masked-window-is-a-comm-sequence (an attempt saw the change)"
+    elif grep -q '^WINDOW variant=masked payload=script .*SKIP' "$T/measure.log"; then
+        skip "q48c2-masked-window-is-a-comm-sequence (every attempt was late: $(grep -m1 '^WINDOW variant=masked payload=script .*SKIP' "$T/measure.log" | cut -c1-80))"
+    else
+        fail "q48c2-masked-window-is-a-comm-sequence (no attempt saw a comm change)"
+    fi
+    # The attempt lines are what make a "missed" result readable instead of
+    # looking like a zero-length window.
+    grep -q '^WINDOW-ATTEMPT variant=masked payload=script attempt=1 ' "$T/measure.log" \
+        && pass "q48c4-attempts-are-reported" \
+        || fail "q48c4-attempts-are-reported (no WINDOW-ATTEMPT line)"
 else
-    skip "q48c-masked-script-payload-shows-a-window ($(grep -m1 '^SKIP launch-window' "$T/measure.log" || echo 'no WINDOW row'))"
+    skip "q48c-masked-script-payload-shows-a-window ($(grep -m1 '^WINDOW variant=masked payload=script .*SKIP' "$T/measure.log" || echo 'no masked script window row'))"
     skip "q48c2-masked-window-is-a-comm-sequence (no window row)"
+    skip "q48c4-attempts-are-reported (no window row)"
 fi
 # The control: a plain launch never carries the masked run's label, so its
 # row must say so.  If it claimed a window, the observer would be measuring

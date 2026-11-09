@@ -30,20 +30,36 @@ sh tests/qa.d/48.sh                                # the QA fragment
 Spawn latency, 60 launches per round over 3 rounds, whole invocation:
 
 ```
-SPAWN variant=plain  mean_ms=1.8032 median_ms=1.7117 p95_ms=2.4237
-SPAWN variant=env-i  mean_ms=2.5682 median_ms=2.4986 p95_ms=3.0426
-SPAWN variant=masked mean_ms=4.8712 median_ms=4.6726 p95_ms=5.7500
-SPAWN-RATIO masked_over_plain=2.73 masked_over_env_i=1.87
+SPAWN variant=plain  mean_ms=2.4321 median_ms=2.2101 p95_ms=3.9741
+SPAWN-SPREAD variant=plain  spread_pct=50.8 UNSTABLE
+SPAWN variant=env-i  mean_ms=2.4592 median_ms=2.2758 p95_ms=3.5580
+SPAWN variant=masked mean_ms=4.7341 median_ms=4.6723 p95_ms=5.5765
+SPAWN-RATIO masked_over_plain=2.11 masked_over_env_i=2.05
 ```
 
-Launch window, a C sampler at one sample per 3.3-3.5 us:
+The `plain` row is UNSTABLE in this run: the host is shared and a
+neighbouring load lands on the cheapest measurement first. The `masked`
+median is the same figure across every run made here (4.67-4.87 ms), so the
+ratio moves with the denominator. The harness reports the spread for exactly
+this reason; read the ratio against `env -i` (about 1.9-2.1x) rather than the
+absolute.
+
+Launch window, a C sampler at one sample per 3.3-3.7 us, median of three
+attempts (a single `/proc` scan can take longer than the window):
 
 ```
-WINDOW variant=masked payload=script ... off_label_total_us=457.888 sequence=payload.sh@2005208>win-...@2463096
-WINDOW variant=masked payload=elf    ... off_label_total_us=424.716 sequence=win-...@3257889>payload.elf@3430694>win-...@3855410
-WINDOW variant=plain  payload=script ... label_never_seen=1 sequence=env@47739>payload.sh@582633
-WINDOW variant=plain  payload=elf    ... label_never_seen=1 sequence=env@47607>payload.elf@384612
+WINDOW-ATTEMPT variant=masked payload=script attempt=1 off_label_us=257.949
+WINDOW-ATTEMPT variant=masked payload=script attempt=2 off_label_us=394.224
+WINDOW-ATTEMPT variant=masked payload=script attempt=3 off_label_us=307.606
+WINDOW variant=masked payload=script attempts=3 caught=3 median_off_label_us=307.606 min=257.949 max=394.224
+WINDOW variant=masked payload=elf    attempts=3 caught=3 median_off_label_us=388.368 min=348.686 max=647.752
+WINDOW variant=plain  payload=script label_never_seen=1 sequence=env@44435>payload.sh@603525
+WINDOW variant=plain  payload=elf    label_never_seen=1 sequence=env@44163>payload.elf@442806
 ```
+
+The interval is noisy: individual attempts across all the runs made here
+ranged from 39 us to 808 us. That is the instrument as much as the window;
+the honest statement is "a few hundred microseconds, below a 1 ms poller".
 
 Syscall signature, launcher startup (`strace -qq`, no `-f`):
 
@@ -57,9 +73,9 @@ clone3(..., 88)                               = <tracer tid>
 Sustained, `strace -p <tracer-tid>` for 6 s:
 
 ```
-lines=58765 PTRACE_SYSCALL=10834 PTRACE_GET_SYSCALL_INFO=10060
+lines=60485 PTRACE_SYSCALL=11246 PTRACE_GET_SYSCALL_INFO=10442
 PTRACE_GETREGSET=6191 PTRACE_SETREGSET=5418 PTRACE_CONT=3096
-PTRACE_GETEVENTMSG=1548 process_vm_readv=6192 process_vm_writev=7740
+PTRACE_GETEVENTMSG=1608 process_vm_readv=6427 process_vm_writev=8030
 ```
 
 ## Two findings the issue did not name

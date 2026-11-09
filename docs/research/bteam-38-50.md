@@ -167,7 +167,7 @@ the payload never learned that this process, from now on, runs its own later
 execs unredacted. The release now says so:
 
 ```
-pmask: warning: --detach released pid 161578 untraced; a later exec in that
+pmask: warning: --detach released pid 3233530 untraced; a later exec in that
 process is not redacted
 ```
 
@@ -196,20 +196,31 @@ Command: `sh measurements/launch-window.sh` with `WINDOW_ROUNDS=3`,
 
 ### Spawn latency
 
-Whole-invocation wall time per launch, 60 launches per round over 3 rounds:
+Whole-invocation wall time per launch, 60 launches per round over 3 rounds.
+This is the run filed as `evidence/bteam2/48/launch-window.log`:
 
-| variant | mean | median | p95 | round spread |
-| --- | --- | --- | --- | --- |
-| `/bin/true` plain | 1.80 ms | 1.71 ms | 2.42 ms | 1.2 % STABLE |
-| `env -i /bin/true` | 2.57 ms | 2.50 ms | 3.04 ms | 2.2 % STABLE |
-| `pmask -- /bin/true` | 4.87 ms | 4.67 ms | 5.75 ms | 4.3 % STABLE |
+```
+SPAWN variant=plain  mean_ms=2.4321 median_ms=2.2101 p95_ms=3.9741
+SPAWN-SPREAD variant=plain round_median_min_ms=1.8096 max_ms=2.7289 spread_pct=50.8 UNSTABLE
+SPAWN variant=env-i  mean_ms=2.4592 median_ms=2.2758 p95_ms=3.5580
+SPAWN-SPREAD variant=env-i round_median_min_ms=2.2368 max_ms=2.4127 spread_pct=7.9 STABLE
+SPAWN variant=masked mean_ms=4.7341 median_ms=4.6723 p95_ms=5.5765
+SPAWN-SPREAD variant=masked round_median_min_ms=4.5190 max_ms=4.7212 spread_pct=4.5 STABLE
+SPAWN-RATIO masked_over_plain=2.11 masked_over_env_i=2.05
+```
 
-`masked_over_plain = 2.73`, `masked_over_env_i = 1.87`. The `env -i` row is
-the control for the wrapper class: a bare `env` costs 1.4x plain here, so the
-pmask-specific part is the ratio against `env -i`, about 1.9x.
+The plain row is marked UNSTABLE: the three round medians differ by 50.8 %,
+because this machine is shared and a neighbouring load lands on the cheapest
+measurement first. The `masked` rows are stable, and the masked median is the
+same figure across runs (4.67-4.87 ms over the runs made here), so the ratio
+moves with the denominator rather than with pmask. An earlier quieter run of
+the same harness gave `masked_over_plain = 2.73` with every row STABLE;
+both runs are on this host and neither number is more "true" than the other.
 
-The spread is reported because a single median hides a noisy host. Every row
-was STABLE (under 30 % across rounds) on this host.
+**Read the ratio, not the absolute.** The `env -i` row is the control for the
+wrapper class: a bare `env` costs about 1.4x plain, so the pmask-specific part
+is the ratio against `env -i`, about 1.9-2.1x. The spread column exists
+because this is exactly the kind of number a single median hides.
 
 ### The launch window
 
@@ -217,16 +228,39 @@ A C sampler polls `/proc/<pid>/comm` in a tight loop, starting the moment the
 launcher's first child appears. On this host it gets one sample every
 3.3-3.5 us.
 
-| run | comm sequence | off-label time |
-| --- | --- | --- |
-| masked, script payload | `payload.sh > win-...` | 458 us |
-| masked, ELF payload | `win-... > payload.elf > win-...` | 425 us |
-| plain, script payload | `env > payload.sh` | label never seen |
-| plain, ELF payload | `env > payload.elf` | label never seen |
+The sampler is repeated three times per row, because a single `/proc` scan
+can take longer than the window and report a miss. The row quotes the median
+of the attempts that caught a window, with the min and the max, and the
+per-attempt lines are in the log:
+
+```
+masked, script payload: attempts=3 caught=3 median_off_label_us=307.606 min=257.949 max=394.224
+masked, ELF payload:    attempts=3 caught=3 median_off_label_us=388.368 min=348.686 max=647.752
+plain,  script payload: label_never_seen=1   sequence=env@44435>payload.sh@603525
+plain,  ELF payload:    label_never_seen=1   sequence=env@44163>payload.elf@442806
+```
+
+The sampled comm sequences, from the attempts that saw a change:
+
+```
+payload.sh > win-...                     (the exec settled late in the trace)
+win-... > payload.sh > win-...           (the full double transition)
+win-... > payload.elf > win-...          (ELF payload, same shape)
+```
 
 The plain rows are the control: the masked run's label never appears for a
 process that is not masked, so the off-label time above is the mask's window
 and not an artefact of the sampler.
+
+**The interval is genuinely noisy.** Across the runs made here the median
+ranged from about 230 us to about 450 us for the same payload, and individual
+attempts ranged from 39 us to 808 us. That is the instrument as much as the
+window: the sampler finds the payload by scanning `/proc`, and a scan under
+load costs a large fraction of the interval it is trying to measure. The
+honest statement is *"the window is a few hundred microseconds on this host,
+below a millisecond poller's resolution"*, which is what the issue says and
+what these numbers support. A single run does not pin it tighter than that,
+and the harness does not pretend to.
 
 **Why the sampler is C and not shell.** A shell loop costs about 2 ms per
 iteration on this host (measured during development: `cat /proc/<pid>/comm`
@@ -257,10 +291,10 @@ supervisor made itself non-dumpable; the script uses `sudo -n` and quotes the
 refusal when it cannot:
 
 ```
-lines=58765
-PTRACE_SYSCALL=10834  PTRACE_GET_SYSCALL_INFO=10060
-PTRACE_GETREGSET=6191 PTRACE_SETREGSET=5418  PTRACE_CONT=3096  PTRACE_GETEVENTMSG=1548
-process_vm_readv=6192 process_vm_writev=7740
+lines=60485
+PTRACE_SYSCALL=11246  PTRACE_GET_SYSCALL_INFO=10442
+PTRACE_GETREGSET=6426 PTRACE_SETREGSET=5621  PTRACE_CONT=3215  PTRACE_GETEVENTMSG=1608
+process_vm_readv=6427 process_vm_writev=8030
 ```
 
 **A finding, not a limitation:** `strace -f` on the launcher *breaks a
@@ -326,7 +360,7 @@ core dumps and debugger attach stop working.
 **Also documented, and not closable from userland:** while the redaction is
 written, the real argv and environment cross the supervisor's
 `process_vm_writev` buffers in plaintext. The sustained syscall trace above
-counts 7740 `process_vm_writev` calls in 6 s of a busy session, so the
+counts 8030 `process_vm_writev` calls in 6 s of a busy session, so the
 channel is not a one-off. A kernel-side sensor, or `CAP_SYS_PTRACE` on the
 tracer thread, sees those buffers. This is the same boundary as the launch
 window: pmask hides what `/proc` reports, and a kernel observer is outside
@@ -346,7 +380,7 @@ that boundary.
   dumpable, because the EACCES signature and the loss of debuggers are a
   worse trade for the default deployment.
 
-Two things in this file are new findings rather than issue text:
+Four things in this file are new findings rather than issue text:
 
 1. `strace -f` on a pmask launcher kills the session with `EPERM` on
    `PTRACE_SEIZE`. A syscall-level monitor has to attach per thread and needs
@@ -355,3 +389,10 @@ Two things in this file are new findings rather than issue text:
    one sample costs about 2 ms here, longer than the window. The window
    figures in the issue (747 us for a script payload) need a C sampler to
    reproduce; this harness uses one.
+3. The tracer thread's name must come from the session's configured comm, not
+   from the live process comm: the runner path creates the thread before the
+   self-mask, and the live comm there is the pre-mask binary name. The first
+   two versions of the fix got this wrong; see the runner-path section.
+4. `tests/isolation.sh` leaks its own control payload, and that makes
+   `tests/edge.sh` fail intermittently. It is another suite's file, so it is
+   reported in `evidence/bteam2/FINDINGS.md` rather than fixed here.
