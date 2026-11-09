@@ -648,4 +648,27 @@ mod tests {
         assert!(!big.is_secret_mem());
         assert!(big.len() > limit as usize);
     }
+
+    #[test]
+    fn every_secret_memfd_is_close_on_exec() {
+        // issue 15: the supervisor's `memfd_secret` survived `exec`, so a
+        // grandchild of a `--secret-close-on-exec` run could mmap the
+        // plaintext.  The single creation site must set `MFD_CLOEXEC`.
+        let fd = match secret_memfd() {
+            Ok(fd) => fd,
+            // No memfd_secret on this host: the property is vacuous here,
+            // not failed.  The QA fragment drives the real exec case.
+            Err(_) => return,
+        };
+        // SAFETY: fcntl on a descriptor we own.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        // SAFETY: fd is ours.
+        unsafe { libc::close(fd) };
+        assert!(flags >= 0, "F_GETFD failed");
+        assert_eq!(
+            flags & libc::FD_CLOEXEC,
+            libc::FD_CLOEXEC,
+            "memfd_secret must be created MFD_CLOEXEC"
+        );
+    }
 }

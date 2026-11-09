@@ -1,0 +1,5 @@
+FAIL qa17-head-payload-survives (no /tmp/pmask-qa17.zSMnqJ/alive; supervisor rc=134 stderr= thread 'pmask-tracer' (3476374) panicked at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/io/stdio.rs)
+FAIL qa17-head-not-sigabrt (supervisor exited 134: SIGABRT)
+PASS qa17-first-row
+PASS qa17-full-audit-works
+PASS qa17-payload-exit-status

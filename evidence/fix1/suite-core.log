@@ -1,0 +1,48 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS k1-thread-exec-keeps-argv
+PASS k2-control-sees-tail-5000 (1)
+PASS k2-fidelity-5000 (len=5015 byte-exact tail)
+PASS k2-no-tail-leak-5000
+PASS k2-control-sees-tail-100000 (1)
+PASS k2-fidelity-100000 (len=100017 byte-exact tail)
+PASS k2-no-tail-leak-100000
+PASS k3-argv-complete-10000
+PASS k3-no-sighting
+SKIP k4-32bit (tests/testcases32 absent: the i686 build is part of vm/run.sh)
+PASS k5-supervisor-exits (rc=0 in 0s)
+PASS k5-detach-keeps-background-job (1 alive with the label, 0 sightings)
+PASS k5-on-exit-kill-terminates-tree (0 alive after 1 polls)
+PASS k5-on-exit-wait-waits (2s)
+PASS k6-sigstop-holds (file frozen at 3 bytes)
+PASS k6-sigcont-resumes (size 3 -> 16)
+PASS k8-retry-keeps-entry-swap (swaps=2 rereads=0)
+PASS k9-failed-repoint-zeroes-and-warns (0 sightings)
+PASS k9-failed-repoint-resumes-cleanly (exit 0)
+PASS k10-summary-names-post-exec (pmask: 2 of 2 execs degraded (post-exec x2))
+PASS k10-script-is-not-called-unredacted
+PASS k10-quiet-prints-nothing
+PASS k10-clean-elf-run-is-silent
+PASS k10-clean-secret-run-is-silent
+PASS k10-clean-run-has-no-duplicate-line
+PASS k15-refused-window-is-reported (pmask: 1 of 1 execs kept the kernel's argv and environ windows (PR_SET_MM_MAP refused))
+PASS k15-quiet-prints-nothing
+PASS k15-accepted-window-is-silent
+PASS k15-window-kept (arg extent 16 = label + argc, environ 40 NUL bytes not empty)
+PASS k15b-real-prctl-refusal-is-reported (rc=0)
+PASS k15b-real-refusal-keeps-the-window (extent 13 = label + argc)
+PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
+INFO completion-stop 4897us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
+PASS k12-thread-comm-is-label (4 of 4 threads)
+PASS k12-setproctitle-rewrite-keeps-args
+PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
+PASS k13-at-execfn-is-the-real-path (execfn=/workspace/wt/fix1/tests/testcases)
+SKIP k13-setuid (needs root to create a set-uid file)
+PASS k13-execveat-argv-intact (entry swaps: 2)
+PASS k13-fexecve-argv-intact (entry swaps: 2)
+PASS k13b-at-execfn-diverges (payload=/workspace/wt/fix1/tests/testcases auxv=core-label-x)
+PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
+PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 1032384: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k17-empty-argv-element-is-forwarded
+PASS k14-thread-starts-settled (settled=4 slow=0)
+== VERDICT: FAIL=0 ==

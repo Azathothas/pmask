@@ -1,0 +1,6 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa16-keep-then-name
+PASS qa16-keep-then-name-narrow
+PASS qa16-name-then-keep
+PASS qa16-name-only
+PASS qa16-control-default

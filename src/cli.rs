@@ -455,7 +455,16 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "comm" => {
                     let v = take_value("--comm", inline, &argv, &mut i);
-                    mask = mask.comm(label_from(&v));
+                    let c = label_from(&v);
+                    // Checked here, before the mode is chosen: the mask
+                    // path validates the same rule in `Mask::validate`,
+                    // but `--isolate` and `--no-redact` never build a
+                    // Mask, so a bad `comm` would reach `ps` through
+                    // them (issue 33).
+                    if let Err(e) = pmask::mask::validate_comm(&c) {
+                        die(&e.to_string());
+                    }
+                    mask = mask.comm(c);
                     note_opt(&mut mask_opts, "--comm");
                 }
                 "keep-env" => {

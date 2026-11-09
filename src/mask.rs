@@ -267,6 +267,19 @@ pub fn validate_label(label: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Check a `comm` name for the bytes that corrupt `ps` output or the
+/// parenthesised `comm` field of `/proc/<pid>/stat`: NUL, LF and CR.  The
+/// name is at most `COMM_MAX` bytes.  Same rule as [`validate_label`].
+pub fn validate_comm(comm: &str) -> io::Result<()> {
+    if comm.len() > crate::COMM_MAX {
+        return Err(invalid("comm must be at most 15 bytes"));
+    }
+    if comm.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+        return Err(invalid("comm must not contain NUL, LF or CR bytes"));
+    }
+    Ok(())
+}
+
 fn validate_env_key(key: &OsStr) -> io::Result<()> {
     let b = key.as_bytes();
     let shown = String::from_utf8_lossy(b);
@@ -714,15 +727,10 @@ impl Mask {
             validate_label(l)?;
         }
         if let Some(c) = &self.comm {
-            if c.len() > crate::COMM_MAX {
-                return Err(invalid("comm must be at most 15 bytes"));
-            }
             // LF and CR break the parenthesised `comm` field of
             // `/proc/<pid>/stat`, which readers split on newlines; NUL
             // truncates the kernel's `comm` copy.  Same rule as the label.
-            if c.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
-                return Err(invalid("comm must not contain NUL, LF or CR bytes"));
-            }
+            validate_comm(c)?;
         }
         if let Some(a) = &self.argv0 {
             if a.as_bytes().contains(&0) {
@@ -2110,5 +2118,48 @@ mod tests {
         assert!(name.len() <= TRACER_COMM_MAX);
         assert!(std::str::from_utf8(name.as_bytes()).is_ok());
         assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn keep_env_list_wins_over_an_earlier_keep_env() {
+        // issue 16: `--keep-env --keep-env=KEEPME` exposed the whole
+        // inherited environment, because only the boolean was set and the
+        // list was recorded next to it.
+        let m = Mask::new().keep_environ_visible().keep_env_vars(["KEEPME"]);
+        assert!(m.redact_environ, "the explicit list must narrow the mask");
+        assert_eq!(m.keep_env_names, vec![b"KEEPME".to_vec()]);
+
+        // The last request wins: a later `--keep-env` turns the redaction
+        // off again.
+        let m = Mask::new().keep_env_vars(["KEEPME"]).keep_environ_visible();
+        assert!(!m.redact_environ);
+        assert_eq!(m.keep_env_names, vec![b"KEEPME".to_vec()]);
+    }
+
+    #[test]
+    fn comm_rejects_nul_lf_and_cr() {
+        // issue 33: LF and CR broke the parenthesised `comm` field of
+        // /proc/<pid>/stat; NUL was already refused.
+        for bad in ["a\0b", "a\nb", "a\rb"] {
+            let e = Mask::new()
+                .label("x")
+                .comm(bad)
+                .validate()
+                .expect_err("comm must be refused");
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+            assert!(e.to_string().contains("NUL, LF or CR"), "message: {}", e);
+        }
+        // A tab and other control bytes are legal in `comm`, and a label
+        // is still accepted as before.
+        assert!(Mask::new().label("x").comm("a\tb").validate().is_ok());
+    }
+
+    #[test]
+    fn snapshot_argv_prefers_the_runtime_copy() {
+        // issue 5: the `/proc/self/cmdline` route is only a fallback.  The
+        // runtime vector of the test harness is the harness's own, which
+        // is what `main` parses; it must not be empty.
+        let argv = snapshot_argv();
+        assert!(!argv.is_empty(), "the runtime vector must not be empty");
     }
 }

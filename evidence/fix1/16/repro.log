@@ -1,0 +1,19 @@
+# issue 16: --keep-env then --keep-env=NAME
+# The environment is reported as a COUNT plus whether a named variable
+# is present, never as values: on the unfixed build the whole inherited
+# environment is visible, and this file must not carry it.
+
+## baseline: --keep-env --keep-env=KEEPME
+visible variable names: 41; KEEPME present: 1
+
+## fixed, same order
+KEEPME
+
+## fixed, reverse order (a later --keep-env wins)
+visible variable names: 41; OTHER present: 1
+
+## fixed, --keep-env=KEEPME alone
+KEEPME
+
+## control: no --keep-env at all
+environ bytes: 0

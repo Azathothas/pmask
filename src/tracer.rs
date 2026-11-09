@@ -536,13 +536,18 @@ impl Tracer {
         let status = match wait_master_stop(master) {
             Ok(s) => s,
             Err(e) => {
-                // SAFETY: the descriptor and the pipe end are owned by
-                // this call.
+                // The master is seized and stopped or running, and the
+                // table does not own it yet.  Invariant 5: never leave a
+                // stopped-and-forgotten tracee, so kill and reap it here.
+                // SAFETY: the descriptor, the pipe end and our own child.
                 unsafe {
                     libc::close(go_fd);
                     if report_fd >= 0 {
                         libc::close(report_fd);
                     }
+                    libc::kill(master, libc::SIGKILL);
+                    let mut st = 0i32;
+                    libc::waitpid(master, &mut st, libc::__WALL);
                 }
                 return Err(e);
             }
@@ -559,7 +564,13 @@ impl Tracer {
         // say so: the handshake is then not the one this code installs.
         let sig = libc::WSTOPSIG(status);
         let event = (status as u32) >> 16;
-        if event != arch::PTRACE_EVENT_STOP || sig != libc::SIGTRAP {
+        if event == arch::PTRACE_EVENT_STOP && sig == libc::SIGTRAP {
+            vlog!(
+                self,
+                "master {}: handshake is the PTRACE_INTERRUPT stop",
+                master
+            );
+        } else {
             vlog!(
                 self,
                 "master {}: handshake stop is sig {}/{}, not PTRACE_INTERRUPT",
@@ -1480,13 +1491,13 @@ impl Tracer {
 
     /// Does the tracee's memory at `addr` still start with the comm label?
     ///
-    /// When the read fails the answer is "yes".  For a live tracee the
-    /// read fails because it is non-dumpable, which is exactly the
-    /// `--no-dumpable` case this redirect exists for; treating that as
-    /// "no block" would replace a working redirect with a refused rename
-    /// and count a degradation that did not happen.  The address is
-    /// bookkeeping the tracer wrote itself at the completion stop and is
-    /// cleared at the tracee's next exec entry.
+    /// A failed read answers "no", and the caller falls through to the
+    /// write path.  That is deliberate: a tracee the tracer cannot read is
+    /// one the payload may have rewritten, and pointing `PR_SET_NAME` at
+    /// memory the payload controls would let it choose its own `comm` —
+    /// the exact leak this filter exists to stop.  Under `--no-dumpable`
+    /// both the read and the write are refused, so the rename is refused
+    /// with `EFAULT` instead: the label wins, and the session counts it.
     fn block_holds_label(&self, pid: libc::pid_t, addr: u64, n: usize) -> bool {
         if n == 0 {
             return true;
@@ -1494,7 +1505,7 @@ impl Tracer {
         let mut buf = [0u8; 16];
         let want = n.min(buf.len());
         if crate::remote::read_mem(pid, addr, &mut buf[..want]) != want as isize {
-            return true;
+            return false;
         }
         buf[..want] == self.cfg.label_comm[..want]
     }
