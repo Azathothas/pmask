@@ -947,6 +947,18 @@ impl Tracer {
             // get `TracerPid` back to 0, and it costs tree coverage: a
             // detached tracee and everything it forks later run without
             // redaction, which the session summary counts.
+            //
+            // Say it at the release, per tracee: this is the last moment
+            // the operator can be told that this process, from now on,
+            // runs its own later execs unredacted.  The session summary
+            // counts the releases; this line names the process and the
+            // consequence.  Watching for the later exec would need a
+            // tracer, which is exactly what --detach gives up.
+            self.warn(format_args!(
+                "--detach released pid {} untraced; a later exec in that process is not \
+                 redacted",
+                pid
+            ));
             self.stats.detached += 1;
             self.detach(pid, 0);
             return;

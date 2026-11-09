@@ -1038,8 +1038,15 @@ impl Mask {
         let (pid_tx, pid_rx) = mpsc::channel();
         let (st_tx, st_rx) = mpsc::channel();
         let cfg_thread = cfg.clone();
+        // A fixed name here names every supervised tree on the host: the
+        // task directory is not part of the label.  Naming the thread
+        // after the session label makes it read like the process it
+        // traces, and `cfg.label_comm` (the supervisor's own comm once the
+        // self-mask has run) is the fallback.  The live comm is not: the
+        // runner path calls this before the self-mask.
+        let thread_name = tracer_thread_name(&cfg.label, &cfg.label_comm);
         std::thread::Builder::new()
-            .name("pmask-tracer".into())
+            .name(thread_name)
             .spawn(move || {
                 let _g = session_lock();
                 let mut prepared = prepared;
@@ -1767,6 +1774,81 @@ fn basename(s: &OsStr) -> String {
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
+/// Bytes of a thread name the kernel keeps: `TASK_COMM_LEN` is 16 with
+/// the terminating NUL.  A longer name is refused by
+/// `pthread_setname_np` (`ERANGE`) and the thread silently keeps the
+/// name it inherited.
+const TRACER_COMM_MAX: usize = 15;
+
+/// The fixed tracer thread name earlier releases used.  A thread that
+/// carries it is the exact fingerprint issue 38 removes, so the name
+/// chosen here never equals it, whatever the operator labels a session.
+const RETIRED_TRACER_COMM: &str = "pmask-tracer";
+
+/// `bytes` cut to the kernel's comm limit on a UTF-8 boundary.
+fn comm_prefix(bytes: &[u8]) -> String {
+    let cut = &bytes[..bytes.len().min(TRACER_COMM_MAX)];
+    let mut s = String::from_utf8_lossy(cut).into_owned();
+    if s.len() > TRACER_COMM_MAX {
+        // A lossy decode can widen one byte to three; cut at a character
+        // boundary so the name still fits the kernel's limit.
+        let mut end = TRACER_COMM_MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// True when `name` is a thread name the kernel takes whole and a
+/// line-oriented reader cannot mistake for two lines.
+fn usable_comm(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= TRACER_COMM_MAX
+        && !name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r'))
+        && name != RETIRED_TRACER_COMM
+}
+
+/// Choose the tracer thread's name: the session label, so that reading
+/// `/proc/<supervisor>/task/*/comm` names the session instead of the
+/// tool.  The label is cut to the kernel's 15-byte comm limit.
+///
+/// The fallback is `session_comm`, the supervisor's own `comm` as the
+/// session configures it: `--comm` when given, otherwise the label cut to
+/// the limit, and a single space when that is empty.  That is exactly the
+/// name a reader of `/proc/<supervisor>/comm` sees once the self-mask has
+/// run, so the thread and its process agree.
+///
+/// The *live* comm is deliberately not a candidate.  The runner path
+/// (`--secret`) calls `spawn` before it applies the self-mask, so at this
+/// point the process still carries the pre-mask binary name; falling back
+/// to it would name the thread `pmask` for a session labelled with a
+/// string the kernel cannot take.
+///
+/// The name order is the session's `comm` first and the label second.  The
+/// `comm` is what the supervisor and the payload actually show, so the
+/// thread must agree with it; `--comm` therefore wins over `--label` for
+/// the thread, exactly as it wins for every process's `comm`.
+///
+/// A label that is empty, that carries a NUL (the kernel would cut the
+/// name there), that carries LF or CR (a reader would see two lines), or
+/// that is the retired fixed name falls through to the next candidate, and
+/// then to a deterministic cut of the retired name.  The result is never
+/// empty, never contains NUL, LF or CR, and is never `pmask-tracer`.
+fn tracer_thread_name(label: &[u8], session_comm: &[u8]) -> String {
+    for candidate in [session_comm, label] {
+        let name = comm_prefix(candidate);
+        if usable_comm(&name) {
+            return name;
+        }
+    }
+    // Both candidates are unusable.  A session can label itself with the
+    // retired name and set `--comm` to it as well; dropping its last byte
+    // keeps the operator's own string and stays off the retired one.
+    RETIRED_TRACER_COMM[..RETIRED_TRACER_COMM.len() - 1].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1789,5 +1871,142 @@ mod tests {
             split_cmdline(b"a\0b"),
             vec![OsString::from("a"), OsString::from("b")]
         );
+    }
+
+    /// The kernel keeps 15 bytes and refuses a longer name whole.
+    fn cut(bytes: &[u8]) -> String {
+        comm_prefix(bytes)
+    }
+
+    #[test]
+    fn tracer_thread_name_is_the_session_comm() {
+        // The ordinary case: no `--comm`, so the session comm is the label
+        // cut to 15 bytes and the thread takes it.
+        assert_eq!(tracer_thread_name(b"proc-evid", b"proc-evid"), "proc-evid");
+        // The cut happens once, in `to_config`, but a hand-built Config can
+        // hand in a longer string; the helper cuts again rather than
+        // letting the kernel refuse the whole name.
+        assert_eq!(
+            tracer_thread_name(b"abcdefghijklmnopqrst", b"abcdefghijklmnopqrst"),
+            "abcdefghijklmno"
+        );
+        // A multi-byte character must not be split by the cut.
+        let name = tracer_thread_name("abcdefghijklmn\u{00e9}x".as_bytes(), b"");
+        assert!(name.len() <= TRACER_COMM_MAX);
+        assert!(!name.is_empty());
+        assert_eq!(name, "abcdefghijklmn");
+    }
+
+    #[test]
+    fn tracer_thread_name_prefers_the_comm_over_the_label() {
+        // `--comm` is what every process of the session shows, so the
+        // thread must agree with it rather than with the longer label.
+        assert_eq!(
+            tracer_thread_name(b"a-long-presentation-label", b"short"),
+            "short"
+        );
+        // A `--comm` that cannot be a thread name falls back to the label.
+        assert_eq!(tracer_thread_name(b"proc-evid", b""), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\0b"), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\nb"), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\rb"), "proc-evid");
+    }
+
+    #[test]
+    fn tracer_thread_name_falls_back_to_the_label_for_an_empty_comm() {
+        // `--label-empty` alone: `to_config` makes the comm a single space
+        // so the process presents as blank, and that is a legal name.
+        assert_eq!(tracer_thread_name(b"", b" "), " ");
+        // Nothing usable at all: the cut retired name, never the tool.
+        assert_eq!(tracer_thread_name(b"", b""), "pmask-trace");
+    }
+
+    #[test]
+    fn tracer_thread_name_never_is_the_retired_fixed_name() {
+        assert_eq!(
+            tracer_thread_name(b"pmask-tracer", b"pmask-tracer"),
+            "pmask-trace"
+        );
+        // A usable comm wins, whatever the label says.
+        assert_eq!(
+            tracer_thread_name(b"pmask-tracer", b"proc-evid"),
+            "proc-evid"
+        );
+        assert_eq!(
+            tracer_thread_name(b"proc-evid", b"pmask-tracer"),
+            "proc-evid"
+        );
+        assert_eq!(tracer_thread_name(b"pmask-tracer\0", b""), "pmask-trace");
+        // Every fallback order for a session labelled with the retired
+        // name is cut to the limit, non-empty and free of NUL.
+        for label in [
+            b"pmask-tracer".as_slice(),
+            b"\0".as_slice(),
+            b"".as_slice(),
+            b"\n".as_slice(),
+        ] {
+            for session in [b"".as_slice(), b"pmask-tracer".as_slice(), b" ".as_slice()] {
+                let name = tracer_thread_name(label, session);
+                assert_ne!(name, RETIRED_TRACER_COMM);
+                assert!(!name.is_empty());
+                assert!(name.len() <= TRACER_COMM_MAX);
+                assert!(!name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')));
+            }
+        }
+    }
+
+    /// The runner path (`--secret`) calls `spawn` before the self-mask, so
+    /// the live process comm at that moment is the pre-mask binary name.
+    /// The name must never come from it: a session labelled with the
+    /// retired string would otherwise put `pmask` on the thread.
+    #[test]
+    fn tracer_thread_name_never_uses_the_live_pre_mask_comm() {
+        for label in [b"pmask-tracer".as_slice(), b"".as_slice(), b"\0".as_slice()] {
+            for session in [b"".as_slice(), b"pmask-tracer".as_slice(), b" ".as_slice()] {
+                let name = tracer_thread_name(label, session);
+                assert_ne!(name, "pmask", "label={:?} session={:?}", label, session);
+                assert_ne!(name, RETIRED_TRACER_COMM);
+            }
+        }
+    }
+
+    #[test]
+    fn comm_prefix_stays_within_the_kernel_limit() {
+        // Twelve ASCII bytes plus a four-byte character: the 15-byte window
+        // holds three bytes of it.  The lossy decode turns the split
+        // character into one replacement character, which is still 15
+        // bytes, and the name is a valid UTF-8 string the kernel accepts.
+        let mut bytes = b"abcdefghijkl".to_vec(); // 12
+        bytes.extend_from_slice("\u{1F600}".as_bytes()); // 4 bytes, 16 total
+        let name = cut(&bytes);
+        assert!(
+            name.len() <= TRACER_COMM_MAX,
+            "len={} name={:?}",
+            name.len(),
+            name
+        );
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok());
+        // Nothing is silently dropped beyond the cut: the ASCII prefix is
+        // intact and the split character became a single replacement byte.
+        assert!(name.starts_with("abcdefghijkl"));
+    }
+
+    #[test]
+    fn comm_prefix_keeps_a_whole_character_that_fits() {
+        // Eleven ASCII bytes plus a three-byte character is exactly 14, so
+        // the character survives whole.
+        let mut bytes = b"abcdefghijk".to_vec();
+        bytes.extend_from_slice("\u{4e16}".as_bytes()); // 3 bytes, 14 total
+        let name = cut(&bytes);
+        assert_eq!(name, "abcdefghijk\u{4e16}");
+        assert!(name.len() <= TRACER_COMM_MAX);
+    }
+
+    #[test]
+    fn tracer_thread_name_decodes_a_non_utf8_session_comm() {
+        let name = tracer_thread_name(b"", b"\xff\xfe");
+        assert!(name.len() <= TRACER_COMM_MAX);
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok());
+        assert!(!name.is_empty());
     }
 }

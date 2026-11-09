@@ -1,0 +1,21 @@
+pmask=./target/release/pmask
+kernel=6.12.113+deb13-amd64 uid=1000
+supervisor=55286 payload=55289
+--- payload status (TracerPid)
+TracerPid:	55288
+tracer_tid=55288
+--- tracer status (Name/Tgid/Pid)
+Name:	pmask-tracer
+Tgid:	55286
+Pid:	55288
+--- tracer comm
+pmask-tracer
+--- tracer task dirs of supervisor
+55286 b2-38-proc-evid
+55288 pmask-tracer
+--- host-wide sweep for the fixed name
+supervisor: task tid: 55288
+pmask-tracer sightings: 1
+--- payload comm/cmdline
+b2-38-proc-evid|
+b2-38-proc-evid
