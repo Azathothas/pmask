@@ -1,0 +1,12 @@
+=== isolate /bin/sleep 6, sampled at 0.7 s and 2.5 s ===
+ t=0.7:
+   L1 pid=84140 comm=iso-84128 cmdline=[iso-84128|] envb=0 tracer=0
+     L2 pid=84141 comm=sleep cmdline=[/bin/sleep|6|] envb=24
+ t=2.5:
+   L1 pid=84140 comm=iso-84128 cmdline=[iso-84128|] envb=0 tracer=0
+     L2 pid=84141 comm=sleep cmdline=[/bin/sleep|6|] envb=24
+
+=== isolate /bin/sh -c 'sleep 6' ===
+ t=2.0:
+   L1 pid=84287 comm=iso2-84128 cmdline=[iso2-84128|] envb=0 tracer=0
+     L2 pid=84288 comm=sh cmdline=[/bin/sh|-c|sleep 6|] envb=24

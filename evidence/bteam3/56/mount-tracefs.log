@@ -1,0 +1,4 @@
+$ sudo mount -t tracefs tracefs /sys/kernel/tracing
+mount: /sys/kernel/tracing: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+exit=32

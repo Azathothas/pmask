@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fixture: answers like a host with auditing enabled, so the fragment's
+# record-matching logic can be exercised without a kernel that records.
+case "$1" in
+  -s) echo "enabled=1"; echo "failure=0"; echo "pid=1234";;
+  -l) : ;;
+  *) : ;;
+esac
+exit 0

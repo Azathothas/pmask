@@ -1,0 +1,32 @@
+== flags=[--no-dumpable] sup=74839 leaf=74842
+   environ open=denied
+   maps open=denied
+   auxv open=denied
+   exe open=denied
+   fd open=denied
+   denied=5/5 stat48_51=0 0 0 0
+   nspid=[74842] uid=1000	1000	1000	1000
+== flags=[--unshare --no-dumpable] sup=74878 leaf=74882
+   environ open=denied
+   maps open=ok
+   auxv open=denied
+   exe open=ok
+   fd open=denied
+   denied=3/5 stat48_51=140379359236096 140379359236107 140379359236109 140379359236109
+   nspid=[74882	1] uid=1000	1000	1000	1000
+== flags=[--unshare] sup=74933 leaf=74937
+   environ open=ok
+   maps open=ok
+   auxv open=ok
+   exe open=ok
+   fd open=ok
+   denied=0/5 stat48_51=140675516145664 140675516145675 140675516145677 140675516145677
+   nspid=[74937	1] uid=1000	1000	1000	1000
+== flags=[] sup=75249 leaf=75252
+   environ open=ok
+   maps open=ok
+   auxv open=ok
+   exe open=ok
+   fd open=ok
+   denied=0/5 stat48_51=140696388763648 140696388763659 140696388763661 140696388763661
+   nspid=[75252] uid=1000	1000	1000	1000
