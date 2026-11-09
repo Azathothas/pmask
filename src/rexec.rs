@@ -381,61 +381,35 @@ fn ordinary_retry(label: &str, cause: &io::Error) -> io::Result<(RawFd, Option<S
     ))
 }
 
-/// Write `bytes` to `dst`; on error, append the bytes not yet written to
-/// `pending`, so a retry on another carrier replays them instead of
-/// losing them.
-fn write_tracking(dst: RawFd, bytes: &[u8], pending: &mut Vec<u8>) -> io::Result<()> {
-    let mut off = 0;
-    while off < bytes.len() {
-        // SAFETY: `bytes` is a valid readable slice of the length passed.
-        let n = unsafe {
-            libc::write(
-                dst,
-                bytes[off..].as_ptr() as *const libc::c_void,
-                bytes.len() - off,
-            )
-        };
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            pending.extend_from_slice(&bytes[off..]);
-            return Err(err);
-        }
-        if n == 0 {
-            pending.extend_from_slice(&bytes[off..]);
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "image write returned 0",
-            ));
-        }
-        off += n as usize;
-    }
-    Ok(())
+/// Create a hugetlb memfd named after `label`.
+fn huge_memfd(label: &str) -> io::Result<RawFd> {
+    let mut name = sanitize_name(label).into_bytes();
+    name.push(0);
+    memfd(
+        &name,
+        MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_HUGE_2MB,
+    )
 }
 
-/// Copy `src` into `dst`, leaving any bytes read but not written in
-/// `pending`.
-fn copy_tracking(src: RawFd, dst: RawFd, pending: &mut Vec<u8>) -> io::Result<()> {
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let n = read_some(src, &mut buf)?;
-        if n == 0 {
-            return Ok(());
-        }
-        write_tracking(dst, &buf[..n], pending)?;
+/// Copy a seekable source from offset 0.
+fn copy_from_start(src: RawFd, dst: RawFd) -> io::Result<()> {
+    // SAFETY: the source is one of our own memfds.
+    let start = unsafe { libc::lseek(src, 0, libc::SEEK_SET) };
+    if start != 0 {
+        return Err(io::Error::last_os_error());
     }
+    copy_into(src, dst)
 }
 
 /// Copy the bytes readable from `fd` into a sealed image.  The descriptor
 /// is not closed and its offset advances to end of file.
 ///
-/// A hugetlb carrier that fails on its first write falls back to an
-/// ordinary memfd, as [`fill_from`] does: `--hugetlb` never fails a run
-/// for lack of huge pages.  The bytes already read from a source that
-/// cannot rewind (a pipe, a socket) are carried into the retry, so the
-/// fallback does not depend on `lseek`.
+/// A hugetlb carrier that cannot be filled falls back to an ordinary
+/// memfd, as [`fill_from`] does: `--hugetlb` never fails a run for lack of
+/// huge pages.  The bytes go into an ordinary memfd first, because a
+/// source that cannot seek (a pipe, a socket, `--image -`) cannot be read
+/// twice: the spool is what makes the retry possible, and it is the image
+/// itself when the huge pages are refused.
 pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
     let mut magic = [0u8; 4];
     let mut got = 0usize;
@@ -452,40 +426,74 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             "not an ELF image",
         ));
     }
-    let (mut image_fd, mut backing, mut note) = create_image(label, opts.hugetlb)?;
-    let mut pending: Vec<u8> = magic.to_vec();
-    let mut fell_back = false;
-    loop {
-        let this_round = std::mem::take(&mut pending);
-        let outcome = write_tracking(image_fd, &this_round, &mut pending).and_then(|()| {
-            copy_tracking(fd, image_fd, &mut pending)?;
-            seal(image_fd)
-        });
-        match outcome {
-            Ok(()) => {
-                return Ok(Image {
-                    fd: image_fd,
-                    backing,
-                    note,
-                    path: None,
-                })
-            }
-            Err(e) if matches!(backing, Backing::HugeTlb { .. }) && !fell_back => {
-                fell_back = true;
+    let mut name = sanitize_name(label).into_bytes();
+    name.push(0);
+    let spool = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
+        .map_err(|e| with_context(e, "memfd_create refused"))?;
+    let filled = write_all_fd(spool, &magic).and_then(|()| copy_into(fd, spool));
+    if let Err(e) = filled {
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(spool) };
+        return Err(e);
+    }
+    if opts.hugetlb {
+        // A huge memfd can be created while the pool is empty; the copy
+        // then fails part-way.  The spool still holds the whole image, so
+        // the ordinary memfd below is a complete fallback.
+        match huge_memfd(label) {
+            Ok(huge) => {
+                let moved = copy_from_start(spool, huge).and_then(|()| seal(huge));
+                if moved.is_ok() {
+                    // SAFETY: the descriptors are ours.
+                    unsafe { libc::close(spool) };
+                    return Ok(Image {
+                        fd: huge,
+                        backing: Backing::HugeTlb {
+                            page_size: HUGETLB_PAGE,
+                        },
+                        note: None,
+                        path: None,
+                    });
+                }
+                let e = moved.err().unwrap_or_else(io::Error::last_os_error);
                 // SAFETY: the descriptor is ours.
-                unsafe { libc::close(image_fd) };
-                let (retry_fd, retry_note) = ordinary_retry(label, &e)?;
-                image_fd = retry_fd;
-                backing = Backing::Memfd;
-                note = retry_note;
+                unsafe { libc::close(huge) };
+                seal(spool)?;
+                return Ok(Image {
+                    fd: spool,
+                    backing: Backing::Memfd,
+                    note: Some(format!(
+                        "--hugetlb unavailable: {}; using an ordinary memfd",
+                        e
+                    )),
+                    path: None,
+                });
             }
             Err(e) => {
-                // SAFETY: the descriptor is ours.
-                unsafe { libc::close(image_fd) };
-                return Err(e);
+                seal(spool)?;
+                return Ok(Image {
+                    fd: spool,
+                    backing: Backing::Memfd,
+                    note: Some(format!(
+                        "--hugetlb unavailable: {}; using an ordinary memfd",
+                        e
+                    )),
+                    path: None,
+                });
             }
         }
     }
+    if let Err(e) = seal(spool) {
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(spool) };
+        return Err(e);
+    }
+    Ok(Image {
+        fd: spool,
+        backing: Backing::Memfd,
+        note: None,
+        path: None,
+    })
 }
 
 /// Copy an already open source into a fresh image.
