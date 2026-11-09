@@ -29,6 +29,12 @@ That is the defect in the issue.
 - The optional members travel in a third status byte after the Landlock
   counts (`Report::dev_extra`), so the report can count what it got.
   `FRAME_LEN + 3` replaced `FRAME_LEN + 2`.
+- The applied entry now counts: `dev:6+4` is six basic nodes and four
+  optional members. The count and the degradation list read the same bits,
+  so they cannot disagree.
+- A report whose status frame is cut short no longer prints four false
+  "no /dev/..." lines: it says the counts are unknown and marks `dev` as
+  skipped with `EIO`.
 
 `tests/isolation.sh` I8 now expects `pts`, `ptmx` and `shm`, and keeps the
 host-leak control over the nodes that are still not part of the fresh
@@ -37,11 +43,12 @@ host-leak control over the nodes that are still not part of the fresh
 
 ## Evidence
 
-- `qa25.log` — the raw commands and `tests/qa.d/25.sh`, all PASS except one
-  SKIP (this host has every optional member, so the degradation path has no
-  member to name).
+- `qa25.log` — the raw commands and `tests/qa.d/25.sh`, 8 PASS, 0 FAIL,
+  1 SKIP (this host has every optional member, so the degradation path has
+  no member to name).
 - `negative-control.log` — the same fragment against the pre-fix
-  `src/isolate.rs`: q25b, q25c and q25d FAIL.
+  `src/isolate.rs`: q25b, q25c and q25d FAIL; q25f* SKIP because the
+  pre-fix report has no `dev:` entry at all.
 
 ## Doc sentence (for the docs agent; do not edit `man/pmask.1` here)
 
@@ -49,9 +56,10 @@ host-leak control over the nodes that are still not part of the fresh
 > device nodes (`null`, `zero`, `full`, `random`, `urandom`, `tty`), the
 > host's `/dev/pts` and `/dev/ptmx` bound in when the host has them, a
 > private `/dev/shm` of mode 1777, and the `/dev/fd`, `/dev/stdin`,
-> `/dev/stdout` and `/dev/stderr` links. A member the host lacks or the
-> kernel refuses is left out and named in a `pmask: isolation degraded:`
-> line; it never fails the run.
+> `/dev/stdout` and `/dev/stderr` links. The report counts them as
+> `dev:<basic>+<optional>`; a member the host lacks or the kernel refuses
+> is left out and named in a `pmask: isolation degraded:` line, and never
+> fails the run.
 
 ## What could not be tested
 

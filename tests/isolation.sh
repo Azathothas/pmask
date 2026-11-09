@@ -66,11 +66,12 @@ cleanup() {
     # their comm is the suite's own `mkiso...` label.
     kill_comm mkiso KILL 2>/dev/null
     # It does not cover the matrix control payload, which is a plain
-    # `testcases` process and outlived the suite.  The orphan then made
-    # `edge.sh e6-supervisor-selfmask` fail on the next run, because that
-    # case scans every /proc entry for a real argv shape and PMKISO- is
-    # one.  Kill it by the identity the suite recorded (kill_owned also
-    # refuses a recycled pid, so the cleanup cannot hit a stranger).
+    # `testcases` process (comm `testcases`, not `mkiso`) and outlived the
+    # suite.  The orphan then made `edge.sh e6-supervisor-selfmask` fail
+    # on the next run, because that case scans every /proc entry for a
+    # real argv shape and PMKISO- is one.  Kill it by the identity the
+    # suite recorded; `kill_owned` also refuses a recycled pid, so the
+    # cleanup cannot hit a stranger.
     kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
     kill_owned "$MATRIX_PID" "$MATRIX_PID_START"
     kill_owned "$MATRIX_SUP" "$MATRIX_SUP_START"

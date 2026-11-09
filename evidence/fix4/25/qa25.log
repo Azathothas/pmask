@@ -1,9 +1,9 @@
-## issue 25: pty under --isolate
+## issue 25: pty under --isolate, and the applied dev count
 $ ./pmask -q --isolate -- /bin/sh -c "ls /dev/pts; ls -ld /dev/shm; ls /dev"
-pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev:6+4,proc:hidepid2
 0
 ptmx
-drwxrwxrwt 2 root root 40 Nov  9 10:25 /dev/shm
+drwxrwxrwt 2 root root 40 Nov  9 10:44 /dev/shm
 fd
 full
 null
@@ -19,7 +19,7 @@ urandom
 zero
 rc=0
 $ ./pmask -q --isolate -- python3 -c "import pty; pty.openpty(); print(\"PTY OK\")"
-pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev:6+4,proc:hidepid2
 PTY OK
 rc=0
 --- tests/qa.d/25.sh ---
@@ -29,7 +29,9 @@ PASS q25b-pty-openpty-works-under-isolate
 PASS q25c-dev-pts-is-non-empty-under-isolate (entries=2)
 PASS q25d-dev-shm-is-a-1777-directory
 PASS q25e-basic-nodes-and-stdio-links-are-usable
-PASS q25f-report-does-not-disclaim-a-present-member
+PASS q25f-report-counts-the-basic-nodes (dev:6+4)
+PASS q25f2-report-counts-the-optional-members (4/4)
+PASS q25f3-report-does-not-disclaim-a-present-member
 SKIP q25g-degradation-is-named-for-a-missing-member (this host has /dev/pts, /dev/ptmx and /dev/shm)
 ################ qa25: PASS
 rc=0
