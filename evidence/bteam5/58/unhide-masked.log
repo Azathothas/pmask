@@ -1,0 +1,28 @@
+Unhide 20240509
+Copyright © 2010-2024 Yago Jesus & Patrick Gouin
+License GPLv3+ : GNU GPL version 3 or later
+http://www.unhide-forensics.info
+
+NOTE : This version of unhide is for systems using Linux >= 2.6 
+
+Used options: 
+[*]Searching for Hidden processes through /proc stat scanning
+
+[*]Searching for Hidden processes through getpriority() scanning
+
+[*]Searching for Hidden processes through getpgid() scanning
+
+[*]Searching for Hidden processes through getsid() scanning
+
+[*]Searching for Hidden processes through sched_getaffinity() scanning
+
+[*]Searching for Hidden processes through sched_getparam() scanning
+
+[*]Searching for Hidden processes through sched_getscheduler() scanning
+
+[*]Searching for Hidden processes through sched_rr_get_interval() scanning
+
+[*]Searching for Hidden processes through kill(..,0) scanning
+
+[*]Searching for Hidden processes through  comparison of results of system calls
+

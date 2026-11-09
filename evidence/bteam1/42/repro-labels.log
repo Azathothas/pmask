@@ -1,0 +1,20 @@
+== label 254
+cmdline=255 commbytes=16 commlen=16
+== label 255
+pmask: warning: label is 255 bytes; the exec entry scratch keeps the first 254 bytes until the exec completes, and the settled /proc/<pid>/cmdline carries the whole label unless the kernel refuses the window relocation
+cmdline=256 commlen=16
+== comm 15
+commbytes=16 cmdline=16
+== comm 16
+pmask: /workspace/wt/bteam1/target/release/pmask-testcases: comm must be at most 15 bytes
+rc=255
+== -l-
+cmdline=2
+0000000      \0
+0000002
+comm=[ ]
+== --label-empty
+cmdline=1
+0000000  \0
+0000001
+commbytes=2

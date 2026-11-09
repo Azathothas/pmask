@@ -109,21 +109,44 @@ Measured on the `sleep` child:
 | observable | value |
 | --- | --- |
 | `ps -o comm,args` | `ci-runner       ci-runner` |
-| `stat` 48/49 span | 11 |
-| `cmdline` bytes | 11 (`ci-runner` then zeros) |
-| `environ` bytes | 37, all zero |
+| `stat` 48/49 span | 10 |
+| `cmdline` bytes | 10 (`ci-runner` then NUL) |
+| `environ` bytes | 0 |
 | byte at `arg_end - 1` | `0x00` |
 | `comm` | `ci-runner` |
 | `exe` | `/usr/bin/sleep` |
-| `AT_EXECFN` | in `auxv`, pointing into `[stack]` |
+| `AT_EXECFN` | in `auxv`, at the second label copy, equal to `env_end` |
 | VMA of `arg_start` | `[stack]` |
-| `/bin/sleep` string still in `[stack]` | yes, at offset 135149 |
+| `/bin/sleep` string still in `[stack]` | yes |
 
 `[observed]`
 
-That is the mode 1 shape plus `environ` zeroed in place and `comm` set: span
-still on `[stack]`, last byte zero, original string still in stack memory.
-`comm` versus `exe` is the observable that survives.
+That is the relocation shape plus `comm` set. `PR_SET_MM_MAP` moved
+`arg_start`/`arg_end` onto a 10-byte block and collapsed the environment
+window, so the span equals the `cmdline` length and `environ` reads 0 bytes.
+The block's page still reads `[stack]` because the relocation moves
+`start_stack` with it, and the original `/bin/sleep` string is still in the
+payload's stack memory. `comm` versus `exe` is the observable that survives.
+
+Re-measured for this document on Debian 13, kernel `6.12.113+deb13-amd64`,
+uid 1000, `CapEff 0000000000000000`, with
+`./target/release/pmask -q -l ci-runner -- /bin/sleep 8` and the child read
+0.5 s in:
+
+```
+cmdline_bytes=10 environ_bytes=0 stat_span=10 comm=ci-runner
+auxv AT_EXECFN=env_end (delta 0), execfn-arg_start=12 for argc=2
+maps: arg_start and AT_EXECFN in a [stack] mapping
+/proc/<pid>/mem: b"/bin/sleep\0" found in [stack] and in an anon mapping
+```
+
+The earlier table recorded `environ` as 37 bytes, all zero. That was a build
+that zeroed the environment in place instead of collapsing the window; the
+current build reads 0 bytes, and the row above is the current measurement.
+The span and `cmdline` values are 10, not 11: the label is 9 bytes, so
+`arg_end = base + 9 + 1` and `cmdline` is the label plus one NUL. The
+measurement commands are in `evidence/docs2/measured-shape.log`,
+`measured-auxv.log` and `measured-stack-string.log`.
 
 ## 3. The relocation recipe and where it fails
 
@@ -216,7 +239,9 @@ leaves the whole environment readable.
 * One kernel, uid, libc, page size and architecture. Numbers differ on a kernel
   before 5.3, where the setproctitle special case is absent, and on any host
   with `hidepid` set. `[inferred]`
-* `TracerPid` was 0 in every run; nothing here measures a traced process.
+* The harness table above measures no traced process: `TracerPid` was 0 in
+every mode 0 to 4 run. The pmask section records its own `TracerPid`
+separately.
 * The same-uid memory read that recovers the original strings is in
   `detection-residue.md`, not here.
 * `environ` readability depends on `PTRACE_MODE_READ_FSCREDS`. Only uid 1000 was

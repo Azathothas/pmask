@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa6-control-a-verb-without-a-passphrase-prompts (rc=255)
+FAIL qa6-store-help---help (rc=255 out=[] err=[pmask: no terminal to ask for a passphrase; use --passphrase-file PATH or PMASK_PASSPHRASE_FILE])
+FAIL qa6-store-help--h (rc=255 out=[] err=[pmask: no terminal to ask for a passphrase; use --passphrase-file PATH or PMASK_PASSPHRASE_FILE])
+FAIL qa6-get-help---help (rc=1 out=[] err=[pmask: no agent socket is configured: set XDG_RUNTIME_DIR or PMASK_SOCKET, or pass --socket PATH])
+FAIL qa6-get-help--h (rc=1 out=[] err=[pmask: no agent socket is configured: set XDG_RUNTIME_DIR or PMASK_SOCKET, or pass --socket PATH])
+FAIL qa6-unknown-verb-refused (rc=255 err=[pmask: no terminal to ask for a passphrase; use --passphrase-file PATH or PMASK_PASSPHRASE_FILE])
+FAIL qa6-unknown-store-option-named (rc=255 err=[pmask: no terminal to ask for a passphrase; use --passphrase-file PATH or PMASK_PASSPHRASE_FILE])
+PASS qa6-help-after-the-verb
+== VERDICT: FAIL=6 ==

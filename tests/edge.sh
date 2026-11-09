@@ -203,15 +203,25 @@ real_argv_shapes() {  # text -> 0 when the text is a real argv of this tree
     return 1
 }
 
-# control: without pmask the probe's own name IS in a cmdline
-"$CASES" sleeper >/dev/null 2>&1 &
+# control: without pmask the probe's own name IS in a cmdline.  Two
+# details make this a control rather than a coin flip on a loaded host:
+# `sleeper` takes no argument, so the argv is `<path>/testcases sleeper`
+# (a bare `sleeper` is accepted and leaves argv[0] alone), and the scan
+# matches the case's own `$CASES` path, not the word `testcases`, so a
+# probe from another checkout cannot satisfy it.
+"$CASES" sleeper QAMARK-CTL >/dev/null 2>&1 &
 CTL_PID=$!
-sleep 0.3
 ctl=0
-for d in /proc/[0-9]*; do
-    case "$(visible_cmdline "${d#/proc/}")" in
-        *testcases*) ctl=1; break ;;
-    esac
+ctl_i=0
+while [ "$ctl_i" -lt 40 ]; do
+    for d in /proc/[0-9]*; do
+        case "$(visible_cmdline "${d#/proc/}")" in
+            "$CASES"*) ctl=1; break ;;
+        esac
+    done
+    [ "$ctl" = 1 ] && break
+    sleep 0.05 2>/dev/null || sleep 1
+    ctl_i=$((ctl_i + 1))
 done
 kill "$CTL_PID" 2>/dev/null
 # reap the control before the masked run scans: a SIGTERM in flight is

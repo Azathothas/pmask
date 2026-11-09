@@ -1,0 +1,174 @@
+################ qa: qa.d/10.sh
+    Finished `release` profile [optimized] target(s) in 0.06s
+PASS qa10-plain-notes---comm
+PASS qa10-plain-notes---argv0
+PASS qa10-plain-notes---no-exact
+PASS qa10-plain-notes---detach
+PASS qa10-plain-notes---watch-rename
+PASS qa10-plain-notes---rexec
+PASS qa10-plain-notes---exec-once
+PASS qa10-plain-notes---hugetlb
+PASS qa10-plain-notes---on-exit
+PASS qa10-plain-notes---no-follow
+PASS qa10-plain-notes---unshare
+PASS qa10-plain-notes---no-new-privs
+PASS qa10-isolate-notes---comm
+PASS qa10-control-redact-mode-has-no-dropped-notes
+PASS qa10-report-json-is-produced
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/13.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa13-probe-with-denied-ptrace-exits-zero
+PASS qa13-exact-row-is-na [  exact cmdline window     n/a          prctl(PR_SET_MM_MAP) works here, but there is no redaction for it to make exact; the row is unused without a redaction mode]
+PASS qa13-exact-row-explains
+PASS qa13-exact-row-is-present
+PASS qa13-doctor-exact-degraded (exit 3)
+PASS qa13-doctor-exact-json (exit=3)
+PASS qa13-control-redaction-active-keeps-the-row [  exact cmdline window     active       ]
+PASS qa13-control-doctor-exact-ok (exit 0)
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/14.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa14-n1-control-redact-names-the-program
+PASS qa14-n1-plain-names-the-program (rc=255)
+PASS qa14-n1-isolate-names-the-program (rc=126)
+PASS qa14-n2-long-comm-refused-redact
+PASS qa14-n2-long-comm-refused-plain
+PASS qa14-n2-long-comm-refused-isolate
+PASS qa14-n3-keep-env-space-form-before-a-command-is-refused
+PASS qa14-n3-control-bare-keep-env-keeps-everything
+PASS qa14-n3-control-inline-form-keeps-one-name
+PASS qa14-n4-args-from-fd-names-the-value
+PASS qa14-n4-image-from-fd-names-the-value
+PASS qa14-n5-help-short-is-smaller (short=3237 full=13596)
+PASS qa14-n5-help-short-lists-the-options
+PASS qa14-n5-help-topic-isolate
+PASS qa14-n5-unknown-topic-is-refused
+PASS qa14-n6-examples-name-ptrace
+PASS qa14-n7-verbose-lines-carry-a-timestamp ([pmask 4181767 +0.002813s] pid 4181770: )
+PASS qa14-n8-vm-run-builds-offline
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/19.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa19-control-host-ns (net=net:[4026532667] pid=pid:[4026532664])
+PASS qa19-net-private (inside=net:[4026533016] host=net:[4026532667])
+PASS qa19-pid-is-the-host (pid:[4026532664])
+PASS qa19-cmdline-is-exactly-the-label
+PASS qa19-environ-empty
+PASS qa19-unshare-control-creates-a-pid-namespace (pid:[4026532739])
+PASS qa19-refused-namespace-set-is-reported
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/20.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa20-run-exits-zero
+PASS qa20-mode-is-isolate
+PASS qa20-user-namespace-private (inside=user:[4026532883] host=user:[4026532593])
+PASS qa20-note-names-the-pair
+PASS qa20-control-plain-keeps-the-host-user-ns (user:[4026532593])
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/21.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa21-plain-run-exits-zero
+PASS qa21-plain-reports-dumpable
+PASS qa21-note-says-not-applied
+PASS qa21-plain-payload-is-dumpable (PR_GET_DUMPABLE=1)
+PASS qa21-redact-honours-the-request (payload_dumpable=false)
+PASS qa21-redact-payload-is-not-dumpable (PR_GET_DUMPABLE=0)
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/26.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa26-run-exits-zero
+PASS qa26-no-new-privs (NoNewPrivs=0)
+PASS qa26-host-user-namespace (user:[4026532593])
+PASS qa26-host-mount-namespace (mnt:[4026532659])
+PASS qa26-no-isolation-line
+PASS qa26-note-names-the-choice
+PASS qa26-control-isolate-all-changes-both (nnp=1 user=user:[4026532739])
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/27.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa27-payload-still-runs (exit 7 passed through)
+PASS qa27-quiet-isolate
+PASS qa27-quiet-isolate-no-degradation-lines
+PASS qa27-quiet-redact-isolate
+PASS qa27-control-not-quiet-prints-the-line
+PASS qa27-control-quiet-mask-summary
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/30.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa30-control-a-valid-env-pair-is-accepted
+PASS qa30-redact-refuses-an-empty-key
+PASS qa30-plain-refuses-an-empty-key
+PASS qa30-isolate-refuses-an-empty-key
+PASS qa30-message-names-the-empty-key
+PASS qa30-env-file-still-refuses-an-empty-key
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/32.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa32-host-plain-audit-refused (exit 255)
+PASS qa32-refusal-names-the-mode
+PASS qa32-refusal-names-the-reason
+PASS qa32-no-audit-rows-before-the-refusal
+PASS qa32-explicit-plain-refused
+PASS qa32-isolate-refused
+PASS qa32-control-redact-audit-ok
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/34.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+INFO qa34-wrapper: real seccomp filter
+PASS qa34-session-still-fails (exit 255)
+PASS qa34-error-names-the-reason (pmask: cannot redact here: ptrace is banned by a seccomp filter here; command lines stay visible)
+PASS qa34-error-points-at-secret
+PASS qa34-keeps-the-session-error-line
+PASS qa34-secret-run-still-works (the advice is true)
+PASS qa34-control-the-unfiltered-host-redacts
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/36.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa36-f17-report-text-refused
+PASS qa36-f17-report-text-names-the-default
+PASS qa36-f17-report-plain-refused
+PASS qa36-f17-report-plain-names-the-default
+PASS qa36-f17-control-json-still-accepted
+PASS qa36-f22-daemon-refuses-image
+PASS qa36-f22-man-daemon-section-names-image
+PASS qa36-f22-man-daemon-section-is-present
+PASS qa36-f25-missing-secret-is-one (exit 1)
+PASS qa36-f25-usage-error-is-255 (exit 255)
+PASS qa36-f25-control-store-get-works
+PASS qa36-f25-man-documents-the-convention
+PASS qa36-f27-help-says-NAME
+PASS qa36-f27-help-drops-the-N-spelling
+PASS qa36-f27-man-says-NAME
+PASS qa36-f27-code-and-help-agree
+PASS qa36-f28-help-names-the-argv0-placeholder
+PASS qa36-f28-man-names-the-argv0-placeholder
+PASS qa36-f28-argv0-can-override-the-placeholder
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/6.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa6-control-a-verb-without-a-passphrase-prompts (rc=255)
+PASS qa6-store-help---help
+PASS qa6-store-help--h
+PASS qa6-get-help---help
+PASS qa6-get-help--h
+PASS qa6-unknown-verb-refused-before-the-passphrase
+PASS qa6-unknown-store-option-named
+PASS qa6-help-after-the-verb
+== VERDICT: FAIL=0 ==
+################ qa: qa.d/9.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa9-control-stdout-carries-the-payload-first
+PASS qa9-control-interleaving-breaks-json
+PASS qa9-report-file-run-exits-zero
+PASS qa9-report-file-parses
+PASS qa9-report-file-keeps-payload
+PASS qa9-report-file-carries-the-mode
+PASS qa9-report-fd-run-exits-zero
+PASS qa9-report-fd-parses
+PASS qa9-report-fd-keeps-payload
+PASS qa9-bad-path-refused
+PASS qa9-bad-fd-refused
+PASS qa9-no-report-without-flag
+== VERDICT: FAIL=0 ==
+################ QA: PASS cases=14

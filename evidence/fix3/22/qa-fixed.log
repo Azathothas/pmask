@@ -1,0 +1,9 @@
+PASS qa22-control-ordinary-job (rc=4 passes through)
+PASS qa22-sigterm-with-silent-client (0s)
+PASS qa22-daemon-exit-zero (rc=0)
+PASS qa22-socket-removed
+PASS qa22-client-unblocked (closed=yes elapsed=0.78)
+PASS qa22-worker-model-unaffected (jobs=2 stopped)
+PASS qa22-io-timeout-drops-stall (2s)
+PASS qa22-daemon-serves-after-drop
+== VERDICT: 0 failure(s) ==

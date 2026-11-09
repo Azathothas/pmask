@@ -1,0 +1,64 @@
+# Issue 8 evidence: completions miss seven flags
+
+Date: 2026-11-09T10:16:23Z  host: Linux 6.12.113+deb13-amd64 x86_64  uid: 1000  cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+
+## Baseline (before the fix): every long option the parser accepts
+
+```
+FAIL pmask-pmask.bash-missing-long-options: --no-exitkill --image --image-from-fd --exec-once --hugetlb --rexec-allow-disk --redact --audit
+       absent from completions/pmask.bash: --no-exitkill
+       absent from completions/pmask.bash: --image
+       absent from completions/pmask.bash: --image-from-fd
+       absent from completions/pmask.bash: --exec-once
+       absent from completions/pmask.bash: --hugetlb
+       absent from completions/pmask.bash: --rexec-allow-disk
+       absent from completions/pmask.bash: --redact
+       absent from completions/pmask.bash: --audit
+PASS pmask-pmask.fish-all-40-long-options-are-offered
+PASS pmask-_pmask-all-40-long-options-are-offered
+FAIL pmask-pmask.bash-missing-short-options: -f -c
+       absent from completions/pmask.bash: -f
+       absent from completions/pmask.bash: -c
+PASS pmask-pmask.bash-offers-nothing-the-parser-refuses
+PASS pmaskd-pmaskd.bash-all-16-long-options-are-offered
+PASS pmaskd-pmaskd.fish-all-16-long-options-are-offered
+PASS pmaskd-_pmaskd-all-16-long-options-are-offered
+PASS pmaskd-pmaskd.bash-all-7-short-options-are-offered
+PASS pmaskd-pmaskd.bash-offers-nothing-the-parser-refuses
+PASS syntax-pmask.bash
+PASS syntax-pmaskd.bash
+== COMPLETIONS: FAIL=2 ==
+[exit 1]
+```
+
+## Plant test: remove one flag from the fixed table, guard must fail
+
+Each iteration deletes the flag from completions/pmask.bash, runs the
+guard, and restores the file.
+
+```
+plant --image -> guard FAIL (exit 1), names --image: OK
+plant --image-from-fd -> guard FAIL (exit 1), names --image-from-fd: OK
+plant --exec-once -> guard FAIL (exit 1), names --exec-once: OK
+plant --hugetlb -> guard FAIL (exit 1), names --hugetlb: OK
+plant --rexec-allow-disk -> guard FAIL (exit 1), names --rexec-allow-disk: OK
+plant --redact -> guard FAIL (exit 1), names --redact: OK
+PLANT FAILED: could not remove --audit
+plant --no-exitkill -> guard FAIL (exit 1), names --no-exitkill: OK
+plant -c -> guard FAIL (exit 1), names -c: OK
+plant -f -> guard FAIL (exit 1), names -f: OK
+
+after restore:
+PASS syntax-pmaskd.bash
+== COMPLETIONS: FAIL=0 ==
+[exit 0]
+```
+
+### plant --audit (retest, line-start form)
+
+```
+sed 's/^--audit //' completions/pmask.bash
+FAIL pmask-pmask.bash-missing-long-options: --audit
+       absent from completions/pmask.bash: --audit
+[exit 1; restored file then exit 0]
+```

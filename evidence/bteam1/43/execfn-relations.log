@@ -1,0 +1,13 @@
+# AT_EXECFN relations across modes: is it env_end, or 1+label+argc?
+# kernel 6.12.113+deb13-amd64 uid 1000
+
+exact,label4       argc=3 label=? arg_start=140669539422208 arg_end=140669539422213 env_start=140669539422216 env_end=140669539422216 AT_EXECFN=140669539422216
+                     ptr-arg_start=8 (1+label+argc)  env_end-ptr=0  served=abcd
+exact,label12      argc=3 label=? arg_start=139892161134592 arg_end=139892161134605 env_start=139892161134608 env_end=139892161134608 AT_EXECFN=139892161134608
+                     ptr-arg_start=16 (1+label+argc)  env_end-ptr=0  served=abcdefghijkl
+keep-env,label4    argc=3 label=? arg_start=139891444633600 arg_end=139891444633605 env_start=140731932532657 env_end=140731932532676 AT_EXECFN=139891444633608
+                     ptr-arg_start=8 (1+label+argc)  env_end-ptr=840487899068  served=abcd
+keep-env,label12   argc=3 label=? arg_start=139733903212544 arg_end=139733903212557 env_start=140737409040305 env_end=140737409040324 AT_EXECFN=139733903212560
+                     ptr-arg_start=16 (1+label+argc)  env_end-ptr=1003505827764  served=abcdefghijkl
+no-exact,label4    argc=3 label=? arg_start=140727549206460 arg_end=140727549206467 env_start=140727549206467 env_end=140727549206468 AT_EXECFN=140727549206468
+                     ptr-arg_start=8 (1+label+argc)  env_end-ptr=0  served=/workspace/wt/bteam1/target/release/pmask-testcases

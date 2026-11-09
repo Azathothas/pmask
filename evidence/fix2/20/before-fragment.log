@@ -1,0 +1,7 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa20-run-exits-zero
+FAIL qa20-mode-is-isolate (mode=[plain])
+FAIL qa20-user-namespace-private (inside=[user:[4026532593]] host=[user:[4026532593]]: the isolation was dropped)
+FAIL qa20-note-names-the-pair (notes: user:[4026532593]|{|  "mode": "plain",|  "mode_reason": "forced",|  "ptrace": true,|  "payload_dumpable": true,|  "hardening": "heap",|  "exit": {"code": 0, "signal": null},|  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed": 0},|  "secrets": )
+PASS qa20-control-plain-keeps-the-host-user-ns (user:[4026532593])
+== VERDICT: FAIL=3 ==

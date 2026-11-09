@@ -7,11 +7,13 @@ _pmask() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     opts="-l --label --label-empty --argv0 --comm --keep-env --env --env-file \
---args-from-fd --on-exit --no-follow --no-exit-kill --no-dumpable \
+--args-from-fd --on-exit --no-follow --no-exit-kill --no-exitkill --no-dumpable \
 --no-new-privs --no-exact --detach --watch-rename --rexec --unshare \
---scope-name --daemon --secret --socket --isolate --no-redact \
---allow-argv-secret --secret-burn --secret-close-on-exec --report \
--q --quiet -v --verbose -V --version -h --help -a -E -F -K"
+--image --image-from-fd --exec-once --hugetlb --rexec-allow-disk \
+--scope-name --daemon --secret --socket --isolate --redact --no-redact \
+--audit --allow-argv-secret --secret-burn --secret-close-on-exec --report \
+--report-file --report-fd --secret-fd-name --memfd-name \
+-q --quiet -v --verbose -V --version -h --help -a -E -F -K -f -c"
 
     if [ "$COMP_CWORD" -eq 1 ] && [[ "$cur" != -* ]]; then
         COMPREPLY=( $(compgen -W "run store agent get read probe doctor help version" -- "$cur") )
@@ -27,12 +29,22 @@ _pmask() {
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
+        --image)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        --image-from-fd|--args-from-fd)
+            COMPREPLY=()
+            return 0
+            ;;
         --on-exit)
             COMPREPLY=( $(compgen -W "detach wait kill" -- "$cur") )
             return 0
             ;;
         --report)
-            COMPREPLY=( $(compgen -W "json text plain" -- "$cur") )
+            # Only `json` is documented and only `json` is meaningful: the
+            # other two spellings were accepted and did nothing (issue #36).
+            COMPREPLY=( $(compgen -W "json" -- "$cur") )
             return 0
             ;;
         --env)

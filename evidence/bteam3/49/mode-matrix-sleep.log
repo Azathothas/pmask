@@ -1,0 +1,10 @@
+== mode=default flags=[] sup=56883
+ child=56886 comm=qa49b-56882 cmdline=qa49b-56882| tracer=56885 nspid=56886 hidepid=0
+
+== mode=unshare flags=[--unshare] sup=56960
+ child=56964 comm=qa49b-56959 cmdline=qa49b-56959| tracer=56963 nspid=56964	1 hidepid=1
+
+pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+== mode=isolate flags=[--isolate] sup=57034
+ child=57044 comm=qa49b-57033 cmdline=qa49b-57033| tracer=0 nspid=57044 hidepid=1
+  grandchild=57045 comm=sleep cmdline=/bin/sleep|5| nspid=57045	1

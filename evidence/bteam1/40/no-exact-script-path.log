@@ -1,0 +1,2 @@
+# post-exec (script) path, --no-exact, 3x40-byte args, label qa40-seventeenbyt (17 bytes)
+cmdline_bytes=142 cmdline_nuls=125 spans=142 19

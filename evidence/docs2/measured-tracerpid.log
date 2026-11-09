@@ -1,0 +1,10 @@
+== default
+payload=2062322 tracerpid=2062321 sup=2062315
+sup_comm=proc-evid sup_threads=2
+tracer_comm=pmask-tracer
+tracer_Name: pmask-tracer
+tracer_Tgid: 2062315
+tracer_Pid: 2062321
+readdir_has_tracer=0
+== detach
+payload=2064082 tracerpid=0

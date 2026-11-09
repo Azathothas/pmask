@@ -1,0 +1,68 @@
+pmask on-disk footprint
+  uid=1000 host=Linux 6.12.113+deb13-amd64 date=2026-11-09T11:07:49Z
+
+store
+  source                     pmask store path
+  path                       /state/kage/pmask/store.enc
+  mode size                  absent absent
+  magic                      no file, so nothing to read
+  directory mode             absent
+  lock mode size             absent absent
+
+sockets
+  daemon default             /run/user/1000/pmask.sock
+  daemon as root             /run/pmask.sock
+  agent                      --socket PATH, default /run/user/1000/pmask.sock
+  present                    /run/user/1000 does not exist
+  /proc/net/unix             no pmask entry
+
+live memfd names
+  present                    none (no live pmask session of uid 1000)
+
+exec-once carrier
+  present                    none (transient: only a live session has one)
+
+packaging
+  tmpfiles                   contrib/tmpfiles.d/pmask.conf
+    'd' lines                1
+    'f' lines                0
+    'w' lines                0
+    verdict                  no f line; store init creates the file itself
+  sysusers                   contrib/sysusers.d/pmask.conf
+    creates                  u pmask - "pmask secret holder" /var/lib/pmask 
+
+release binary fingerprint
+  target/x86_64-unknown-linux-musl/release/pmask
+    mode size                755 1132808
+    elf type                 DYN (Position-Independent Executable file)
+    linkage                  static
+    .comment                 present
+      contents               rustc version 1.99.1 (58cf8f9c3 2026-10-13);Linker: LLD 23.1.1 (/checkout/src/llvm-project/llvm 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145);GCC: (GNU) 9.4.0
+    build id                 absent
+    pmask strings            5 of 6 (a YARA rule needs 3 plus the .comment)
+  target/x86_64-unknown-linux-musl/release/pmaskd
+    mode size                755 749320
+    elf type                 DYN (Position-Independent Executable file)
+    linkage                  static
+    .comment                 present
+      contents               rustc version 1.99.1 (58cf8f9c3 2026-10-13);Linker: LLD 23.1.1 (/checkout/src/llvm-project/llvm 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145);GCC: (GNU) 9.4.0
+    build id                 absent
+    pmask strings            2 of 6 (a YARA rule needs 3 plus the .comment)
+  target/release/pmask
+    mode size                755 1031648
+    elf type                 DYN (Position-Independent Executable file)
+    linkage                  dynamic
+    .comment                 present
+      contents               GCC: (Debian 14.2.0-19) 14.2.0;rustc version 1.99.1 (58cf8f9c3 2026-10-13);Linker: LLD 23.1.1 (/checkout/src/llvm-project/llvm 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145)
+    build id                 present
+    pmask strings            5 of 6 (a YARA rule needs 3 plus the .comment)
+  target/release/pmaskd
+    mode size                755 648728
+    elf type                 DYN (Position-Independent Executable file)
+    linkage                  dynamic
+    .comment                 present
+      contents               GCC: (Debian 14.2.0-19) 14.2.0;rustc version 1.99.1 (58cf8f9c3 2026-10-13);Linker: LLD 23.1.1 (/checkout/src/llvm-project/llvm 1b9c0d5ff9bbe7634aead059efe6b11a7eeba145)
+    build id                 present
+    pmask strings            2 of 6 (a YARA rule needs 3 plus the .comment)
+
+== ARTIFACTS: report complete ==

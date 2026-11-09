@@ -61,6 +61,166 @@ fn warn_daemon_options(opts: &[&'static str], quiet: bool) {
     );
 }
 
+/// The secret names whose source puts the value where `/proc` shows it.
+fn plain_sight_secrets(cli: &cli::Cli) -> Vec<(&str, &str)> {
+    cli.secrets
+        .iter()
+        .filter(|(_, src)| src.is_in_plain_sight())
+        .map(|(name, src)| {
+            (
+                name.as_str(),
+                match src {
+                    pmask::secret::Source::Literal(_) => "literal:",
+                    pmask::secret::Source::Env(_) => "env:",
+                    _ => "a plain-sight source",
+                },
+            )
+        })
+        .collect()
+}
+
+/// `PMASK_NO_SELFMASK` is a documented debugging escape: it leaves this
+/// process's own argv, environment and `comm` readable.
+///
+/// Measured (`evidence/bteam1/39/window-measure.log`): the escape is
+/// honoured on the plain path, and overridden on every path that runs the
+/// secret-side runner — the redact and isolate branches of `run` apply
+/// the self-mask unconditionally after the fork.  So the exposure is
+/// "for the whole run" in plain mode and "until the self-mask runs" in
+/// redact mode, and the warning must say which, or it is a claim the
+/// measurement refutes.
+///
+/// In plain mode the value stays in this process's argv for the whole
+/// run.  On a host whose audit subsystem answers, the supervisor's own
+/// exec is also written to the audit log, so the exposure becomes a
+/// durable record; that combination is refused unless
+/// `--allow-argv-secret` accepts it.  Where audit is blocked
+/// (containers, most CI sandboxes) a refusal would only make the
+/// documented escape unusable, so the run warns instead.  The warning
+/// ignores `-q`: a quiet run that publishes a secret is the silent
+/// degradation invariant 13 forbids.
+fn check_no_selfmask(cli: &cli::Cli, no_selfmask: bool) {
+    if !no_selfmask {
+        return;
+    }
+    let exposed = plain_sight_secrets(cli);
+    if exposed.is_empty() {
+        return;
+    }
+    let named: Vec<String> = exposed
+        .iter()
+        .map(|(name, kind)| format!("'{}' ({})", name, kind))
+        .collect();
+    let list = named.join(", ");
+    // The generic `literal:`/`env:` warning in the parser already named
+    // the source and the ways out when it will be printed for this run
+    // (it is suppressed by `-q` and by `--daemon`).  This warning then
+    // adds only what that one cannot say, which is the escape and its
+    // window; repeating the source and the advice would be one exposure
+    // described twice.
+    let generic_shown = !cli.quiet && cli.daemon.is_none();
+    let advice = if generic_shown {
+        ""
+    } else {
+        "; keep the command out of the supervisor's argv with --args-from-fd, or use \
+         file:PATH or agent:NAME"
+    };
+    // The same selection rule `run` uses, so the message describes the
+    // mode this invocation will actually take.
+    let mut runner = pmask::run::Runner::new();
+    if cli.no_redact {
+        runner = runner.no_redaction();
+    }
+    if let Some(iso) = cli.isolate {
+        runner = runner.isolate(iso);
+    }
+    let mode = runner.mode();
+    if mode != pmask::run::Mode::Plain {
+        eprintln!(
+            "pmask: warning: PMASK_NO_SELFMASK=1 is overridden in {} mode: the supervisor masks \
+             its own /proc entry after the fork, so secret {} is readable in its argv or \
+             environment only until then, not for the whole run{}",
+            mode.as_str(),
+            list,
+            advice
+        );
+        return;
+    }
+    if !cli.allow_argv_secret && pmask::caps::kernel_audit_reachable() {
+        eprintln!(
+            "pmask: PMASK_NO_SELFMASK=1 with secret {} leaves the value in this process's own \
+             argv or environment for the whole run ({} mode does not mask it), and this host's \
+             audit subsystem is reachable, so the supervisor's exec is also written to the audit \
+             log; drop PMASK_NO_SELFMASK, use file:PATH or agent:NAME, or pass \
+             --allow-argv-secret to run anyway",
+            list,
+            mode.as_str()
+        );
+        std::process::exit(255);
+    }
+    eprintln!(
+        "pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for \
+         the whole run in {} mode, so secret {} is in its argv or environment the entire time; \
+         every local account can read it{}",
+        mode.as_str(),
+        list,
+        advice
+    );
+}
+
+/// `--keep-env` and `--keep-env=NAME` leave `/proc/<pid>/environ` visible
+/// on purpose.  An `env:` secret source reads its value from the
+/// environment, so those two asks contradict each other: the operator
+/// asked to hide the value and to publish the place it lives.
+///
+/// Only `env:` is warned about, and that is a measurement, not a
+/// simplification: the payload's environment carries the variable itself
+/// plus `PMASK_SECRET_<NAME>=<fd>`, never a `literal:` value (see
+/// `evidence/bteam1/41/`).  A `literal:` value lives in the supervisor's
+/// own argv, which the self-mask removes; `--keep-env` does not publish
+/// it, so warning there would be false.
+///
+/// The variables are still kept.  This is a warning, not a refusal:
+/// keeping them is the documented behaviour of the flag.
+fn warn_keep_env_secret(cli: &cli::Cli) {
+    if !cli.keep_env_all && cli.keep_env_names.is_empty() {
+        return;
+    }
+    let exposes: Vec<String> = {
+        let mut v = Vec::new();
+        for (name, src) in &cli.secrets {
+            let pmask::secret::Source::Env(var) = src else {
+                continue;
+            };
+            let kept = cli.keep_env_all
+                || cli
+                    .keep_env_names
+                    .iter()
+                    .any(|n| n.as_bytes() == var.as_bytes());
+            if kept {
+                v.push(format!("'{}' (env:{})", name, var));
+            }
+        }
+        v
+    };
+    if exposes.is_empty() {
+        return;
+    }
+    let scope = if cli.keep_env_all {
+        "the whole inherited environment".to_string()
+    } else {
+        cli.keep_env_names.join(",")
+    };
+    eprintln!(
+        "pmask: warning: --keep-env publishes /proc/<pid>/environ, and secret {} takes its value \
+         from a variable this run keeps visible, so the value is readable there for the whole run \
+         ({} stays visible); drop --keep-env, or use file:PATH or agent:NAME, which deliver over a \
+         descriptor",
+        exposes.join(", "),
+        scope
+    );
+}
+
 /// Re-exec once through `systemd-run --scope`.  The re-exec argv has no
 /// `--scope-name`, so the second run cannot take this path again.
 fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) {
@@ -98,10 +258,13 @@ fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) 
 /// The secret side of a local run: descriptor delivery, isolation, or a
 /// forced plain exec.  Every mask option parsed from the command line is
 /// handed to the session as-is, so `--secret` composes with `--comm`,
-/// `--rexec`, `--unshare`, `--no-dumpable` and the rest.
+/// `--rexec`, `--unshare`, `--no-dumpable` and the rest.  Options the
+/// selected mode cannot apply are named in the run report.
 fn run_with_secrets(cli: cli::Cli) -> i32 {
     use pmask::run::{Mode, Runner};
-    let mut r = Runner::new().mask(cli.mask);
+    let mut r = Runner::new()
+        .mask(cli.mask)
+        .requested_options(&cli.mask_opts);
     for (name, src) in &cli.secrets {
         r = r.secret(name.clone(), src.clone());
     }
@@ -122,8 +285,13 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if let Some(sock) = &cli.agent_socket {
         r = r.daemon_socket(sock.clone());
     }
-    if let Some(iso) = cli.isolate {
-        r = r.isolate(iso);
+    // `--redact` with `--isolate` composes: the redaction path keeps the
+    // tree, and the child is forked into exactly the requested namespaces
+    // (issue 19).  A bare `--isolate` is the namespace-only mode.
+    match (cli.redact, cli.isolate) {
+        (true, Some(iso)) => r = r.redact_with_isolate(iso),
+        (_, Some(iso)) => r = r.isolate(iso),
+        (_, None) => {}
     }
     if cli.no_redact {
         r = r.no_redaction();
@@ -140,10 +308,28 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if cli.no_dumpable {
         r = r.no_dumpable(true);
     }
+    if cli.audit {
+        r = r.audit();
+    }
+    if cli.quiet {
+        r = r.quiet();
+    }
+    if cli.verbose {
+        r = r.verbose();
+    }
+    // Open the report target before the payload runs: a bad path or a
+    // closed descriptor is a usage error, and finding it after the run
+    // would leave the caller with neither the payload's result nor a
+    // report (issue 9).
+    let sink = if cli.report_json {
+        ReportSink::open(cli.report_file.as_deref(), cli.report_fd)
+    } else {
+        None
+    };
     match r.run(&cli.program, &cli.args) {
         Ok(outcome) => {
-            if cli.report_json {
-                print!("{}", outcome.report_json());
+            if let Some(sink) = sink {
+                sink.write(&outcome.report_json());
             }
             if !cli.quiet && !cli.report_json {
                 eprintln!(
@@ -178,6 +364,131 @@ sat in pmask's own argv or environ)"
             255
         }
     }
+}
+
+/// Where the `--report` document goes.  The target is opened before the
+/// payload runs, so a bad path or a closed descriptor is a usage error
+/// rather than a run whose result cannot be read.
+enum ReportSink {
+    Stdout,
+    File(std::fs::File, std::path::PathBuf),
+}
+
+impl ReportSink {
+    /// Open the target named on the command line.  `None` when the run has
+    /// no report at all.
+    fn open(file: Option<&std::path::Path>, fd: Option<libc::c_int>) -> Option<ReportSink> {
+        if let Some(path) = file {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+            {
+                Ok(f) => return Some(ReportSink::File(f, path.to_path_buf())),
+                Err(e) => {
+                    eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                    std::process::exit(255);
+                }
+            }
+        }
+        if let Some(n) = fd {
+            // SAFETY: `dup` on a descriptor the operator passed open; the
+            // original stays open, so a shell redirect the caller still
+            // owns is not closed by us.
+            //
+            // `F_DUPFD_CLOEXEC`: the duplicate must not reach the payload.
+            // A payload that inherits it can write into the document a CI
+            // consumer is about to parse, which defeats the reason to use
+            // `--report-fd` instead of stdout.  `--report-file` is
+            // close-on-exec for the same reason.
+            let dup = unsafe { libc::fcntl(n, libc::F_DUPFD_CLOEXEC, 3) };
+            if dup < 0 {
+                eprintln!(
+                    "pmask: --report-fd {}: {}",
+                    n,
+                    std::io::Error::last_os_error()
+                );
+                std::process::exit(255);
+            }
+            // The caller's own descriptor must not reach the payload
+            // either: a `9>report.json` redirect in a shell is not
+            // close-on-exec, so the payload would inherit fd 9 and could
+            // write into the document a consumer is about to parse.  The
+            // duplicate above is already close-on-exec and is what pmask
+            // writes through, so setting the flag on the original costs
+            // the caller nothing in this process and closes the channel.
+            // SAFETY: `fcntl` on a descriptor the operator passed open; a
+            // failure is not fatal (the report still lands), so the
+            // result is dropped.
+            unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
+            let f = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(dup) };
+            return Some(ReportSink::File(f, std::path::PathBuf::new()));
+        }
+        Some(ReportSink::Stdout)
+    }
+
+    /// Write the finished document.
+    ///
+    /// A file or descriptor the caller named must take the document, so a
+    /// failed write there is reported and exits 255.  Stdout is different:
+    /// the reader may have gone away (a closed pipe, `| head -1`), and
+    /// `print!` panics on that, which `panic = "abort"` turns into
+    /// SIGABRT and replaces the payload's exit status (issue 17's class).
+    /// A report nobody reads must not change the run's result, so the
+    /// stdout write takes the same drop-result treatment as the audit rows.
+    fn write(self, text: &str) {
+        use std::io::Write;
+        match self {
+            ReportSink::Stdout => {
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(text.as_bytes());
+                let _ = out.flush();
+            }
+            ReportSink::File(mut f, path) => {
+                if let Err(e) = f.write_all(text.as_bytes()).and_then(|_| f.flush()) {
+                    if path.as_os_str().is_empty() {
+                        eprintln!("pmask: --report-fd: {}", e);
+                    } else {
+                        eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                    }
+                    std::process::exit(255);
+                }
+            }
+        }
+    }
+}
+
+/// The reason a failed ptrace session gives, when the probe names one.
+///
+/// The interesting hosts are the ones where `PTRACE_TRACEME` (what the
+/// probe calls) succeeds but seizing another process is refused: a
+/// seccomp filter that filters by request, or `kernel.yama.ptrace_scope`
+/// at 3.  Those are the cases where the bare errno is most confusing, so
+/// they are named even though `caps.ptrace` is true.  `None` when nothing
+/// in the probe explains an `EPERM`, so a genuine failure elsewhere is
+/// not misattributed.
+fn ptrace_refusal() -> Option<String> {
+    let caps = pmask::caps::Caps::cached();
+    if caps.seccomp_filter {
+        return Some(
+            "ptrace is banned by a seccomp filter here; command lines stay visible".to_string(),
+        );
+    }
+    if caps.ptrace_scope.is_some_and(|scope| scope >= 3) {
+        return Some(
+            "the kernel refuses ptrace attaches here (kernel.yama.ptrace_scope >= 3); \
+             command lines stay visible"
+                .to_string(),
+        );
+    }
+    if caps.ptrace {
+        return None;
+    }
+    caps.rows()
+        .into_iter()
+        .find(|(n, _)| *n == "metadata redaction")
+        .map(|(_, st)| st.reason().to_string())
 }
 
 fn main() {
@@ -229,7 +540,9 @@ fn main() {
             local_only.push("--no-redact");
         }
         if cli.mask.has_image() {
-            local_only.push("--image");
+            // Both spellings of the image family are refused; name both
+            // rather than the canonical one only.
+            local_only.push("--image or --image-from-fd");
         }
         if !local_only.is_empty() {
             eprintln!(
@@ -242,18 +555,26 @@ fn main() {
         }
     }
 
-    // `--redact --isolate` is the composed spelling of `--unshare`: the
-    // redaction path with a private pid namespace and procfs.  The pair is
-    // accepted here, before `needs_runner`, so the run takes the redaction
-    // path instead of the namespace-only isolate path.
-    if cli.redact && cli.isolate.is_some() {
-        cli.mask = cli.mask.unshare();
-        cli.isolate = None;
-    }
+    // `--redact --isolate` keeps both halves: the redaction path owns the
+    // tree and `run_with_secrets` forks the payload into exactly the
+    // namespaces LIST names.  Rewriting the pair into `--unshare` here
+    // (as this code used to) replaced the requested set with
+    // user+pid+mount and made `--redact --isolate=net` a lie (issue 19).
+    // `--redact` without `--isolate` needs nothing.
 
     // `--audit` describes the tree the tracer owns.  A mode without a
-    // tracer has no tree to describe, so refuse rather than print nothing.
-    if cli.audit && (cli.no_redact || cli.isolate.is_some()) {
+    // tracer has no tree to describe, so refuse rather than print
+    // nothing.  This check names an explicit mode; the host-selected
+    // plain mode is refused in `Runner::run`, after the probe has decided
+    // it (issue 32), because the flag must not be silently inert on a
+    // host that cannot ptrace.
+    // `--redact --isolate=LIST` composes to the redaction mode (issue 19),
+    // so it keeps the tracer and `--audit` works there; only a run that
+    // selects isolate alone, or plain, has no tree to describe.
+    let audit_refused = cli.audit
+        && (cli.no_redact
+            || (cli.isolate.is_some() && !cli.redact && !cli.isolate.is_some_and(|iso| iso.none)));
+    if audit_refused {
         eprintln!(
             "pmask: --audit needs the redaction mode; {} mode has no tracer to \
              describe the tree, so drop --audit or the flag that forces the mode",
@@ -280,11 +601,32 @@ fn main() {
                  daemon owns the run, so drop --report"
             );
         } else {
+            // Name the flag the operator wrote: `--report-file` and
+            // `--report-fd` imply the JSON report, so a message about
+            // `--report=json` alone reads as a flag they never passed.
+            let which = if cli.report_file.is_some() {
+                "--report-file"
+            } else if cli.report_fd.is_some() {
+                "--report-fd"
+            } else {
+                "--report=json"
+            };
             eprintln!(
-                "pmask: --report=json: the plain mask path does not produce a report; the \
+                "pmask: {}: the plain mask path does not produce a report; the \
                  report describes a secret-side run, so add --secret, --isolate or --no-redact, \
-                 or drop --report"
+                 or drop the report option",
+                which
             );
+            // `--redact` changes nothing about the runner: it is the
+            // default mode spelled out.  Say so, because the old message
+            // told an operator to add a flag the line already carried
+            // (b-team finding against issue 19).
+            if cli.redact {
+                eprintln!(
+                    "pmask: note: --redact selects the same /proc treatment as the default \
+                     and does not produce a report; use --secret or --no-redact"
+                );
+            }
         }
         std::process::exit(255);
     }
@@ -297,6 +639,20 @@ fn main() {
             reexec_in_scope(&name, &cli.reexec_argv, cli.quiet);
         }
     }
+    // Two documented escapes publish the place a `literal:` or `env:`
+    // secret lives: `PMASK_NO_SELFMASK` leaves the supervisor's own
+    // /proc entry real, and `--keep-env` leaves the payload's environ
+    // visible.  Name the exposure before any secret is read, so the
+    // operator can still change the command.  This runs after every
+    // refusal that makes the run impossible (`--daemon` with a local-only
+    // flag, a contradictory `--redact`/`--no-redact`, `--report` on a
+    // path with no report), so a warning never describes a run that will
+    // not happen.  The check is CLI policy; a library caller chooses for
+    // itself.
+    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
+    check_no_selfmask(&cli, no_selfmask);
+    warn_keep_env_secret(&cli);
+
     // Read the command before every path that needs it: the runner path
     // and the mask path both consume it, so `--secret` with
     // `--args-from-fd` runs the program the descriptor names.
@@ -304,6 +660,17 @@ fn main() {
 
     if cli.needs_runner() {
         std::process::exit(run_with_secrets(cli));
+    }
+
+    // `--secret-fd-name` with no `--secret` is the one name option the
+    // mask path cannot report: the descriptor name is applied by the
+    // runner, which is not reached here.  `--memfd-name` is reported by
+    // `Mask::to_config`, which every local run goes through.
+    if !cli.quiet && cli.mask.secret_fd_name_value().is_some() {
+        eprintln!(
+            "pmask: --secret-fd-name has no effect: no --secret was given, so no \
+             descriptor is delivered"
+        );
     }
 
     if let Some(socket) = cli.daemon.take() {
@@ -335,7 +702,6 @@ fn main() {
     // snapshot of the environment) first, redact this process, and only
     // then fork.  The secrets are never in this process's argv or
     // environ once the fork has happened.
-    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
     let prepared = match cli.mask.prepare(&cli.program, &cli.args) {
         Ok(p) => p,
         Err(e) => {
@@ -370,6 +736,20 @@ fn main() {
     match child.wait() {
         Ok(st) => finish(st),
         Err(e) => {
+            // A sandboxed host refuses `PTRACE_SEIZE` with EPERM, and the
+            // bare errno names neither the cause nor the way out.  When
+            // the probe already knows why, print its reason and point at
+            // the secret side, which does not need ptrace (issue 34).
+            if e.raw_os_error() == Some(libc::EPERM) {
+                if let Some(reason) = ptrace_refusal() {
+                    eprintln!("pmask: cannot redact here: {}", reason);
+                    eprintln!(
+                        "pmask: this run needed ptrace; the secret side does not: use \
+                         --secret NAME=file:PATH or --secret NAME=agent:NAME, which deliver \
+                         over descriptors, or run pmask where ptrace is permitted"
+                    );
+                }
+            }
             eprintln!("pmask: session error: {}", e);
             std::process::exit(255);
         }

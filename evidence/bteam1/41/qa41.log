@@ -1,0 +1,12 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS e1-default-empty-environ (bytes=0 span=0)
+PASS e2-no-exact-nul-run (bytes=3 nuls=3 span=3)
+PASS e3-control-keep-env-shows-the-value
+PASS e4-keep-env-env-secret-warns (warn=1 named=1)
+PASS e10-warned-run-still-runs (payload=135990 masked, exe readable)
+PASS e5-kept-vars-still-kept
+PASS e6-keep-env-named-warns
+PASS e7-other-name-does-not-warn
+PASS e8-keep-env-literal-does-not-warn
+PASS e9-keep-env-file-does-not-warn
+== QA41: PASS

@@ -446,14 +446,33 @@ kill_comm mko-oxkill KILL
 [ "$n" = 0 ] && pass o14-on-exit-kill-terminates-background-child \
     || fail "o14-on-exit-kill-terminates-background-child (alive=$n)"
 
-t0=$(date +%s)
+# Milliseconds: `date +%s` truncates, so a 3 s wait that starts 0.9 s into
+# a second and ends 0.1 s into the next reads as 2 and a fast detach reads
+# as 1 or 0 depending on where the boundary fell.  The property is that
+# `wait` outlives the payload and `detach` does not.
+now_ms() {
+    # GNU date prints 19 digits for %N; busybox prints the seconds from %s
+    # and ignores %N, so a short numeric value is seconds and is widened.
+    _ns=$(date +%s%N 2>/dev/null)
+    case "$_ns" in
+        ''|*[!0-9]*) echo $(( $(date +%s) * 1000 )) ;;
+        *)
+            if [ ${#_ns} -le 10 ]; then
+                echo $(( _ns * 1000 ))
+            else
+                echo $(( _ns / 1000000 ))
+            fi
+            ;;
+    esac
+}
+t0=$(now_ms)
 "$TOOL" -q -l mko-oxdet2 --on-exit detach /bin/sh -c "sleep 3 </dev/null >/dev/null 2>&1 & exit 0" >/dev/null 2>&1
-t1=$(date +%s)
-d_detach=$((t1 - t0))
-t0=$(date +%s)
+t1=$(now_ms)
+d_detach=$(( (t1 - t0) / 1000 ))
+t0=$(now_ms)
 "$TOOL" -q -l mko-oxwait --on-exit wait /bin/sh -c "sleep 3 </dev/null >/dev/null 2>&1 & exit 0" >/dev/null 2>&1
-t1=$(date +%s)
-d_wait=$((t1 - t0))
+t1=$(now_ms)
+d_wait=$(( (t1 - t0) / 1000 ))
 if [ "$d_wait" -ge 2 ] && [ "$d_detach" -le 1 ]; then
     pass "o14-on-exit-wait-waits (detach=${d_detach}s wait=${d_wait}s)"
 else
@@ -1037,7 +1056,11 @@ fi
 # Catches: an empty key reaching the child, and a refusal that does not
 # name the key.
 err=$("$TOOL" --env '=x' -- /bin/true 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q 'environment variable name ""'; then
+# The parser refuses before any mode is chosen, so the same input gives
+# the same answer in plain and redact mode (issue 30).  Either wording
+# names the key: the parser's own, or the mask validator's.
+if [ "$rc" = 255 ] && printf '%s' "$err" \
+    | grep -q -e 'environment variable name ""' -e "non-empty KEY, not '=x'"; then
     pass "o38-empty-env-key-is-refused-by-name"
 else
     fail "o38-empty-env-key (rc=$rc err=[$err])"

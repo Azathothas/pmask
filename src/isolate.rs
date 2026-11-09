@@ -80,14 +80,15 @@
 //!
 //! # What the CLI still has to wire
 //!
-//! This module exposes the mechanisms; two call sites outside it are not
-//! wired, and are named here rather than changed:
+//! `run` takes the caller's `quiet` flag: the status pipe is drained
+//! either way, so a silent run cannot deadlock the child, and nothing is
+//! printed when the caller asked for silence.
 //!
-//! 1. A namespace-free filesystem run has to skip `run::Mode::Isolate`,
-//!    which today needs unprivileged user namespaces.  `run.rs` should
-//!    apply [`FsPolicy::apply_child`] in its `pre_exec` closure instead.
-//! 2. `-q` does not reach the report: `isolate::run` takes no quiet flag,
-//!    so the effective set is printed on every isolation run.
+//! One call site outside this module is still not wired: a namespace-free
+//! filesystem run has to skip `run::Mode::Isolate`, which today needs
+//! unprivileged user namespaces.  `run.rs` could apply
+//! [`FsPolicy::apply_child`] in its `pre_exec` closure instead, and that
+//! is a feature, not a defect in this module.
 
 use crate::userns;
 use crate::ExitState;
@@ -130,19 +131,50 @@ const NEUTRAL_HOSTNAME: &[u8] = b"pmask";
 /// also creates the user, mount, UTS, IPC and cgroup namespaces: a refusal
 /// costs nothing and cannot weaken the payload's view.  The three fields
 /// here are the ones a caller can turn off.
-#[derive(Debug, Clone, Copy)]
+///
+/// `none` is not "every field false": it is the `--isolate=none` spelling
+/// and means no namespace, mount, `no_new_privs` or Landlock at all, so a
+/// caller must not enter [`run`] with it.  Every field false is
+/// [`Isolate::minimal`], which still creates the unconditional set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Isolate {
     pub pid: bool,
     pub net: bool,
     pub private_tmp: bool,
+    /// `--isolate=none`: run the payload with the host's view unchanged.
+    /// [`run`] refuses this value; the runner takes a plain exec instead.
+    pub none: bool,
 }
 
 impl Isolate {
-    pub fn all() -> Isolate {
+    /// A named set of the three switchable namespaces.
+    pub fn new(pid: bool, net: bool, private_tmp: bool) -> Isolate {
         Isolate {
-            pid: true,
-            net: true,
-            private_tmp: true,
+            pid,
+            net,
+            private_tmp,
+            none: false,
+        }
+    }
+
+    pub fn all() -> Isolate {
+        Isolate::new(true, true, true)
+    }
+
+    /// No switchable namespace, but the unconditional user, mount, UTS,
+    /// IPC and cgroup namespaces, the private `/dev` and `/proc`,
+    /// Landlock and `no_new_privs` still apply.
+    pub fn minimal() -> Isolate {
+        Isolate::new(false, false, false)
+    }
+
+    /// `--isolate=none`: no isolation at all.
+    pub fn none() -> Isolate {
+        Isolate {
+            pid: false,
+            net: false,
+            private_tmp: false,
+            none: true,
         }
     }
 
@@ -150,6 +182,9 @@ impl Isolate {
     /// uses.  It names what will be *attempted*; the kernel's answer is in
     /// [`Report`].
     pub fn describe(&self) -> String {
+        if self.none {
+            return "none".to_string();
+        }
         let flag = |on: bool| if on { "" } else { "=off" };
         format!(
             "user,mount,pid{},net{},uts,ipc,cgroup,tmp{},landlock,no_new_privs,dev,proc",
@@ -208,6 +243,9 @@ pub struct Report {
     /// Allowlist paths Landlock accepted, and paths that exist but whose
     /// rule the kernel refused.  Zero when Landlock was not applied.
     pub landlock_paths: (usize, usize),
+    /// Which optional members of the fresh `/dev` are in place, as the
+    /// `DE_*` bits.  The `dev` entry's detail counts the basic nodes.
+    pub dev_extra: u8,
 }
 
 /// Frame indices, shared with the payload child.  Two bytes each: state,
@@ -293,6 +331,7 @@ fn errno_text(e: i32) -> String {
         libc::ENOMEM => "ENOMEM",
         libc::EROFS => "EROFS",
         libc::EMFILE => "EMFILE",
+        libc::EIO => "EIO",
         _ => return format!("errno {}", e),
     };
     name.to_string()
@@ -315,15 +354,21 @@ impl Report {
             dev: entry(frame, I_DEV),
             proc: entry(frame, I_PROC),
             landlock_paths: (0, 0),
+            dev_extra: 0,
         }
     }
 
     /// The effective set as one comma-separated line.  An applied mechanism
     /// is bare, except where its detail is the point (`landlock:abi=N`,
-    /// `proc:subset`).  A mechanism that did not take effect carries its
-    /// state, so a reader never has to infer it from an absence.
+    /// `proc:subset`, `dev:6+4`).  A mechanism that did not take effect
+    /// carries its state, so a reader never has to infer it from an
+    /// absence.
+    ///
+    /// `dev` counts what the fresh `/dev` holds: the basic nodes, then the
+    /// optional members (`pts`, `ptmx`, `shm`, the stdio links) that are in
+    /// place.  The degradation lines name each absent member in full.
     pub fn describe(&self) -> String {
-        fn item(name: &str, e: &Entry) -> String {
+        let item = |name: &str, e: &Entry| -> String {
             match e.state {
                 State::Applied => match name {
                     "landlock" => format!("landlock:abi={}", e.detail),
@@ -336,6 +381,13 @@ impl Report {
                         };
                         format!("proc:{}", mode)
                     }
+                    "dev" => {
+                        let extras = DEV_EXTRAS
+                            .iter()
+                            .filter(|(bit, _)| self.dev_extra & bit != 0)
+                            .count();
+                        format!("dev:{}+{}", e.detail, extras)
+                    }
                     _ => name.to_string(),
                 },
                 State::Off => format!("{}=off", name),
@@ -343,7 +395,7 @@ impl Report {
                 State::Blocked(code) => format!("{}=blocked({})", name, errno_text(code)),
                 State::Skipped(code) => format!("{}=skipped({})", name, errno_text(code)),
             }
-        }
+        };
         [
             item("user", &self.user),
             item("mount", &self.mount),
@@ -395,13 +447,24 @@ impl Report {
                 self.landlock_paths.0, self.landlock_paths.1
             ));
         }
-        if self.dev.state == State::Applied && (self.dev.detail as usize) < DEV_NODES.len() {
-            out.push(format!(
-                "fresh /dev holds {} of {} device nodes; the payload loses the rest \
-                 (absent on the host, or a refused bind)",
-                self.dev.detail,
-                DEV_NODES.len()
-            ));
+        if self.dev.state == State::Applied {
+            if (self.dev.detail as usize) < DEV_NODES.len() {
+                out.push(format!(
+                    "fresh /dev holds {} of {} device nodes; the payload loses the rest \
+                     (absent on the host, or a refused bind)",
+                    self.dev.detail,
+                    DEV_NODES.len()
+                ));
+            }
+            for (bit, path) in DEV_EXTRAS {
+                if self.dev_extra & bit == 0 {
+                    out.push(format!(
+                        "fresh /dev has no {}; a payload that needs it sees ENOENT (absent \
+                         on the host, or a refused mount)",
+                        path.to_string_lossy()
+                    ));
+                }
+            }
         }
         out
     }
@@ -709,6 +772,43 @@ const DEV_NODES: [&CStr; 6] = [
     c"/dev/tty",
 ];
 
+/// The optional members of the fresh `/dev`, in report-bit order.
+///
+/// `/dev/pts` and `/dev/ptmx` are bound from the host: a pty is allocated
+/// through the host's devpts instance, so a private one would need a new
+/// `devpts` mount the kernel refuses without a full user namespace
+/// handshake.  `/dev/shm` is a private tmpfs, because the host's POSIX
+/// shared memory is not the payload's to see.
+const DEV_PTS: &CStr = c"/dev/pts";
+const DEV_PTMX: &CStr = c"/dev/ptmx";
+const DEV_SHM: &CStr = c"/dev/shm";
+
+/// Bit positions in [`Report::dev_extra`], one per entry in
+/// [`DEV_EXTRAS`](self::DEV_EXTRAS).
+const DE_PTS: u8 = 1 << 0;
+const DE_PTMX: u8 = 1 << 1;
+const DE_SHM: u8 = 1 << 2;
+const DE_LINKS: u8 = 1 << 3;
+
+/// The optional entries, with the bit that says it is in place and the
+/// path named in a degradation line.
+const DEV_EXTRAS: [(u8, &CStr); 4] = [
+    (DE_PTS, c"/dev/pts"),
+    (DE_PTMX, c"/dev/ptmx"),
+    (DE_SHM, c"/dev/shm"),
+    (DE_LINKS, c"/dev/fd and the stdio links"),
+];
+
+/// The stdio symlinks a payload written for a normal `/dev` expects.
+/// Every one resolves through `/proc`, so it works with the private
+/// procfs and with the host's `/proc` when the private one was refused.
+const DEV_LINKS: [(&CStr, &CStr); 4] = [
+    (c"/proc/self/fd", c"/dev/fd"),
+    (c"/proc/self/fd/0", c"/dev/stdin"),
+    (c"/proc/self/fd/1", c"/dev/stdout"),
+    (c"/proc/self/fd/2", c"/dev/stderr"),
+];
+
 fn write_all(fd: libc::c_int, bytes: &[u8]) -> bool {
     let mut off = 0;
     while off < bytes.len() {
@@ -738,6 +838,31 @@ fn write_file(path: &CStr, bytes: &[u8]) -> bool {
     // SAFETY: fd is ours.
     unsafe { libc::close(fd) };
     ok
+}
+
+/// Report the failed exec of `prog` and exit 126, naming the program the
+/// same way the redaction path does (issue 14 N1).  `execve` does not
+/// return on success, so this runs with the errno still valid.  The write
+/// uses a fixed stack buffer: the child has forked and must not allocate.
+fn die_exec(prog: &CStr) -> ! {
+    let mut buf = [0u8; 512];
+    let mut n = 0usize;
+    let put = |buf: &mut [u8; 512], n: &mut usize, bytes: &[u8]| {
+        let take = bytes.len().min(buf.len() - *n - 1);
+        buf[*n..*n + take].copy_from_slice(&bytes[..take]);
+        *n += take;
+    };
+    put(&mut buf, &mut n, b"pmask: ");
+    put(&mut buf, &mut n, prog.to_bytes());
+    put(&mut buf, &mut n, b": ");
+    let text = io::Error::last_os_error().to_string();
+    put(&mut buf, &mut n, text.as_bytes());
+    put(&mut buf, &mut n, b"\n");
+    // SAFETY: one write to fd 2, then exit.
+    unsafe {
+        libc::write(2, buf.as_ptr() as *const libc::c_void, n);
+        libc::_exit(126);
+    }
 }
 
 fn die(what: &str) -> ! {
@@ -783,18 +908,96 @@ fn mount_private_tmp() -> Result<(), i32> {
     )
 }
 
-/// The fresh `/dev`: a tmpfs holding only the nodes in [`DEV_NODES`].
+/// What the fresh `/dev` ended up holding: how many of [`DEV_NODES`]
+/// were bound, and the [`DE_*`] bits for the optional members.
+#[derive(Debug, Clone, Copy, Default)]
+struct DevOutcome {
+    bound: usize,
+    extra: u8,
+}
+
+/// Bind `source` (an `O_PATH` descriptor held across the tmpfs mount) at
+/// `target`.  The target must already exist with the right type.
+///
+/// Binding through `/proc/self/fd` avoids naming a host path that the
+/// tmpfs has already replaced.
+fn bind_held(source: libc::c_int, target: &CStr) -> Result<(), i32> {
+    let mut via = [0u8; 32];
+    let prefix = b"/proc/self/fd/";
+    via[..prefix.len()].copy_from_slice(prefix);
+    let mut n = prefix.len();
+    n += write_usize(&mut via[n..], source as usize);
+    via[n] = 0;
+    // SAFETY: `via` is NUL-terminated at `n`; `target` is a constant.
+    let rc = unsafe {
+        libc::mount(
+            via.as_ptr() as *const libc::c_char,
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND as libc::c_ulong,
+            std::ptr::null(),
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(last_errno())
+    }
+}
+
+/// Create a file or directory the bind mount can replace, then bind.
+/// A plain user namespace cannot `mknod` (`EPERM`), so the target is an
+/// ordinary file for a device node and an empty directory for a mount
+/// point; the bind replaces the inode, not the path.
+fn bind_held_as(source: libc::c_int, target: &CStr, dir: bool) -> Result<(), i32> {
+    if dir {
+        // SAFETY: creating a directory inside our own tmpfs.
+        let rc = unsafe { libc::mkdir(target.as_ptr(), 0o755 as libc::mode_t) };
+        if rc != 0 {
+            let e = last_errno();
+            if e != libc::EEXIST {
+                return Err(e);
+            }
+        }
+    } else {
+        // SAFETY: creating a file inside our own tmpfs.
+        let fd = unsafe {
+            libc::open(
+                target.as_ptr(),
+                libc::O_CREAT | libc::O_WRONLY | libc::O_CLOEXEC,
+                0o666 as libc::mode_t,
+            )
+        };
+        if fd < 0 {
+            return Err(last_errno());
+        }
+        // SAFETY: a descriptor opened here.
+        unsafe { libc::close(fd) };
+    }
+    bind_held(source, target)
+}
+
+/// The fresh `/dev`: a tmpfs holding the nodes in [`DEV_NODES`], plus
+/// `/dev/pts`, `/dev/ptmx`, a private `/dev/shm` and the stdio symlinks
+/// when the host has what the first three need.
 ///
 /// The host's nodes are opened with `O_PATH` first, because the tmpfs
 /// replaces the directory they live in.  `MS_NODEV` is deliberately absent
-/// from that tmpfs: it would make the bound device nodes unusable.  A user
-/// namespace cannot create a device node (`mknod` returns `EPERM`), so each
-/// target is an ordinary file the bind mount replaces.
-fn mount_private_dev() -> Result<usize, i32> {
-    let mut held = [-1 as libc::c_int; DEV_NODES.len()];
+/// from that tmpfs: it would make the bound device nodes unusable.
+///
+/// A missing optional member never fails the run: the payload gets a
+/// `/dev` without it and [`Report::degradations`] names it.  A host
+/// without `/dev/pts` has no pty to bind, and a kernel that refuses the
+/// `/dev/shm` tmpfs (a seccomp filter, a restricted userns) leaves only
+/// that member out.
+fn mount_private_dev() -> Result<DevOutcome, i32> {
+    let basic = DEV_NODES.len();
+    let mut held = [-1 as libc::c_int; 6 + 2];
     for (i, node) in DEV_NODES.iter().enumerate() {
         held[i] = open_path(node.as_ptr());
     }
+    held[basic] = open_path(DEV_PTS.as_ptr());
+    held[basic + 1] = open_path(DEV_PTMX.as_ptr());
     let mounted = mount_checked(
         c"tmpfs".as_ptr(),
         c"/dev".as_ptr(),
@@ -806,64 +1009,85 @@ fn mount_private_dev() -> Result<usize, i32> {
         close_all(&held);
         return Err(e);
     }
-    let mut bound = 0usize;
+    let mut out = DevOutcome::default();
     let mut first_errno = 0i32;
     for (i, node) in DEV_NODES.iter().enumerate() {
         if held[i] < 0 {
             continue;
         }
-        // SAFETY: creating a file inside our own tmpfs.
-        let target = unsafe {
-            libc::open(
-                node.as_ptr(),
-                libc::O_CREAT | libc::O_WRONLY | libc::O_CLOEXEC,
-                0o666 as libc::mode_t,
-            )
-        };
-        if target >= 0 {
-            // SAFETY: a descriptor opened here.
-            unsafe { libc::close(target) };
-        }
-        // Binding through /proc/self/fd avoids naming a host path that the
-        // tmpfs has already replaced.
-        let mut via = [0u8; 32];
-        let prefix = b"/proc/self/fd/";
-        via[..prefix.len()].copy_from_slice(prefix);
-        let mut n = prefix.len();
-        n += write_usize(&mut via[n..], held[i] as usize);
-        via[n] = 0;
-        // SAFETY: `via` is NUL-terminated at `n`; `node` is a constant.
-        let rc = unsafe {
-            libc::mount(
-                via.as_ptr() as *const libc::c_char,
-                node.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND as libc::c_ulong,
-                std::ptr::null(),
-            )
-        };
-        if rc == 0 {
-            bound += 1;
-        } else if first_errno == 0 {
-            first_errno = last_errno();
+        match bind_held_as(held[i], node, false) {
+            Ok(()) => out.bound += 1,
+            Err(e) => {
+                if first_errno == 0 {
+                    first_errno = e;
+                }
+            }
         }
         // SAFETY: a descriptor opened above.
         unsafe { libc::close(held[i]) };
     }
-    if bound == 0 && first_errno != 0 {
+    if out.bound == 0 && first_errno != 0 {
+        // SAFETY: descriptors opened above and not yet closed.
+        unsafe {
+            libc::close(held[basic]);
+            libc::close(held[basic + 1]);
+        }
         return Err(first_errno);
     }
-    // Paths that resolve through /proc, so a payload written for a normal
-    // /dev keeps working.
-    // SAFETY: absolute paths inside our own mount namespace; failure is
-    // harmless.
-    unsafe {
-        libc::symlink(c"/proc/self/fd".as_ptr(), c"/dev/fd".as_ptr());
-        libc::symlink(c"/proc/self/fd/0".as_ptr(), c"/dev/stdin".as_ptr());
-        libc::symlink(c"/proc/self/fd/1".as_ptr(), c"/dev/stdout".as_ptr());
-        libc::symlink(c"/proc/self/fd/2".as_ptr(), c"/dev/stderr".as_ptr());
+    // The extras are optional: a host may lack `/dev/pts`, and a kernel
+    // may refuse the bind.  Each one that fails is left out of `extra` and
+    // named as a degradation, and the run continues: failing it here would
+    // turn a host detail into a refused payload.
+    if held[basic] >= 0 {
+        // An optional member that fails is a degradation of that member
+        // alone, so it does not set `first_errno`: the basic set is what
+        // decides whether the fresh /dev exists at all.
+        if bind_held_as(held[basic], DEV_PTS, true).is_ok() {
+            out.extra |= DE_PTS;
+        }
+        // SAFETY: a descriptor opened above.
+        unsafe { libc::close(held[basic]) };
     }
-    Ok(bound)
+    if held[basic + 1] >= 0 {
+        if bind_held_as(held[basic + 1], DEV_PTMX, false).is_ok() {
+            out.extra |= DE_PTMX;
+        }
+        // SAFETY: a descriptor opened above.
+        unsafe { libc::close(held[basic + 1]) };
+    }
+    // A private POSIX shared-memory directory.  `mode=1777` is the
+    // sticky-bit world-writable mode a `/dev/shm` needs; `MS_NODEV`
+    // matches the host's, so a payload cannot execute a node it creates
+    // there.  The mount point has to exist in the fresh tmpfs first.
+    // SAFETY: creating a directory inside our own tmpfs.
+    let mkdir_rc = unsafe { libc::mkdir(DEV_SHM.as_ptr(), 0o1777 as libc::mode_t) };
+    if mkdir_rc == 0 || last_errno() == libc::EEXIST {
+        let shm = mount_checked(
+            c"tmpfs".as_ptr(),
+            DEV_SHM.as_ptr(),
+            c"tmpfs".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            c"mode=1777".as_ptr() as *const libc::c_void,
+        );
+        if shm.is_ok() {
+            out.extra |= DE_SHM;
+        }
+    }
+    // Paths that resolve through /proc, so a payload written for a normal
+    // /dev keeps working.  A host that already had them is not the case
+    // here: the tmpfs is empty.
+    let mut links = 0u8;
+    for (source, target) in DEV_LINKS {
+        // SAFETY: absolute paths inside our own mount namespace.
+        let rc = unsafe { libc::symlink(source.as_ptr(), target.as_ptr()) };
+        if rc == 0 {
+            links += 1;
+        }
+    }
+    if links as usize == DEV_LINKS.len() {
+        out.extra |= DE_LINKS;
+    }
+    Ok(out)
 }
 
 fn close_all(fds: &[libc::c_int]) {
@@ -1079,6 +1303,7 @@ fn payload_child(
         cloexec,
     } = plan;
     let mut landlock_paths = (0usize, 0usize);
+    let mut dev_extra = 0u8;
     if mount_ok {
         let proc = userns::child_setup_proc();
         match proc {
@@ -1105,7 +1330,10 @@ fn payload_child(
         // host's `/proc` when the private one was refused, so the attempt is
         // made either way and a failure is reported on its own.
         match mount_private_dev() {
-            Ok(n) => set_ok(&mut frame, I_DEV, n as u8),
+            Ok(d) => {
+                set_ok(&mut frame, I_DEV, d.bound as u8);
+                dev_extra = d.extra;
+            }
             Err(e) => set_refused(&mut frame, I_DEV, e),
         }
     }
@@ -1128,11 +1356,13 @@ fn payload_child(
 
     // The frame carries one detail byte per mechanism, and the Landlock
     // entry spends it on the ABI.  The rule counts follow it as two more
-    // bytes; `report_and_print` reads them as `landlock_paths`.  The counts
-    // are bounded by the allowlist length, well under a byte.
+    // bytes and the `/dev` extras byte after them; `report_and_print`
+    // reads them as `landlock_paths` and `dev_extra`.  The counts are
+    // bounded by the allowlist length, well under a byte.
     let extra = [
         landlock_paths.0.min(255) as u8,
         landlock_paths.1.min(255) as u8,
+        dev_extra,
     ];
 
     // SAFETY: the child reports through its own pipe and then execs.
@@ -1154,7 +1384,7 @@ fn payload_child(
     }
     // SAFETY: the final exec of the payload.
     unsafe { libc::execve(prog.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-    die("execve");
+    die_exec(prog);
 }
 
 /// Write `/proc/<pid>/{setgroups,uid_map,gid_map}` from the parent side.
@@ -1188,10 +1418,12 @@ fn write_id_maps(pid: libc::pid_t) -> io::Result<()> {
     Ok(())
 }
 
-/// Read the status frame, then print the effective isolation.
-fn report_and_print(report_r: libc::c_int) {
-    let total = FRAME_LEN + 2;
-    let mut frame = [0u8; FRAME_LEN + 2];
+/// Read the status frame, then print the effective isolation unless
+/// `quiet` is set.  The pipe is drained either way: the child blocks on a
+/// full pipe otherwise, and a report nobody reads is a hang, not silence.
+fn report_and_print(report_r: libc::c_int, quiet: bool) {
+    let total = FRAME_LEN + 3;
+    let mut frame = [0u8; FRAME_LEN + 3];
     let mut got = 0usize;
     while got < total {
         // SAFETY: reading our own pipe into a fixed buffer.
@@ -1213,6 +1445,9 @@ fn report_and_print(report_r: libc::c_int) {
         }
         got += n as usize;
     }
+    if quiet {
+        return;
+    }
     if got < FRAME_LEN {
         eprintln!(
             "pmask: isolation: no report from the payload process \
@@ -1222,8 +1457,23 @@ fn report_and_print(report_r: libc::c_int) {
         return;
     }
     let mut report = Report::from_frame(&frame);
-    if got == total && report.landlock.state == State::Applied {
-        report.landlock_paths = (frame[FRAME_LEN] as usize, frame[FRAME_LEN + 1] as usize);
+    if got == total {
+        if report.landlock.state == State::Applied {
+            report.landlock_paths = (frame[FRAME_LEN] as usize, frame[FRAME_LEN + 1] as usize);
+        }
+        if report.dev.state == State::Applied {
+            report.dev_extra = frame[FRAME_LEN + 2];
+        }
+    } else if report.dev.state == State::Applied {
+        // A truncated frame does not say which optional /dev members are
+        // in place.  Claiming they are absent would be a false
+        // degradation, so the entry says the count is unknown instead.
+        eprintln!(
+            "pmask: isolation: the report was cut short ({} of {} status bytes); \
+             the /dev member counts are unknown",
+            got, total
+        );
+        report.dev.state = State::Skipped(libc::EIO);
     }
     eprintln!("pmask: isolation: {}", report.describe());
     for line in report.degradations() {
@@ -1239,12 +1489,18 @@ fn report_and_print(report_r: libc::c_int) {
 /// because both call sites set the descriptors the same way, in the child
 /// between `fork` and `exec`.
 ///
+/// `quiet` drains the status pipe without printing the effective set or
+/// the degradation lines; the payload's exit status is unaffected.
+///
 /// Every mechanism is independent: a namespace, a mount, the hostname,
 /// `PR_SET_NO_NEW_PRIVS` or the filesystem policy can be refused without
 /// stopping the run.  The kernel's answers are printed on stderr as
 /// `pmask: isolation: <set>` before the payload starts, and each
 /// mechanism that did not take effect gets a `pmask: isolation degraded:`
 /// line of its own.
+///
+/// [`Isolate::none`] is refused: it asks for no isolation at all, and the
+/// runner must take its plain exec path instead of entering here.
 pub fn run(
     iso: &Isolate,
     prog: &CStr,
@@ -1252,7 +1508,14 @@ pub fn run(
     envp: &[*const libc::c_char],
     fds: &[libc::c_int],
     cloexec: bool,
+    quiet: bool,
 ) -> io::Result<ExitState> {
+    if iso.none {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "isolate::run refuses Isolate::none: call the plain exec path instead",
+        ));
+    }
     let mut ready: [libc::c_int; 2] = [-1, -1];
     let mut go: [libc::c_int; 2] = [-1, -1];
     let mut report: [libc::c_int; 2] = [-1, -1];
@@ -1356,7 +1619,7 @@ pub fn run(
         return Err(e);
     }
 
-    report_and_print(report[0]);
+    report_and_print(report[0], quiet);
     // SAFETY: the report pipe has been drained.
     unsafe { libc::close(report[0]) };
 
@@ -1419,12 +1682,7 @@ mod tests {
             s,
             "user,mount,pid,net,uts,ipc,cgroup,tmp,landlock,no_new_privs,dev,proc"
         );
-        let off = Isolate {
-            pid: false,
-            net: false,
-            private_tmp: false,
-        }
-        .describe();
+        let off = Isolate::minimal().describe();
         assert_eq!(
             off,
             "user,mount,pid=off,net=off,uts,ipc,cgroup,tmp=off,landlock,no_new_privs,dev,proc"
@@ -1448,12 +1706,13 @@ mod tests {
         set_ok(&mut frame, I_NNP, 0);
         set_ok(&mut frame, I_DEV, 6);
         set_ok(&mut frame, I_PROC, PROC_SUBSET_PID);
-        let r = Report::from_frame(&frame);
+        let mut r = Report::from_frame(&frame);
+        r.dev_extra = DE_PTS | DE_PTMX | DE_SHM | DE_LINKS;
         let d = r.describe();
         assert_eq!(
             d,
             "user,mount,pid,net=refused(EPERM),uts=refused(EINVAL),ipc,cgroup,tmp,\
-             landlock:abi=6,no_new_privs,dev,proc:subset"
+             landlock:abi=6,no_new_privs,dev:6+4,proc:subset"
         );
         // Every mechanism is present exactly once, whatever its state.
         for name in [
@@ -1485,6 +1744,97 @@ mod tests {
         let deg = r.degradations();
         assert!(deg[0].contains("network namespace"), "{:?}", deg);
         assert!(deg[1].contains("uts namespace"), "{:?}", deg);
+    }
+
+    /// A `dev` entry with all six basic nodes bound and the given extras.
+    fn dev_report(nodes: u8, extra: u8) -> Report {
+        let mut frame = [ST_OFF; FRAME_LEN];
+        set_ok(&mut frame, I_DEV, nodes);
+        let mut r = Report::from_frame(&frame);
+        r.dev_extra = extra;
+        r
+    }
+
+    // Issue 25: a fresh /dev with six nodes and no pty support reported no
+    // degradation, so a payload broke with "out of pty devices" under a
+    // report that claimed the mechanism applied.  Each member now shows up
+    // in the degradation list by name when it is absent.
+    // Mutation control: dropping the extras loop makes this fail.
+    #[test]
+    fn dev_without_pts_is_named_as_degraded() {
+        let r = dev_report(6, 0);
+        let deg = r.degradations();
+        let joined = deg.join("\n");
+        assert!(joined.contains("no /dev/pts"), "{:?}", deg);
+        assert!(joined.contains("no /dev/ptmx"), "{:?}", deg);
+        assert!(joined.contains("no /dev/shm"), "{:?}", deg);
+        assert!(joined.contains("no /dev/fd"), "{:?}", deg);
+        // The basic-count line is not printed when all six are bound, so
+        // the four extras are the whole list.
+        assert_eq!(deg.len(), 4, "{:?}", deg);
+    }
+
+    // The applied entry counts what it got, so an operator sees the pty
+    // members without reading the degradation list.  Mutation control:
+    // printing the bare name makes this fail.
+    #[test]
+    fn applied_dev_entry_counts_the_members() {
+        let r = dev_report(6, DE_PTS | DE_PTMX | DE_SHM | DE_LINKS);
+        assert!(r.describe().contains("dev:6+4"), "{}", r.describe());
+        let partial = dev_report(5, DE_PTS);
+        assert!(
+            partial.describe().contains("dev:5+1"),
+            "{}",
+            partial.describe()
+        );
+    }
+
+    // A member this host lacks is not in the count, so the count and the
+    // degradation line can never disagree.
+    #[test]
+    fn dev_count_matches_the_degradation_lines() {
+        let r = dev_report(6, DE_PTS | DE_SHM);
+        let d = r.describe();
+        assert!(d.contains("dev:6+2"), "{}", d);
+        let deg = r.degradations();
+        assert_eq!(deg.len(), 2, "{:?}", deg);
+        assert!(deg.iter().any(|l| l.contains("/dev/ptmx")), "{:?}", deg);
+        assert!(deg.iter().any(|l| l.contains("/dev/fd")), "{:?}", deg);
+    }
+
+    // The other half: a fresh /dev with every member reports no
+    // degradation at all, so the lines above cannot be printed
+    // unconditionally.
+    #[test]
+    fn complete_dev_reports_no_degradation() {
+        let all = DE_PTS | DE_PTMX | DE_SHM | DE_LINKS;
+        assert!(dev_report(6, all).degradations().is_empty());
+    }
+
+    // A `dev` entry that is not applied says nothing about its members:
+    // the refusal is already named once, for the mechanism as a whole.
+    #[test]
+    fn refused_dev_does_not_name_its_members() {
+        let mut frame = [ST_OFF; FRAME_LEN];
+        set_refused(&mut frame, I_DEV, libc::EPERM);
+        let deg = Report::from_frame(&frame).degradations();
+        assert_eq!(deg.len(), 1, "{:?}", deg);
+        assert!(deg[0].contains("the fresh /dev"), "{:?}", deg);
+    }
+
+    #[test]
+    fn dev_extras_cover_every_optional_member() {
+        // Every bit `DE_*` is present in the table that names it, or a
+        // member would be silently dropped from the report.
+        let table: u8 = DEV_EXTRAS.iter().map(|(bit, _)| *bit).sum();
+        assert_eq!(
+            table,
+            DE_PTS | DE_PTMX | DE_SHM | DE_LINKS,
+            "a DE_ bit has no entry in DEV_EXTRAS"
+        );
+        assert_eq!(DEV_LINKS.len(), 4);
+        // The six original nodes are never removed.
+        assert_eq!(DEV_NODES.len(), 6);
     }
 
     #[test]

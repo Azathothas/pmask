@@ -1,0 +1,61 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS e1-missing-binary-exits-127
+PASS e1-not-executable-exits-126
+PASS e2-non-utf8-argv-forwarded
+PASS e3-tracee-cwd-elf (entry-swaps=2)
+PASS e4-long-label-runs
+PASS e4b-label-254-settles-whole
+PASS e4b-254-no-warning
+PASS e4b-label-255-settles-whole
+PASS e4b-255-warning-names-scratch
+PASS e4b-label-300-settles-whole
+PASS e4b-300-warning-names-scratch
+PASS e5-large-argv-forwarded
+PASS e6-control-cmdline-detectable
+PASS e6-supervisor-selfmask
+PASS e7-blank-label [-l-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label=-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [-l -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e8-missing-value-names-flag
+PASS e9-control-script-argv-detectable (1 sightings)
+PASS e9-script-zero-sightings
+PASS e9-script-liveness (2 labelled process(es))
+PASS e9-script-argv-fidelity
+PASS e9-script-fallback-log (lines=1)
+PASS e-control-argv-detectable (1 sightings)
+PASS e10-keep-env-visible (hits=1)
+PASS e10-default-environ-redacted (alive=1)
+PASS e11-no-follow-grandchild-visible (sightings=1)
+PASS e11-no-follow-direct-child-redacted (labelled=1)
+PASS e11-no-follow-grandchild-functional
+PASS e12-no-exit-kill-tree-survives (before=1 after=1)
+PASS e12-default-exit-kill-control (before=1 after=0)
+PASS e13-label-empty (blank comm, empty cmdline: 1 process(es))
+PASS e14-default-no-label (cmdline is the program name, args stripped)
+PASS e15-execveat-argv-fidelity
+PASS e15-execveat-redacted (alive=1)
+PASS e15-fexecve-argv-fidelity
+PASS e15-fexecve-redacted (alive=1)
+PASS e16-two-exec-output (rc=0)
+PASS e16-two-exec-completions (exec-done lines=2)
+PASS e17-no-arguments-prints-usage-and-exits-255
+PASS e17-empty-args-from-fd-is-refused
+PASS e17-empty-program-name-is-refused (rc=127)
+PASS e18-control-untraced-scores-none (TracerPid=0)
+PASS e18-default-traced-scores-high (TracerPid=1196950)
+PASS e18-detach-untraced-scores-none (TracerPid=0)
+PASS e18-secret-holder-label-scores-critical
+PASS e19-control-live-pid-present-in-every-view
+PASS e19-control-dead-pid-absent-in-every-view
+PASS e19-masked-present-in-every-view
+PASS e19-masked-start-time-stable (starttime=77420683)
+PASS e19-control-start-times-differ (tracee=77420683 shell=77419325)
+PASS e19-masked-comm-is-label
+PASS e19-masked-cmdline-hides-argument
+PASS e20-vfork-child-does-not-corrupt-the-parent
+PASS e21-control-all-channels-name-the-real-argv
+PASS e21-masked-dissent-is-the-in-process-execfn (cmd=[mk-e21] span=[7] auxv=[mk-e21] own=[/workspace/wt/fix1/tests/testcases])
+PASS e22-path-resolved-check-returns-the-planted-answer
+PASS e22-direct-proc-read-is-not-the-planted-answer
+== VERDICT: FAIL=0 ==

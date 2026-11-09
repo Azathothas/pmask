@@ -1,0 +1,20 @@
+# --keep-env with an env: secret: the warning, and the kept variable
+# kernel 6.12.113+deb13-amd64 uid 1000
+
+## --keep-env + env:HUSH (whole env visible)
+pmask: warning: --keep-env publishes /proc/<pid>/environ, and secret 'T' (env:HUSH) takes its value from a variable this run keeps visible, so the value is readable there for the whole run (the whole inherited environment stays visible); drop --keep-env, or use file:PATH or agent:NAME, which deliver over a descriptor
+pmask: mode=redact secrets=1 exit=0
+
+## --keep-env=HUSH + env:HUSH (named)
+pmask: warning: --keep-env publishes /proc/<pid>/environ, and secret 'T' (env:HUSH) takes its value from a variable this run keeps visible, so the value is readable there for the whole run (HUSH stays visible); drop --keep-env, or use file:PATH or agent:NAME, which deliver over a descriptor
+pmask: mode=redact secrets=1 exit=0
+
+## --keep-env=OTHER + env:HUSH (different name: no warning)
+0
+
+## -E short form + env:HUSH
+pmask: warning: --keep-env publishes /proc/<pid>/environ, and secret 'T' (env:HUSH) takes its value from a variable this run keeps visible, so the value is readable there for the whole run (the whole inherited environment stays visible); drop --keep-env, or use file:PATH or agent:NAME, which deliver over a descriptor
+pmask: mode=redact secrets=1 exit=0
+
+## -q still warns (a quiet run that publishes a secret is not silent)
+1

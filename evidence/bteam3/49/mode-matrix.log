@@ -1,0 +1,50 @@
+== mode=default flags=[] sup=56368 pay=56371
+cmdline=qa49-56367|
+comm=qa49-56367
+environ_bytes=0
+environ_marker=0
+tracerpid=56370
+nspid=56371
+hidepid=0
+selfview=nsenter: reassociate to namespaces failed: Operation not permitted
+
+== mode=no-redact flags=[--no-redact] sup=56438 pay=56448
+cmdline=/bin/sh|-c|sleep 8; : MK49-56437|
+comm=sh
+environ_bytes=39
+environ_marker=1
+tracerpid=0
+nspid=56448
+hidepid=0
+selfview=nsenter: reassociate to namespaces failed: Operation not permitted
+
+pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+== mode=isolate flags=[--isolate] sup=56507 pay=56517
+cmdline=qa49-56506|
+comm=qa49-56506
+environ_bytes=0
+environ_marker=0
+tracerpid=0
+nspid=56517
+hidepid=1
+selfview=nsenter: reassociate to namespaces failed: Operation not permitted
+
+== mode=unshare flags=[--unshare] sup=56565 pay=56569
+cmdline=qa49-56564|
+comm=qa49-56564
+environ_bytes=0
+environ_marker=0
+tracerpid=56568
+nspid=56569	1
+hidepid=1
+selfview=nsenter: reassociate to namespaces failed: Operation not permitted
+
+== mode=redact-isolate flags=[--redact --isolate] sup=56664 pay=56668
+cmdline=qa49-56663|
+comm=qa49-56663
+environ_bytes=0
+environ_marker=0
+tracerpid=56667
+nspid=56668	1
+hidepid=1
+selfview=nsenter: reassociate to namespaces failed: Operation not permitted

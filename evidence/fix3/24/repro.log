@@ -1,0 +1,11 @@
+$ pmaskd --hidden-nonexistent  (sanity: option parser refuses unknown flags)
+
+$ grep -n -- "--store" src/bin/pmaskd.rs  -> no match
+grep rc=1
+
+$ ./target/release/pmaskd --help | grep -- --store
+grep rc=1
+
+$ ./target/release/pmaskd --store /tmp/x.enc   (the documented line, run)
+pmaskd: unknown option --store
+rc=255

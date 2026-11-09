@@ -5,6 +5,9 @@
 //!   as-uid UID CMD [ARGS...]     drop to UID (and gid UID), then exec CMD
 //!   show-nnp                     print the NoNewPrivs line of /proc/self/status
 //!   renamer                      rename itself with PR_SET_NAME, report comm
+//!   evilrename [SECONDS]         rename itself with PR_SET_NAME to the
+//!                                fixed name `evil-name`, print the
+//!                                result and `comm`, then park
 //!   count-proc                   count the numeric entries of /proc
 //!   exe-id                       print the /proc/self/exe target and inode
 //!   procviews PID                print the existence views of PID: raw
@@ -28,6 +31,7 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "as-uid" => Some(as_uid(rest)),
         "show-nnp" => Some(show_nnp()),
         "renamer" => Some(renamer()),
+        "evilrename" => Some(evilrename(rest)),
         "count-proc" => Some(count_proc()),
         "exe-id" => Some(exe_id()),
         "procviews" => Some(procviews(rest)),
@@ -178,6 +182,30 @@ fn renamer() -> i32 {
             libc::pause();
         }
     }
+}
+
+/// Settle, rename itself to the fixed name `evil-name` with
+/// `prctl(PR_SET_NAME)`, then report the syscall result, `comm` and the
+/// `cmdline` it can read itself, and park for SECONDS (default 5).
+///
+/// The name is fixed and hostile on purpose: a suite reads the `comm` of
+/// this pid from outside and asserts it is the label, so the case says
+/// something about `/proc`, not about a string the payload printed.
+fn evilrename(args: &[String]) -> i32 {
+    let secs = args
+        .first()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let name = b"evil-name\0";
+    // SAFETY: name is NUL terminated.
+    let rc = unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr(), 0, 0, 0) };
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    println!("rename-rc={} errno={}", rc, if rc == 0 { 0 } else { errno });
+    println!("comm={}", own_comm());
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    0
 }
 
 fn count_proc() -> i32 {

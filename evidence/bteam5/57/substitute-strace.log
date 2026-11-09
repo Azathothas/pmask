@@ -1,0 +1,23 @@
+== control: strace on a plain exec ==
+1
+
+== pmask --rexec: ptrace and process_vm_writev from the tracer ==
+rc=255
+ptrace calls:
+      1 PTRACE_SEIZE
+process_vm_writev calls:
+0
+process_vm_readv calls:
+0
+
+the PTRACE_SEIZE line (tracer -> payload):
+3761224 ptrace(PTRACE_SEIZE, 3761227, NULL, PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|PTRACE_O_TRACECLONE|PTRACE_O_TRACEEXEC|PTRACE_O_TRACEEXIT|PTRACE_O_EXITKILL) = -1 EPERM (Operation not permitted)
+
+the first PTRACE_POKEDATA / PTRACE_SETREGSET line:
+
+== what a sys_enter_execve reader sees for a masked exec ==
+rc=255
+3761283 execve("./tests/pmask", ["./tests/pmask", "-q", "-l", "b57label", "--", "./tests/testcases", "echoargs", "B57CANARY-ARG"], 0x7ffd99e75bd0 /* 39 vars */) = 0
+
+-- control: the same exec without pmask --
+3761333 execve("./tests/testcases", ["./tests/testcases", "echoargs", "B57CANARY-ARG"], 0x7ffebee1a4b8 /* 39 vars */) = 0

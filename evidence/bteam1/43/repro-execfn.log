@@ -1,0 +1,5 @@
+execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+sup=56713 pay=56716
+AT_EXECFN ptr 0x7f1ba5ce500d
+AT_EXECFN str ci-runner
+arg_start=139756722606080 arg_end=139756722606090 env_start=139756722606093 env_end=139756722606093 envspan=0

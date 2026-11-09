@@ -1,0 +1,38 @@
+# The four outcomes of the new PMASK_NO_SELFMASK check
+# kernel 6.12.113+deb13-amd64 uid 1000 pmask pmask 0.1.0-beta.1 (unknown)
+
+## A. plain mode + literal secret, real host (audit probe says blocked)
+pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for the whole run in plain mode, so secret 'T' (literal:) is in its argv or environment the entire time; every local account can read it.  Keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+pmask: mode=plain secrets=1 exit=0
+pmask: note: the payload's label was not applied: plain mode does not redact the payload's /proc metadata
+pmask: note: secret 'T' uses literal: and the value is in this process's argv or environment; another local account can read it
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)
+rc=0
+
+## B. same, PMASK_PROBE_AUDIT=1 (audit reachable, no --allow-argv-secret)
+pmask: PMASK_NO_SELFMASK=1 with secret 'T' (literal:) leaves the value in this process's own argv or environment for the whole run (plain mode does not mask it), and this host's audit subsystem is reachable, so the supervisor's exec is also written to the audit log; drop PMASK_NO_SELFMASK, use file:PATH or agent:NAME, or pass --allow-argv-secret to run anyway
+rc=255
+
+## C. same, PMASK_PROBE_AUDIT=1 with --allow-argv-secret
+pmask: warning: PMASK_NO_SELFMASK=1 leaves this process's own /proc entry readable for the whole run in plain mode, so secret 'T' (literal:) is in its argv or environment the entire time; every local account can read it.  Keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+pmask: mode=plain secrets=1 exit=0
+pmask: note: the payload's label was not applied: plain mode does not redact the payload's /proc metadata
+pmask: note: secret 'T' uses literal: and the value is in this process's argv or environment; another local account can read it
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)
+rc=0
+
+## D. redact mode + literal secret (escape overridden after the fork)
+pmask: warning: PMASK_NO_SELFMASK=1 is overridden in redact mode: the supervisor masks its own /proc entry after the fork, so secret 'T' (literal:) is readable in its argv or environment only until then, not for the whole run; keep the command out of the supervisor's argv with --args-from-fd, or use file:PATH or agent:NAME
+pmask: mode=redact secrets=1 exit=0
+pmask: note: secret 'T' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry
+rc=0
+
+## E. PMASK_NO_SELFMASK with no secret: no warning at all
+rc=0
+
+## F. a warning never describes a run that will not happen
+# The checks run after every refusal that makes the run impossible.
+$ pmask --daemon /tmp/nosock --keep-env --secret T=env:HUSH -- /bin/true
+pmask: --daemon cannot be combined with --secret: the daemon owns the masking policy and the job environment, so this flag would be dropped; run the job without --daemon
+$ pmask --redact --no-redact --keep-env --secret T=env:HUSH -- /bin/true
+pmask: --redact and --no-redact contradict each other; pass one

@@ -1,0 +1,16 @@
+$ git show qa-base:contrib/systemd/pmaskd@.service | tail -12
+
+# A passphrase, when the unit is given one, arrives as a credential rather
+# than an environment variable or a path every account can read.  Enable
+# these two lines together with a matching ExecStart --passphrase-file.
+#LoadCredential=passphrase:/etc/pmask/passphrase
+#ExecStart=/usr/bin/pmaskd --socket %t/pmask/pmask.sock --store %S/pmask/store.enc
+
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
+
+$ grep -n -- "--store" (fixed unit, active lines only)
+grep rc=1 (1 = no active directive names it)

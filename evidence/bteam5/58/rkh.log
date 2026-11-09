@@ -1,0 +1,8 @@
+== control (no pmask) ==
+hidden_procs=None found
+== masked tree alive ==
+hidden_procs=None found
+== unmasked canary alive (negative control) ==
+hidden_procs=None found
+== unhide directly, control and masked ==
+unhide rc=0

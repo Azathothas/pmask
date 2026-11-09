@@ -1,0 +1,9 @@
+PASS qa22-control-ordinary-job (rc=4 passes through)
+FAIL qa22-sigterm-with-silent-client (still alive 10s after SIGTERM)
+FAIL qa22-daemon-exit-zero (undecidable: the daemon had to be killed)
+FAIL qa22-socket-removed (/tmp/pmask-qa22.mrdX39/d.sock still exists)
+FAIL qa22-client-unblocked (closed=yes elapsed=10.90; the close came from the harness kill, not the daemon)
+PASS qa22-worker-model-unaffected (jobs=2 stopped)
+PASS qa22-io-timeout-drops-stall (2s)
+PASS qa22-daemon-serves-after-drop
+== VERDICT: 4 failure(s) ==

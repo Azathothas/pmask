@@ -1,0 +1,26 @@
+# AT_EXECFN: the served view versus the payload's own getauxval
+# kernel 6.12.113+deb13-amd64 uid 1000
+
+## control: plain exec of testcases execfn 20
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=140737145814980 str=/workspace/wt/bteam1/target/release/pmask-testcases
+stat: arg_start=140737145814899 arg_end=140737145814961 env_start=140737145814961 env_end=140737145814980
+
+## masked, label=abcd (4 bytes)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=140455385944072 str=abcd
+stat: arg_start=140455385944064 arg_end=140455385944069 env_start=140455385944072 env_end=140455385944072
+exe: /workspace/wt/bteam1/target/release/pmask-testcases
+
+## masked, label=abcdefgh (8 bytes)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=139972756951052 str=abcdefgh
+stat: arg_start=139972756951040 arg_end=139972756951049 env_start=139972756951052 env_end=139972756951052
+exe: /workspace/wt/bteam1/target/release/pmask-testcases
+
+## masked, label=abcdefghijkl (12 bytes)
+payload printed: execfn=/workspace/wt/bteam1/target/release/pmask-testcases
+auxv+mem: execfn_ptr=140150472470544 str=abcdefghijkl
+stat: arg_start=140150472470528 arg_end=140150472470541 env_start=140150472470544 env_end=140150472470544
+exe: /workspace/wt/bteam1/target/release/pmask-testcases
+

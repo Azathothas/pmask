@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa26-run-exits-zero
+FAIL qa26-no-new-privs (NoNewPrivs=[1])
+FAIL qa26-host-user-namespace (inside=[user:[4026532741]] host=[user:[4026532593]])
+FAIL qa26-host-mount-namespace (inside=[mnt:[4026532744]] host=[mnt:[4026532659]])
+FAIL qa26-no-isolation-line (pmask: isolation: user,mount,pid=off,net=off,uts,ipc,cgroup,tmp=off,landlock:abi=6,no_new_privs,dev,proc=refused(EPERM))
+FAIL qa26-note-names-the-choice (notes: nnp=1|user:[4026532741]|mnt:[4026532744]|{|  "mode": "isolate",|  "mode_reason": "",|  "ptrace": true,|  "payload_dumpable": true,|  "hardening": "heap",|  "exit": {"code": 0, "signal": null},|  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed")
+PASS qa26-control-isolate-all-changes-both (nnp=1 user=user:[4026532889])
+== VERDICT: FAIL=5 ==

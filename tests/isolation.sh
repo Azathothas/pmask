@@ -16,7 +16,8 @@
 #   I5  the IPC namespace is not the host's
 #   I6  the cgroup namespace is not the host's
 #   I7  the private /tmp is empty and the host's is not claimed
-#   I8  /dev holds only the bound device nodes, and they work
+#   I8  /dev holds only the bound device nodes and the members issue 25
+#       added, and they work
 #   I9  a refused mount is named and does not abort the run
 #   I10 Landlock denies a path outside its allowlist (with a positive control)
 #   I11 the payload's exit status and stdout pass through unchanged
@@ -53,8 +54,27 @@ pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
+# The matrix group's pids and their start times, filled in when they are
+# spawned.  cleanup runs on every exit path, including the early SKIP gates
+# above, so the variables are declared before any of them.
+MATRIX_CTL_START=""
+MATRIX_SUP_START=""
+MATRIX_PID_START=""
+
 cleanup() {
+    # The scoped comm kill covers the supervisor and the masked payload:
+    # their comm is the suite's own `mkiso...` label.
     kill_comm mkiso KILL 2>/dev/null
+    # It does not cover the matrix control payload, which is a plain
+    # `testcases` process (comm `testcases`, not `mkiso`) and outlived the
+    # suite.  The orphan then made `edge.sh e6-supervisor-selfmask` fail
+    # on the next run, because that case scans every /proc entry for a
+    # real argv shape and PMKISO- is one.  Kill it by the identity the
+    # suite recorded; `kill_owned` also refuses a recycled pid, so the
+    # cleanup cannot hit a stranger.
+    kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+    kill_owned "$MATRIX_PID" "$MATRIX_PID_START"
+    kill_owned "$MATRIX_SUP" "$MATRIX_SUP_START"
     rm -rf "$T"
 }
 trap cleanup EXIT
@@ -317,12 +337,40 @@ case "$probe_rep" in
     *) fail "i1-set-starts-with-the-unconditional-namespaces (got [$probe_rep])" ;;
 esac
 
-iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" true
-none_rep=$(report_of "$T/none.err")
-if has "$none_rep" "pid=off" && has "$none_rep" "net=off" && has "$none_rep" "tmp=off"; then
+# A partial list names the switches it did not apply (issue 10: a
+# degradation is visible).  `--isolate=pid` applies pid and leaves net and
+# tmp off, and the report says so.
+iso_run "$T/pid.out" "$T/pid.err" --isolate=pid "$CASES" true
+pid_rep=$(report_of "$T/pid.err")
+if has "$pid_rep" "net=off" && has "$pid_rep" "tmp=off"; then
     pass "i1-off-switches-are-named-not-omitted"
 else
-    fail "i1-off-switches-are-named-not-omitted (got [$none_rep])"
+    fail "i1-off-switches-are-named-not-omitted (got [$pid_rep])"
+fi
+
+# `--isolate=none` means no isolation at all (issue 26): no namespace, no
+# no_new_privs, no Landlock, and therefore no isolation report to name the
+# switches it did not apply.  A report that names `pid=off` is the old
+# behaviour, where the unconditional namespaces were still created.
+iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" true
+none_rep=$(report_of "$T/none.err")
+if [ -z "$none_rep" ]; then
+    pass "i1-none-prints-no-isolation-report"
+else
+    fail "i1-none-prints-no-isolation-report (got [$none_rep])"
+fi
+
+# `--isolate=none` means no isolation at all: no namespace, no
+# `no_new_privs`, no Landlock and no `pmask: isolation:` report (issue 26).
+# It is not "the three switchable namespaces off", which still creates the
+# unconditional user, mount, UTS, IPC and cgroup namespaces.
+iso_run "$T/none.out" "$T/none.err" --isolate=none "$CASES" show-nnp
+none_rep=$(report_of "$T/none.err")
+none_nnp=$(tr -d '[:space:]' <"$T/none.out")
+if [ -z "$none_rep" ] && [ "$none_nnp" = "NoNewPrivs:0" ]; then
+    pass "i1-none-means-no-isolation (no report, NoNewPrivs=0)"
+else
+    fail "i1-none-means-no-isolation (report=[$none_rep] status=[$none_nnp])"
 fi
 
 # --------------------------------------------------- I2: no_new_privs
@@ -390,8 +438,9 @@ else
 fi
 
 # control: with the UTS namespace off the payload must NOT be renamed.
-# `--isolate=none` still creates a UTS namespace (it costs nothing to
-# refuse and cannot weaken the view), so the control is the unisolated run.
+# `--isolate=pid,net,tmp` switches the three selectable namespaces off but
+# still creates the unconditional UTS namespace, and `--isolate=none`
+# creates nothing at all (issue 26), so the control is the unisolated run.
 # Catches: a hostname that was already neutral, which would make the case
 # above pass for the wrong reason.
 "$TOOL" -q /bin/sh -c 'uname -n' >"$T/nouts.out" 2>/dev/null
@@ -512,14 +561,16 @@ fi
 
 # ------------------------------------------------------- I8: fresh /dev
 # Catches: the host's /dev left in place, or a tmpfs mounted over it with no
-# usable device nodes.
+# usable device nodes.  `/dev/pts`, `/dev/ptmx` and `/dev/shm` are part of
+# the fresh /dev since issue 25 (a pty-using payload needs them), so they
+# are expected rather than leaks; each is checked for usability below.
 iso_run "$T/dev.out" "$T/dev.err" /bin/sh -c 'ls /dev'
 dev_list=$(tr '\n' ' ' <"$T/dev.out")
 if has "$probe_rep" "dev"; then
     unexpected=""
     for n in $dev_list; do
         case "$n" in
-            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr) ;;
+            null|zero|full|random|urandom|tty|fd|stdin|stdout|stderr|pts|ptmx|shm) ;;
             *) unexpected="$unexpected $n" ;;
         esac
     done
@@ -542,14 +593,16 @@ if has "$probe_rep" "dev"; then
     # A host node that exists outside the bound set must be gone.  Any one
     # of these proves the host's /dev is not visible.
     leak=""
-    for n in kvm mqueue shm pts fuse net console log core initctl ptmx; do
+    # `pts`, `ptmx` and `shm` are deliberately present inside (bound or
+    # created by the private /dev), so they cannot serve as leak probes.
+    for n in kvm mqueue fuse net console log core initctl; do
         if [ -e "/dev/$n" ]; then
             leak=$n
             break
         fi
     done
     if [ -z "$leak" ]; then
-        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue shm pts fuse net console log core initctl ptmx"
+        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue fuse net console log core initctl"
     else
         case " $dev_list " in
             *" $leak "*)
@@ -809,13 +862,17 @@ fi
 # non-dumpable process does not let it open.
 printf 'iso-secret-value' > "$T/i15b.tok"
 chmod 600 "$T/i15b.tok"
-out=$("$TOOL" --isolate --secret T=file:"$T/i15b.tok" -- "$CASES" secretfd T 16 2>&1)
+# The isolation report and the mode line are on stderr; the probe's own
+# answer is on stdout.  `secretfd` prints the fd and the byte count on
+# stdout, so a run that is killed by a signal (rc 137) or a report line on
+# the wrong stream cannot satisfy the check by accident.
+out=$("$TOOL" --isolate --secret T=file:"$T/i15b.tok" -- "$CASES" secretfd T 16 2>"$T/i15b.err")
 rc=$?
 if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'fd=3' \
     && printf '%s' "$out" | grep -q 'bytes=16'; then
     pass "i15b-isolate-delivers-a-file-secret"
 else
-    fail "i15b-isolate-delivers-a-file-secret (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|'))"
+    fail "i15b-isolate-delivers-a-file-secret (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|') err=$(tr '\n' '|' < "$T/i15b.err"))"
 fi
 
 # control: the supervisor masks its own environ in isolate mode even
@@ -964,9 +1021,13 @@ MATRIX_CTL=""
 MK_ISO_ENV="$MATRIX_CAN" "$TOOL" run --label "$MATRIX_LABEL" --no-dumpable \
     -- "$CASES" sleeper "$MATRIX_CAN" >/dev/null 2>"$T/matrix.err" &
 MATRIX_SUP=$!
+MATRIX_SUP_START=$(proc_start "$MATRIX_SUP")
 MATRIX_PID=$(matrix_child "$MATRIX_SUP")
+MATRIX_PID_START=""
+[ -n "$MATRIX_PID" ] && MATRIX_PID_START=$(proc_start "$MATRIX_PID")
 MK_ISO_ENV="$MATRIX_CAN" "$CASES" sleeper "$MATRIX_CAN" >/dev/null 2>&1 &
 MATRIX_CTL=$!
+MATRIX_CTL_START=$(proc_start "$MATRIX_CTL")
 sleep 0.2
 
 if [ -z "$MATRIX_PID" ] || [ ! -d "/proc/$MATRIX_PID" ] || [ ! -d "/proc/$MATRIX_CTL" ]; then
@@ -994,6 +1055,25 @@ else
     else
         fail "i20-comm-is-the-label (masked=[$m_comm] control=[$c_comm])"
     fi
+
+    # ---------------------- i21 to i36: the same-uid refusal matrix
+    # Every case below asserts that a *same-uid peer* is refused a file in
+    # the masked payload's /proc entry.  Root with CAP_SYS_PTRACE is not a
+    # same-uid-limited peer: the capability check in `ptrace_may_access`
+    # succeeds before the dumpable check is reached, so root reads environ,
+    # maps, fd, mem and the rest by design (issue #35).  Deciding these
+    # cases from there would report a false failure, and a PASS would be
+    # equally wrong because it would claim a guarantee that was never
+    # tested.  SKIP each one with the reason, as the root-only cases above
+    # already do.
+    if root_peer_observer; then
+        for c in i21-environ i22-maps i23-smaps i24-fd-and-fdinfo i25-exe \
+            i26-cwd-and-root i27-ns i28-auxv i29-syscall i30-io i31-mem \
+            i32-pidfd-getfd i33-process-vm-readv i34-process-vm-writev \
+            i35-ptrace-attach-and-seize i36-kcmp; do
+            skip "$c-refused-with-no-dumpable: $ROOT_PEER_REASON"
+        done
+    else
 
     # i19: environ is refused with --no-dumpable; the control's is readable
     # and carries the canary.
@@ -1153,6 +1233,52 @@ else
             fail "i36-kcmp-refused-with-no-dumpable (masked=[$m_out] control=[$c_out])"
         fi
     fi
+
+    fi  # ! root_peer_observer: the same-uid refusal matrix
+
+    # The control payload is not masked and carries the marker in argv.
+    # It has served its purpose by now, so stop it here and reap it rather
+    # than leaving a `testcases sleeper PMKISO-...` process behind for the
+    # rest of the gate (cleanup is the backstop, not the plan).
+    kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+    # `wait` on a live child blocks until it exits, and this payload is a
+    # `sleeper`: an unconditional wait after a kill that did not fire would
+    # hang the whole gate instead of failing it.  So poll for the process to
+    # be gone and never wait while it is alive.
+    mk_reap_i=0
+    while [ -d "/proc/$MATRIX_CTL" ] && [ "$mk_reap_i" -lt 20 ]; do
+        sleep 0.1
+        mk_reap_i=$((mk_reap_i + 1))
+    done
+    if [ -d "/proc/$MATRIX_CTL" ]; then
+        fail "i19-matrix-control-payload-stopped (pid $MATRIX_CTL survived its kill)"
+        # Backstop, still scoped: kill_owned re-checks uid and start time,
+        # so this cannot hit a recycled pid.
+        kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+        mk_reap_i=0
+        while [ -d "/proc/$MATRIX_CTL" ] && [ "$mk_reap_i" -lt 20 ]; do
+            sleep 0.1
+            mk_reap_i=$((mk_reap_i + 1))
+        done
+    else
+        pass "i19-matrix-control-payload-stopped"
+    fi
+    # Reap only a process that is already gone; otherwise leave it to the
+    # trap, which runs the same scoped kill at exit.
+    [ -d "/proc/$MATRIX_CTL" ] || wait "$MATRIX_CTL" 2>/dev/null
+    [ -d "/proc/$MATRIX_CTL" ] || MATRIX_CTL=""
+fi
+
+# The orphan guard: the property this suite promises is that no process it
+# started survives it.  Catches: the control payload leaking past the run
+# (the leak that made `edge.sh e6-supervisor-selfmask` fail on the next
+# run, because that case scans every /proc entry for a real argv shape and
+# `testcases sleeper PMKISO-...` is one).
+mkiso_left=$(sightings "PMKISO-$$")
+if [ "$mkiso_left" = 0 ]; then
+    pass "i37-no-pmkiso-process-survives-the-matrix"
+else
+    fail "i37-no-pmkiso-process-survives-the-matrix ($mkiso_left process(es) still carry PMKISO-$$)"
 fi
 
 echo "== VERDICT: FAIL=$FAIL =="

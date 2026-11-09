@@ -1,0 +1,30 @@
+#!/bin/sh
+# Fixture: replays the guest records quoted in issue 56.  The fragment's
+# canary carries its own pid ($$), and this fixture is that shell's child,
+# so $PPID reconstructs it.
+key=""
+while [ $# -gt 0 ]; do
+  case "$1" in -k) key=$2; shift 2;; *) shift;; esac
+done
+CANARY="QA56-CANARY-$PPID"
+case "$key" in
+  qa56-exec-*)
+    printf '%s\n' "type=EXECVE msg=audit(1794140348.833:39): argc=6 a0=\"/opt/pmask/pmask\" a1=\"-q\" a2=\"--label\" a3=\"qa56-$PPID\" a4=\"--secret\" a5=\"S=literal:$CANARY\""
+    printf '%s\n' "type=EXECVE msg=audit(1794140349.100:44): argc=4 a0=\"qa56-$PPID\" a1=\"\" a2=\"\" a3=\"\""
+    ;;
+  qa56-trace-*)
+    printf '%s\n' 'type=SYSCALL msg=audit(1794140348.900:50): arch=c000003e syscall=101 success=yes exit=0 comm="pmask-tracer" exe="/opt/pmask/pmask"'
+    printf '%s\n' 'type=OBJ_PID msg=audit(1794140348.900:50): opid=572 ocomm="true"'
+    ;;
+  qa56-watch-*) : ;;
+  qa56-exit-*)
+    printf '%s\n' 'type=SYSCALL msg=audit(1794140400.100:60): arch=c000003e syscall=59 comm="watched"'
+    printf '%s\n' 'type=EXECVE msg=audit(1794140400.100:60): argc=1 a0="/tmp/watched"'
+    printf '%s\n' 'type=EXECVE msg=audit(1794140400.200:62): argc=1 a0="/tmp/watched"'
+    ;;
+  qa56-b32-*)
+    printf '%s\n' 'type=SYSCALL msg=audit(1794140500.100:70): arch=c000003e syscall=59 comm="testcases32"'
+    printf '%s\n' "type=EXECVE msg=audit(1794140500.100:70): argc=3 a0=\"testcases32\" a1=\"echoargs\" a2=\"QA56-32-$PPID\""
+    ;;
+esac
+exit 0

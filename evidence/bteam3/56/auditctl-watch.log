@@ -1,0 +1,4 @@
+$ sudo auditctl -w /bin/true -p x -k bteam3
+Old style watch rules are slower
+The audit system is disabled
+exit=1

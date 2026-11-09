@@ -1,0 +1,3 @@
+run 1: leaf=77784 environ=denied maps=ok auxv=denied exe=ok fd=denied
+run 2: leaf=78528 environ=denied maps=ok auxv=denied exe=ok fd=denied
+run 3: leaf=78563 environ=denied maps=ok auxv=denied exe=ok fd=denied

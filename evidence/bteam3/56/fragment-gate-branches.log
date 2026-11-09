@@ -1,0 +1,11 @@
+### the gate as this host reaches it
+SKIP 56-audit-subsystem (auditctl -l: The audit system is disabled; auditctl -s printed nothing and exited 0)
+== VERDICT: FAIL=0 (SKIP: audit disabled) ==
+
+### gate branch: no auditctl
+SKIP 56-audit-subsystem (no auditctl on this host: the kernel audit records cannot be read)
+== VERDICT: FAIL=0 (SKIP: no auditctl) ==
+
+### gate branch: no ausearch
+SKIP 56-audit-subsystem (no ausearch on this host: the audit log cannot be read back)
+== VERDICT: FAIL=0 (SKIP: no ausearch) ==

@@ -1,0 +1,19 @@
+# issue 17: --audit | head -1 aborts the supervisor and kills the payload
+
+## baseline
+first line: pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds
+supervisor_rc=134
+payload file: MISSING
+stderr: thread 'pmask-tracer' (1624053) panicked at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/io
+
+## fixed
+first line: pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds
+supervisor_rc=0
+payload file: alive
+stderr: pmask: 1 of 2 execs degraded (post-exec)
+
+## fixed: the whole report without a pipe
+pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds
+pmask audit: pid=1638368 comm=x exe=/usr/bin/dash tracer=1638366 cmdline_bytes=2 nul_ratio=0.50 fds=0:/dev/null,1:pipe:[48757280],2:/dev/null
+pmask audit: residue: 1 (exe, mem, pid)
+pipeline_rc(head)=0

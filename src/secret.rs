@@ -94,7 +94,29 @@ pub enum Source {
 
 impl Source {
     /// Parse the `NAME=SOURCE` form used by `--secret`.
+    ///
+    /// A caller that can tell the operator about a typo should use
+    /// [`parse_spec`](Source::parse_spec), which reports the scheme it
+    /// could not place; this form discards that and is kept for callers
+    /// that only want the pair.
     pub fn parse(spec: &str) -> io::Result<(String, Source)> {
+        let (name, source, _unknown) = Source::parse_spec(spec)?;
+        Ok((name, source))
+    }
+
+    /// Parse `NAME=SOURCE` and say when the source named a scheme this
+    /// build does not know.
+    ///
+    /// A source that starts with `word:` where `word` is not a known
+    /// scheme is delivered whole as a literal, because refusing it would
+    /// break a value that legitimately contains a colon.  That fallback
+    /// is silent from the parser's point of view, so the third element
+    /// is the unrecognised word: the caller prints one warning naming it,
+    /// and `--secret TOK=flie:/x` stops looking like a file source.
+    ///
+    /// A bare value (`--secret TOK=abc`) and `stdin` name no scheme and
+    /// report nothing.
+    pub fn parse_spec(spec: &str) -> io::Result<(String, Source, Option<String>)> {
         let (name, rest) = spec.split_once('=').ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -118,6 +140,7 @@ impl Source {
                 ),
             ));
         }
+        let mut unknown = None;
         let source = if let Some(v) = rest.strip_prefix("literal:") {
             Source::Literal(v.to_string())
         } else if let Some(p) = rest.strip_prefix("file:") {
@@ -133,10 +156,11 @@ impl Source {
         } else if rest == "stdin" {
             Source::Stdin
         } else {
+            unknown = scheme_candidate(rest).map(str::to_string);
             // bare value: treat as a literal, so `--secret TOKEN=abc` works
             Source::Literal(rest.to_string())
         };
-        Ok((name.to_string(), source))
+        Ok((name.to_string(), source, unknown))
     }
 
     /// A short description of the source for an error message.  It carries
@@ -156,6 +180,48 @@ impl Source {
     pub fn is_in_plain_sight(&self) -> bool {
         matches!(self, Source::Literal(_) | Source::Env(_))
     }
+}
+
+/// The schemes [`Source::parse_spec`] recognises, as an operator would
+/// type them.  `stdin` is not in the list because a source of exactly
+/// `stdin` carries no colon.
+pub const KNOWN_SCHEMES: &[&str] = &["literal:", "file:", "env:", "agent:", "daemon:"];
+
+/// The scheme a source looks like it names, when it begins `word:` and
+/// the word cannot be one of the known schemes.
+///
+/// `None` for a value with no colon or with a colon that cannot start a
+/// scheme (`/etc/passwd:x`, `./a:b`, a value with a blank before the
+/// colon).  The rules are narrow on purpose: a scheme is a short run of
+/// ASCII letters, digits, `-`, `_`, `+` and `.`, so a path and a token
+/// that merely contains a colon are not mistaken for a typo'd one.
+fn scheme_candidate(rest: &str) -> Option<&str> {
+    let (word, _) = rest.split_once(':')?;
+    if word.is_empty() || word.len() > 32 {
+        return None;
+    }
+    let looks_like_a_scheme = word
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'+' | b'.'));
+    if looks_like_a_scheme {
+        Some(word)
+    } else {
+        None
+    }
+}
+
+/// The one warning for a `--secret` source that named a scheme this
+/// build does not know.  Both surfaces that parse a spec print it: the
+/// CLI after it has read the whole command line, so the last `-q`
+/// decides, and [`Runner::secret_spec`] as it is called.
+pub fn unknown_scheme_warning(name: &str, scheme: &str) -> String {
+    format!(
+        "warning: --secret {}: '{}:' is not a known secret scheme ({}); the value is \
+         delivered as a literal",
+        name,
+        scheme,
+        KNOWN_SCHEMES.join(", ")
+    )
 }
 
 /// A named secret held in protected memory.
@@ -436,15 +502,32 @@ impl Delivery {
 
     /// Build a delivery with the given descriptor behaviour.
     pub fn with_mode(secrets: &[Secret], mode: DeliveryMode) -> io::Result<Delivery> {
+        Delivery::with_mode_named(secrets, mode, None)
+    }
+
+    /// Build a delivery with the given descriptor behaviour and memfd
+    /// name.
+    ///
+    /// `fd_name` is the name every delivered descriptor carries, which is
+    /// what `/proc/<pid>/fd/N` renders after `/memfd:`; `None` keeps
+    /// [`crate::mem::DEFAULT_SECRET_FD_NAME`].  An invalid name is
+    /// refused here, before a descriptor exists.
+    pub fn with_mode_named(
+        secrets: &[Secret],
+        mode: DeliveryMode,
+        fd_name: Option<&str>,
+    ) -> io::Result<Delivery> {
         let names: Vec<String> = secrets.iter().map(|s| s.name.clone()).collect();
         check_names(&names)?;
+        let fd_name = fd_name.unwrap_or(crate::mem::DEFAULT_SECRET_FD_NAME);
+        crate::mem::validate_memfd_name(fd_name)?;
         let mut fds = Vec::with_capacity(secrets.len());
         let mut env = Vec::with_capacity(secrets.len());
         for (i, s) in secrets.iter().enumerate() {
             let fd = match mode {
-                DeliveryMode::Burn => SealedFd::new_burn(s.buf.as_slice())?,
+                DeliveryMode::Burn => SealedFd::new_burn_named(fd_name, s.buf.as_slice())?,
                 DeliveryMode::Inherit | DeliveryMode::CloseOnExec => {
-                    SealedFd::new(s.buf.as_slice())?
+                    SealedFd::new_named(fd_name, s.buf.as_slice())?
                 }
             };
             env.push((
@@ -716,7 +799,8 @@ pub fn write_secret(fd: libc::c_int, newline: Newline, tty_ok: bool) -> io::Resu
 /// Parse the arguments of `pmask read` and print one secret.
 ///
 /// Returns the process exit status: 0 on success, 1 when the secret cannot
-/// be found or read, 255 on a usage error.
+/// be found, read or written to a terminal (2 for the terminal refusal),
+/// and 255 on a usage error.
 pub fn read_main(args: &[OsString]) -> i32 {
     let mut name: Option<String> = None;
     let mut fd: Option<libc::c_int> = None;
@@ -830,6 +914,52 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_scheme_is_reported_and_delivered_as_a_literal() {
+        // Issue 11: a typo in the scheme used to be delivered silently.
+        // The word is reported so the caller can warn; the value is still
+        // delivered, because a literal that contains a colon is legal.
+        let (name, src, unknown) = Source::parse_spec("TOK=flie:/etc/passwd").unwrap();
+        assert_eq!(name, "TOK");
+        assert_eq!(unknown.as_deref(), Some("flie"));
+        assert!(matches!(src, Source::Literal(ref v) if v == "flie:/etc/passwd"));
+
+        let (_, _, unknown) = Source::parse_spec("TOK=agent:NAME").unwrap();
+        assert!(unknown.is_none(), "a known scheme must not be reported");
+        let (_, _, unknown) = Source::parse_spec("TOK=daemon:NAME").unwrap();
+        assert!(unknown.is_none(), "the old spelling is still a scheme");
+        let (_, _, unknown) = Source::parse_spec("TOK=stdin").unwrap();
+        assert!(unknown.is_none());
+    }
+
+    #[test]
+    fn a_bare_value_names_no_scheme_and_is_silent() {
+        // The whole point of the fallback: `--secret TOK=abc` is a value,
+        // not a typo, and must not produce a diagnostic.
+        for spec in [
+            "TOK=abc123",
+            "TOK=/etc/passwd",
+            "TOK=./relative:file",
+            "TOK=",
+            "TOK=with space: here",
+            "TOK=:leading",
+        ] {
+            let (_, src, unknown) = Source::parse_spec(spec).unwrap();
+            assert!(unknown.is_none(), "{} reported {:?}", spec, unknown);
+            assert!(matches!(src, Source::Literal(_)), "{}", spec);
+        }
+    }
+
+    #[test]
+    fn the_warning_names_the_scheme_and_the_known_ones() {
+        let w = unknown_scheme_warning("TOK", "flie");
+        assert!(w.contains("'flie:'"), "{}", w);
+        assert!(w.contains("literal:") && w.contains("file:"), "{}", w);
+        assert!(w.contains("TOK"), "{}", w);
+        // One line: a warning that wraps is read as two.
+        assert_eq!(w.lines().count(), 1, "{}", w);
+    }
+
+    #[test]
     fn env_var_naming() {
         assert_eq!(env_var_for("deploy-token"), "PMASK_SECRET_DEPLOY_TOKEN");
         assert_eq!(env_var_for("a.b"), "PMASK_SECRET_A_B");
@@ -926,6 +1056,41 @@ mod tests {
         v.push(Secret::from_bytes("ONE_MORE", b"v").unwrap());
         let err = Delivery::new(&v).unwrap_err();
         assert!(err.to_string().contains(&MAX_SECRETS.to_string()));
+    }
+
+    #[test]
+    fn delivery_names_every_descriptor() {
+        let a = Secret::from_bytes("A", b"1").unwrap();
+        let b = Secret::from_bytes("B", b"2").unwrap();
+        let d = Delivery::with_mode_named(&[a, b], DeliveryMode::Inherit, Some("secret-deadbeef"))
+            .unwrap();
+        for fd in d.raw_fds() {
+            let link = std::fs::read_link(format!("/proc/self/fd/{}", fd)).unwrap();
+            assert_eq!(
+                link.to_string_lossy(),
+                "/memfd:secret-deadbeef (deleted)",
+                "descriptor {} kept another name",
+                fd
+            );
+        }
+    }
+
+    // Mutation control: dropping the `validate_memfd_name` call from
+    // `with_mode_named` makes the empty-name case create a `/memfd:`
+    // descriptor instead of erroring.
+    #[test]
+    fn delivery_refuses_an_invalid_fd_name() {
+        let s = Secret::from_bytes("X", b"v").unwrap();
+        for bad in ["", "a/b", "a\nb"] {
+            let err = Delivery::with_mode_named(
+                std::slice::from_ref(&s),
+                DeliveryMode::Inherit,
+                Some(bad),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{:?} was accepted", bad));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

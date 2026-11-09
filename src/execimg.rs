@@ -146,6 +146,10 @@ impl Tracer {
             t.clear_exec_state();
             t.av_addr = av;
             t.ev_addr = ev;
+            // The exec is about to replace the address space, so the
+            // presentation block that held the comm label goes with it.
+            // The completion stop records the new block's address.
+            t.rename_addr = 0;
         }
 
         // A vfork child shares its parent's address space until the exec.
@@ -669,6 +673,15 @@ impl Tracer {
         };
         let _ = orig_regs.put(pid);
 
+        // From here until the tracee's next exec, a `prctl(PR_SET_NAME)`
+        // redirect can point at the label that already sits in this
+        // block.  `--watch-rename` uses that instead of writing a fresh
+        // copy into the tracee, which a `--no-dumpable` tracee refuses
+        // (issue 60).
+        if let Some(t) = self.table.get_mut(&pid) {
+            t.rename_addr = block.comm_addr;
+        }
+
         // 4. repoint the inline arrays at the hidden strings
         let mut repoint_ok = true;
         for i in 0..argc {
@@ -947,6 +960,18 @@ impl Tracer {
             // get `TracerPid` back to 0, and it costs tree coverage: a
             // detached tracee and everything it forks later run without
             // redaction, which the session summary counts.
+            //
+            // Say it at the release, per tracee: this is the last moment
+            // the operator can be told that this process, from now on,
+            // runs its own later execs unredacted.  The session summary
+            // counts the releases; this line names the process and the
+            // consequence.  Watching for the later exec would need a
+            // tracer, which is exactly what --detach gives up.
+            self.warn(format_args!(
+                "--detach released pid {} untraced; a later exec in that process is not \
+                 redacted",
+                pid
+            ));
             self.stats.detached += 1;
             self.detach(pid, 0);
             return;
@@ -1135,6 +1160,7 @@ impl Tracer {
         let label = String::from_utf8_lossy(&self.cfg.label).into_owned();
         let opts = crate::rexec::Options {
             hugetlb: self.cfg.rexec_hugetlb,
+            memfd_name: self.cfg.rexec_memfd_name.clone(),
         };
         let mut cache = self
             .cfg

@@ -1,0 +1,12 @@
+PASS qa7-fixture-has-a-cr
+FAIL qa7-cli-export (FOO=[<unset>], want bar; a name of 'export FOO' reads as unset)
+FAIL qa7-cli-no-variable-named-export (got [export FOO=bar])
+FAIL qa7-cli-crlf (CRLF=[v], want [v]; a trailing CR means the value was not stripped)
+FAIL qa7-cli-bad-key-refused (rc=0, err=)
+PASS qa7-daemon-bad-key-refused (rc=255)
+FAIL qa7-cli-quotes (K=["quoted value"], want [quoted value])
+PASS qa7-daemon-export (FOO=bar)
+PASS qa7-daemon-crlf (CRLF=v)
+PASS qa7-daemon-quotes (K=[quoted value])
+FAIL qa7-same-file-same-env: FOO(cli=[<unset>] daemon=[bar]) CRLF(cli=[v] daemon=[v]) K(cli=["quoted value"] daemon=[quoted value])
+== VERDICT: 6 failure(s) ==

@@ -36,6 +36,11 @@ jobs:
         run: sh scripts/check-rename.sh
       - name: third-party notices
         run: python3 scripts/notices.py --check
+      - name: completions
+        # The completions are static tables for a hand-written parser.
+        # This reads src/cli.rs and src/bin/pmaskd.rs and fails when a
+        # table has drifted; it needs no build and no host capability.
+        run: sh scripts/check-completions.sh
       - name: format
         run: cargo fmt --all -- --check
       - name: clippy
@@ -112,6 +117,72 @@ jobs:
           sh tests/lease.sh
           sh tests/secrets.sh
           sh tests/regressions.sh
+
+  # isolation.sh, compare.sh and conformance.sh used to run in no job at
+  # all: the micro-VM stages nine suites and the concurrency job names
+  # four, so three of the sixteen were never executed anywhere.  They are
+  # the suites that hold the same-uid refusal guarantees and the composed
+  # --redact --isolate spelling, so a regression there shipped green.
+  #
+  # The job runs on the runner uid, not root: the same-uid cases assert
+  # that a *peer of the same uid* is refused, which root with
+  # CAP_SYS_PTRACE defeats by design (issue #35).
+  native-suites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: install python3 and a C compiler
+        # isolation.sh runs helpers/procprobe.py for i32-i36 and
+        # conformance.sh compiles helpers/compare-probe.c for six cases.
+        # Both are already on the image; installing them explicitly means a
+        # future image change cannot turn those cases into SKIPs unnoticed.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends python3 build-essential
+      - name: allow native ptrace and unprivileged user namespaces
+        # The suites need ptrace (thousands of cases) and CLONE_NEWUSER
+        # (isolation.sh).  Both are allowed for the runner uid here, not by
+        # running the suites as root.
+        run: |
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          for key in kernel.apparmor_restrict_unprivileged_userns \
+                     kernel.unprivileged_userns_clone; do
+            if [ -e "/proc/sys/$(echo "$key" | tr . /)" ]; then
+              sudo sysctl -w "$key=0"
+            fi
+          done
+      - name: build
+        run: cargo build --locked --release --bins --features testbins
+      - name: copy the binaries the suites expect
+        run: |
+          for b in pmask pmaskd pmask-testcases pmask-protocases; do
+            dst=$(echo "$b" | sed 's/^pmask-testcases$/testcases/; s/^pmask-protocases$/protocases/')
+            cp "target/release/$b" "tests/$dst"
+          done
+      - name: isolation, compare and conformance
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/native.log"
+          rc=0
+          sh tests/native-suites.sh isolation compare conformance > "$log" 2>&1 || rc=$?
+          cat "$log"
+          # native-suites.sh fails an absent suite.  It cannot fail a suite
+          # that skipped its own availability gate, and a job whose one
+          # purpose is isolation coverage must not pass on zero coverage:
+          # say which sysctl to change and fail.
+          if grep -q '^SKIP i0-isolation-available' "$log"; then
+            echo "::error::isolation.sh skipped its availability gate: the runner uid has no user namespaces"
+            exit 1
+          fi
+          exit "$rc"
+      - name: per-issue QA fragments
+        run: sh tests/qa.sh
 
   msrv:
     runs-on: ubuntu-24.04
@@ -195,7 +266,7 @@ jobs:
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [check, concurrency, msrv, suites-in-vm, deny, secrets]
+    needs: [check, concurrency, native-suites, msrv, suites-in-vm, deny, secrets]
     if: always()
     permissions:
       actions: read

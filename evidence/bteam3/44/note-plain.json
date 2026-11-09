@@ -1,0 +1,14 @@
+pmask: warning: /etc/hostname is mode 0644; other accounts can read it
+{
+  "mode": "plain",
+  "mode_reason": "forced",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 0, "signal": null},
+  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed": 0},
+  "secrets": [
+    {"name": "T", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "--no-dumpable was not applied: plain mode does not change the payload's dumpability"]
+}

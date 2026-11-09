@@ -1,0 +1,18 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS d1-masked-pid-has-all-four-views (pid=127914 getdents64=present readdir=present stat=present kill0=present)
+NOTE d1 masked payload comm=[qa58-label] cmdline=[qa58-label|]; this family
+     never reads them, which is why it cannot fire
+PASS d2-control-unmasked-pid-has-the-same-views (pid=128570 getdents64=present readdir=present stat=present kill0=present)
+SKIP d3-processdecloak (sandfly-processdecloak: command not found)
+PASS d4-unhide-sees-no-pmaks-pid (sys=no checkkill=no checkgetprio=no)
+PASS d4b-unhide-ran (8 lines of output)
+PASS d5-chkproc-does-not-name-the-payload (payload=no supervisor=no bulk=44)
+NOTE d5 bulk hidden count with one masked tree: 44; the
+     no-pmask baseline is in docs/research/bteam-detectors.md
+PASS d5b-chkproc-names-a-genuinely-hidden-pid (pid 127532: readdir=absent stat=present, named by chkproc)
+PASS d6-rkhunter-hidden-procs (hidden_procs=None found)
+SKIP d7-pspy-prints-the-label (pspy: command not found)
+SKIP d8-zapper (zapper: command not found)
+SKIP d9-lsrootkit (lsrootkit: command not found)
+PASS d10-strace-attaches-to-the-control-only (control=[strace: Process 332509 attached])
+== QA58: PASS

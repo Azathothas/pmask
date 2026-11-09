@@ -1,0 +1,10 @@
+PASS 56a-control-exec-record (2 EXECVE records)
+PASS 56b-supervisor-record-carries-argv (found the literal secret in: type=EXECVE msg=audit(1794140348.833:39): argc=6 a0="/opt/pmask/pmask" a1="-q" a2="--label" a3="qa56-164658" a4="--secret" a5="S=literal:QA56-CANARY-164658")
+PASS 56b-supervisor-record-names-the-secret-flag
+PASS 56c-payload-record (argc=4, 3 empty slots, a0="qa56-164658")
+PASS 56d-tracer-record (ptrace records: 1)
+PASS 56d-obj-pid-record (1 OBJ_PID records)
+PASS 56e-watch-rule-blind (watch records=0, exit-rule records=2 for two execs)
+PASS 56f-32bit-record-keeps-real-argv
+PASS 56f-every-record-says-arch-c000003e (the exec syscall's ABI, not the payload's)
+== VERDICT: FAIL=0 ==

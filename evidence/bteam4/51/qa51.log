@@ -1,0 +1,14 @@
+   Compiling pmask v0.1.0-beta.1 (/workspace/wt/bteam4)
+    Finished `release` profile [optimized] target(s) in 19.85s
+PASS 51-socket-node-0600
+PASS 51-socket-name-in-proc-net-unix (residual: the table is world readable)
+FAIL 51-socket-name-in-ss-x (ss does not list the name)
+PASS 51-ping-full-for-own-uid
+PASS 51-ping-has-no-limits-sentence
+PASS 51-ping-full-carries-peer-uid
+FAIL 51-root-daemon-start (no socket at /tmp/qa51root.RvwXu8/d.sock)
+SKIP 51-ping-reduced-for-other-uid (root daemon did not start)
+SKIP 51-ping-full-for-root (root daemon did not start)
+SKIP 51-ping-refused-uid (root daemon did not start)
+SKIP 51-job-from-other-uid (root daemon did not start)
+== VERDICT: FAIL=2 ==

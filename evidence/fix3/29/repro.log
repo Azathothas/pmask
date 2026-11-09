@@ -1,0 +1,30 @@
+### baseline: /tmp/basebin/pmask (qa-base build, fa46e62)
+
+$ XDG_DATA_HOME='/tmp/qa"path' pmask doctor --json > base.json
+pmask exit=0
+
+$ jq . base.json  (exit code read unpiped)
+jq exit=5
+jq: parse error: Invalid numeric literal at line 38, column 50
+
+raw bytes around the store line:
+store": {"path": "/tmp/qa"path/pmask/store.enc", "exists": false},
+
+$ pmask doctor --require ""  (baseline: the empty list passes)
+exit=0  (0 = the defect)
+
+### fixed: target/release/pmask
+
+$ XDG_DATA_HOME='/tmp/qa"path' pmask doctor --json > fixed.json
+pmask exit=0
+
+$ jq -r .store.path fixed.json
+jq exit=0
+/tmp/qa"path/pmask/store.enc
+
+$ pmask doctor --require ""  (fixed: refused)
+exit=255
+pmask: doctor: --require needs at least one guarantee name; an empty list asserts nothing (drop --require, or name redact, isolate, exact, secret-mem, mlock, no-new-privs, non-dumpable or landlock)
+
+$ pmask doctor --require redact   (control: a real requirement still passes)
+exit=0
