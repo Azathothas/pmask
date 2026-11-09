@@ -1394,7 +1394,10 @@ mod tests {
             unsafe { libc::close(write_fd) };
         });
 
-        let opts = Options { hugetlb: true };
+        let opts = Options {
+            hugetlb: true,
+            ..Options::default()
+        };
         let image = match prepare_fd(read_fd, "pipe hugetlb", opts) {
             Ok(i) => i,
             Err(e) if skip_on_memfd_refusal(&e) => {
