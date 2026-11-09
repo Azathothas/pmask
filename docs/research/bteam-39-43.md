@@ -401,7 +401,7 @@ if real != served: alert("in-process auxv dissent")
 label=abcd   AT_EXECFN -> "abcd"             env_end - AT_EXECFN = 0   ptr - arg_start = 8
 label=8      AT_EXECFN -> "abcdefgh"         env_end - AT_EXECFN = 0   ptr - arg_start = 12
 label=12     AT_EXECFN -> "abcdefghijkl"     env_end - AT_EXECFN = 0   ptr - arg_start = 16
-payload:     getauxval(AT_EXECFN) = /workspace/wt/bteam1/target/release/pmask-testcases
+payload:     getauxval(AT_EXECFN) = <the real binary path>   (measured value, worktree path elided)
 ```
 
 The issue's main claims hold: the served view is the label, the payload's own
