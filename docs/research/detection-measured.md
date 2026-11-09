@@ -239,7 +239,9 @@ leaves the whole environment readable.
 * One kernel, uid, libc, page size and architecture. Numbers differ on a kernel
   before 5.3, where the setproctitle special case is absent, and on any host
   with `hidepid` set. `[inferred]`
-* `TracerPid` was 0 in every run; nothing here measures a traced process.
+* The harness table above measures no traced process: `TracerPid` was 0 in
+every mode 0 to 4 run. The pmask section records its own `TracerPid`
+separately.
 * The same-uid memory read that recovers the original strings is in
   `detection-residue.md`, not here.
 * `environ` readability depends on `PTRACE_MODE_READ_FSCREDS`. Only uid 1000 was
