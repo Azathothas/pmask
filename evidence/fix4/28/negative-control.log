@@ -1,0 +1,9 @@
+## negative control: issue 28 against the original src/rexec.rs (git show 8bcfcb0^)
+    Finished `release` profile [optimized] target(s) in 0.02s
+INFO q28a-control the host lacks usable huge pages; the fallback is exercised
+FAIL q28b-hugetlb-image-stdin-runs (rc=255 err=[pmask: -: Invalid argument (os error 22)])
+FAIL q28e-hugetlb-image-stdin-payload-works (out=[])
+FAIL q28c-hugetlb-image-stdin-carries-the-degradation-note (err=[pmask: -: Invalid argument (os error 22)])
+FAIL q28d-hugetlb-image-from-fd-runs (rc=255 out=[] err=[pmask: <fd image>: Invalid argument (os error 22)])
+################ qa28: FAIL
+rc=1

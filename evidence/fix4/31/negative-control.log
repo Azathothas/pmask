@@ -1,0 +1,9 @@
+## negative control: issue 31 against pre-fix src/cli.rs (git show f314d9b^)
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS q31a-control-args-from-fd-3-keeps-stdin
+FAIL q31b-args-from-fd-0-keeps-fd-0-open (rc=0 out=[FD0-GONE] err=[])
+FAIL q31c-args-from-fd-0-stdin-reads-eof-not-ebadf (rc=0 out=[read-rc=1] err=[cat: -: Bad file descriptor
+cat: closing standard input: Bad file descriptor])
+PASS q31d-image-from-fd-runs-from-a-memfd (rc=0)
+################ qa31: FAIL
+rc=1

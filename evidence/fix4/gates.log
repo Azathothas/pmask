@@ -1,0 +1,10 @@
+## cargo fmt --all -- --check
+fmt_rc=0
+
+## cargo clippy --locked --all-targets --features testbins -- -D warnings
+clippy_rc=0
+Finished dev profile
+
+## cargo test --locked --lib
+test result: ok. 174 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.40s
+rc=0

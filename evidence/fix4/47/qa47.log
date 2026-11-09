@@ -1,0 +1,28 @@
+## issue 47: end states and the --detach release warning
+$ ./pmask --detach -l qa-e47 /bin/sleep 0.3
+pmask: warning: --detach: pid 1438517 is released untraced, so its later execs are not redacted
+pmask: 1 tracee(s) left detached after their exec (--detach: their later execs are not redacted)
+rc=0
+$ ./pmask -q --detach -l qa-e47q /bin/sleep 0.3   (quiet)
+rc=0
+--- tests/qa.d/47.sh ---
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS q47a-control-default-is-traced (TracerPid=1440990)
+PASS q47b-detach-tracerpid-is-0
+PASS q47b2-detach-keeps-the-label (q47-40742-b|)
+PASS q47b3-detach-environ-is-empty
+PASS q47b4-detach-payload-is-alive (state=S (sleeping))
+PASS q47c-detach-names-the-release-and-its-coverage-gap
+PASS q47c2-detach-warning-is-one-line (n=1)
+PASS q47c3-quiet-suppresses-the-detach-warning
+PASS q47d-no-follow-direct-child-redacted (TracerPid=1445931)
+PASS q47d2-no-follow-grandchild-keeps-real-argv
+PASS q47d3-no-follow-grandchild-still-works
+PASS q47e-on-exit-detach-leaves-a-reparented-orphan (ppid=1)
+PASS q47e2-on-exit-detach-orphan-is-untraced
+PASS q47f-on-exit-kill-leaves-no-labelled-process
+PASS q47g-no-exit-kill-payload-survives-the-supervisor (state=S (sleeping))
+PASS q47g2-no-exit-kill-payload-is-untraced
+PASS q47h-control-default-exit-kill-takes-the-payload
+################ qa47: PASS
+rc=0
