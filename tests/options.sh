@@ -1037,7 +1037,11 @@ fi
 # Catches: an empty key reaching the child, and a refusal that does not
 # name the key.
 err=$("$TOOL" --env '=x' -- /bin/true 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q 'environment variable name ""'; then
+# The parser refuses before any mode is chosen, so the same input gives
+# the same answer in plain and redact mode (issue 30).  Either wording
+# names the key: the parser's own, or the mask validator's.
+if [ "$rc" = 255 ] && printf '%s' "$err" \
+    | grep -q -e 'environment variable name ""' -e "non-empty KEY, not '=x'"; then
     pass "o38-empty-env-key-is-refused-by-name"
 else
     fail "o38-empty-env-key (rc=$rc err=[$err])"

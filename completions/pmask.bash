@@ -12,6 +12,7 @@ _pmask() {
 --image --image-from-fd --exec-once --hugetlb --rexec-allow-disk \
 --scope-name --daemon --secret --socket --isolate --redact --no-redact \
 --audit --allow-argv-secret --secret-burn --secret-close-on-exec --report \
+--report-file --report-fd --secret-fd-name --memfd-name \
 -q --quiet -v --verbose -V --version -h --help -a -E -F -K -f -c"
 
     if [ "$COMP_CWORD" -eq 1 ] && [[ "$cur" != -* ]]; then

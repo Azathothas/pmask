@@ -228,42 +228,38 @@ fi
 stop
 
 # --------------------------- C10/C11: --comm LF and CR (fix1 #33)
-# These are recorded, not asserted as correct: the defect is real and it
-# is fix1's.  A PASS here means "the current behaviour is what the issue
-# measured", so a fix in #33 shows up as a failing case with a message
-# that points at the dependency, and the reconciler updates it.
-if start --comm "$(printf 'a\nb')" -l qa42-lf; then
-    c=$(od -An -tx1 "/proc/$PAY/comm" 2>/dev/null | tr -d ' \n')
-    stat_ok=no
-    awk '{sub(/.*\) /,""); if ($47 - $46 > 0) exit 0; exit 1}' "/proc/$PAY/stat" 2>/dev/null \
-        && stat_ok=yes
-    if [ "$c" = "610a620a" ]; then
-        pass "c10-comm-lf-accepted-today (comm hex=$c; fix1 #33 owns the fix)"
-    else
-        fail "c10-comm-lf-accepted-today (comm hex=$c, expected 610a620a; if #33 landed, update this case)"
-    fi
-    # The parenthesised comm now contains a raw LF, so a reader that
-    # strips through the last ') ' still finds it, but `ps` and any line
-    # oriented reader see two lines.  Recorded as an observation.
-    echo "INFO c10 stat parse with an LF comm: $([ "$stat_ok" = yes ] && echo ok || echo broken)"
-    stop
-else
-    fail "c10-comm-lf-accepted-today (no payload)"
-    stop
-fi
-
-if start --comm "$(printf 'a\rb')" -l qa42-cr; then
-    c=$(od -An -tx1 "/proc/$PAY/comm" 2>/dev/null | tr -d ' \n')
-    if [ "$c" = "610d620a" ]; then
-        pass "c11-comm-cr-accepted-today (comm hex=$c; fix1 #33 owns the fix)"
-    else
-        fail "c11-comm-cr-accepted-today (comm hex=$c, expected 610d620a; if #33 landed, update this case)"
-    fi
-    stop
-else
-    fail "c11-comm-cr-accepted-today (no payload)"
-    stop
-fi
+# The defect the issue measured is that LF and CR were accepted and broke
+# the parenthesised comm field of /proc/<pid>/stat.  After #33 the parser
+# refuses both, in every mode, and names the bytes; a fix that only
+# refused in the redaction path would leave plain and isolate runs
+# accepting them, so both spellings are checked.
+for pair in "c10:$(printf 'a\nb'):LF" "c11:$(printf 'a\rb'):CR"; do
+    id=${pair%%:*}
+    rest=${pair#*:}
+    bad=${rest%:*}
+    which=${rest##*:}
+    err=$(env -i PATH=/usr/bin:/bin "$TOOL" -q --comm "$bad" -l "qa42-$id" \
+        -- "$CASES" sleeper QAMARK 2>&1 >/dev/null)
+    rc=$?
+    case "$err" in
+        *"NUL, LF or CR"*)
+            [ "$rc" = 255 ] \
+                && pass "$id-comm-$which-refused (rc=$rc)" \
+                || fail "$id-comm-$which-refused (rc=$rc, want 255: $err)" ;;
+        *)
+            fail "$id-comm-$which-refused (rc=$rc err=[$err])" ;;
+    esac
+done
+# The same input in plain mode, which never builds a Mask on the old code.
+err=$(env -i PATH=/usr/bin:/bin "$TOOL" -q --no-redact --comm "$(printf 'a\nb')" \
+    -- /bin/true 2>&1 >/dev/null)
+rc=$?
+case "$err" in
+    *"NUL, LF or CR"*) [ "$rc" = 255 ] \
+        && pass "c10b-comm-lf-refused-in-plain-mode" \
+        || fail "c10b-comm-lf-refused-in-plain-mode (rc=$rc)" ;;
+    *) fail "c10b-comm-lf-refused-in-plain-mode (rc=$rc err=[$err])" ;;
+esac
 
 echo "== QA42: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL)"
 [ "$FAIL" = 0 ] || exit 1

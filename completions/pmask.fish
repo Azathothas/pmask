@@ -32,6 +32,10 @@ complete -c pmask -l isolate -d 'Fresh namespaces: pid,net,tmp | all | none' -x 
 complete -c pmask -l redact -d 'Ask for /proc redaction explicitly'
 complete -c pmask -l no-redact -d 'Never touch /proc metadata'
 complete -c pmask -l audit -d 'Print a residue row per tracee at each exec'
+complete -c pmask -l report-file -d 'Write the --report document to PATH' -r
+complete -c pmask -l report-fd -d 'Write the --report document to a descriptor' -x
+complete -c pmask -l secret-fd-name -d 'Name the delivered secret memfd' -x
+complete -c pmask -l memfd-name -d 'Name the image memfd' -x
 complete -c pmask -l allow-argv-secret -d 'Keep a literal: or env: source and warn'
 complete -c pmask -l secret-burn -d 'Seal without F_SEAL_SHRINK so the reader can truncate'
 complete -c pmask -l secret-close-on-exec -d 'Close the descriptor in every descendant at its fork'
