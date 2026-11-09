@@ -655,8 +655,11 @@ impl Mask {
             if c.len() > crate::COMM_MAX {
                 return Err(invalid("comm must be at most 15 bytes"));
             }
-            if c.bytes().any(|b| b == 0) {
-                return Err(invalid("comm must not contain NUL"));
+            // LF and CR break the parenthesised `comm` field of
+            // `/proc/<pid>/stat`, which readers split on newlines; NUL
+            // truncates the kernel's `comm` copy.  Same rule as the label.
+            if c.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+                return Err(invalid("comm must not contain NUL, LF or CR bytes"));
             }
         }
         if let Some(a) = &self.argv0 {
