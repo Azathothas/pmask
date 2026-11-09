@@ -29,3 +29,10 @@ rc=0
 
 ## E. PMASK_NO_SELFMASK with no secret: no warning at all
 rc=0
+
+## F. a warning never describes a run that will not happen
+# The checks run after every refusal that makes the run impossible.
+$ pmask --daemon /tmp/nosock --keep-env --secret T=env:HUSH -- /bin/true
+pmask: --daemon cannot be combined with --secret: the daemon owns the masking policy and the job environment, so this flag would be dropped; run the job without --daemon
+$ pmask --redact --no-redact --keep-env --secret T=env:HUSH -- /bin/true
+pmask: --redact and --no-redact contradict each other; pass one
