@@ -1,5 +1,5 @@
 ################ qa: qa.d/15.sh
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.05s
 PASS qa15-control-flags0-leaks
 PASS qa15-payload-fds
 PASS qa15-grandchild-fds
@@ -65,8 +65,8 @@ PASS qa5-unshare-read
 PASS qa60-both-comm-is-label
 PASS qa60-both-cmdline-is-label
 PASS qa60-both-payload-alive
-PASS qa60-no-warning
-PASS qa60-both-rename-accepted
+PASS qa60-no-silent-continue
+PASS qa60-both-outcome-is-defined
 PASS qa60-control-plain-rename-lands
 PASS qa60-watch-comm-is-label
 PASS qa60-watch-cmdline-is-label
