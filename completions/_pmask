@@ -39,7 +39,7 @@ _pmask() {
         '--allow-argv-secret[keep a literal: or env: source and warn]' \
         '--secret-burn[seal without F_SEAL_SHRINK so the reader can truncate]' \
         '--secret-close-on-exec[close the descriptor in every descendant at its fork]' \
-        '--report[output format]:format:(json text plain)' \
+        '--report[output format]:format:(json)' \
         '(-q --quiet)'{-q,--quiet}'[suppress diagnostics]' \
         '(-v --verbose)'{-v,--verbose}'[trace every event]' \
         '(-V --version)'{-V,--version}'[print version]' \

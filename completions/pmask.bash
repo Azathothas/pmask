@@ -41,7 +41,9 @@ _pmask() {
             return 0
             ;;
         --report)
-            COMPREPLY=( $(compgen -W "json text plain" -- "$cur") )
+            # Only `json` is documented and only `json` is meaningful: the
+            # other two spellings were accepted and did nothing (issue #36).
+            COMPREPLY=( $(compgen -W "json" -- "$cur") )
             return 0
             ;;
         --env)

@@ -203,5 +203,30 @@ else
     echo "SKIP syntax-bash-tables (no bash on this host)"
 fi
 
+# ------------------------------------------------------- value lists
+# `--report` is the one option whose value list is both small and a
+# documented contract: only `json` does anything (issue #36 -- `text` and
+# `plain` were accepted and did nothing).  A table that offers the dead
+# spellings is a completion that suggests a no-op.
+for f in completions/pmask.bash completions/pmask.fish completions/_pmask; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in
+        *.bash)
+            got=$(sed -n '/--report)/,/;;/p' "$f" | grep -o 'compgen -W "[^"]*"' | sed 's/.*"\(.*\)"/\1/')
+            ;;
+        *.fish)
+            got=$(sed -n "s/.*-l report .*-a '\([^']*\)'.*/\1/p" "$f")
+            ;;
+        *)
+            got=$(sed -n "s/.*--report\[[^]]*\]:format:(\([^)]*\)).*/\1/p" "$f")
+            ;;
+    esac
+    if [ "$got" = "json" ]; then
+        pass "pmask-$(basename "$f")-report-offers-json-only"
+    else
+        fail "pmask-$(basename "$f")-report-offers-json-only (offers [${got}])"
+    fi
+done
+
 echo "== COMPLETIONS: FAIL=$FAIL =="
 [ "$FAIL" = 0 ]
