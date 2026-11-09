@@ -62,10 +62,12 @@ A line that writes
 .B \-\-keep\-env
 NAME
 .B \-\-
-COMMAND is refused, naming
+COMMAND prints one warning naming
 .BR \-\-keep\-env=NAME ,
-because the space form would keep everything and run NAME as the
-program.
+because the space form keeps everything and runs NAME as the program; the
+warning is printed even under
+.B \-q
+and the command still runs, since NAME is also a legal program name.
 .TP
 .BI \-\-keep\-env= NAME[,NAME...]
 Keep only the named variables visible.

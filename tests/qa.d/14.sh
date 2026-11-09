@@ -76,15 +76,33 @@ done
 # ------------------------------------------------------------------ N3
 # `--keep-env PATH -- true` used to keep the whole environment and run
 # PATH as the program, failing with the generic "No such file or
-# directory".  When a `--` separator and a command follow the value, the
-# operator wrote the inline form with a space; the parser names it.
+# directory".  A word that looks like a variable list is the common typo
+# for `--keep-env=PATH`, but it is also a legal program name (`sleep`,
+# `env`, `make`), so the parser names the spelling in one warning and runs
+# what the operator wrote rather than narrowing a working command.
 "$TOOL" -q --keep-env PATH -- true >"$D/n3.out" 2>"$D/n3.err"
 rc=$?
-if [ "$rc" = 255 ] && grep -q -- "--keep-env=PATH" "$D/n3.err"; then
-    pass "qa14-n3-keep-env-space-form-before-a-command-is-refused"
-else
-    fail "qa14-n3-keep-env-space-form-before-a-command-is-refused (rc=$rc err=$(tr '\n' '|' <"$D/n3.err"))"
-fi
+case "$rc" in
+    127)
+        # `PATH` is not a program here, so the run fails to exec it; the
+        # point is that the warning named the inline spelling first.
+        if grep -q -- "--keep-env=PATH" "$D/n3.err"; then
+            pass "qa14-n3-keep-env-space-form-is-named"
+        else
+            fail "qa14-n3-keep-env-space-form-is-named (rc=$rc err=$(tr '\n' '|' <"$D/n3.err"))"
+        fi
+        ;;
+    0)
+        if grep -q -- "--keep-env=PATH" "$D/n3.err"; then
+            pass "qa14-n3-keep-env-space-form-is-named"
+        else
+            fail "qa14-n3-keep-env-space-form-is-named (ran with no warning: $(tr '\n' '|' <"$D/n3.err"))"
+        fi
+        ;;
+    *)
+        fail "qa14-n3-keep-env-space-form-is-named (rc=$rc err=$(tr '\n' '|' <"$D/n3.err"))"
+        ;;
+esac
 # Control: `--keep-env` with no value is still the whole-environment
 # switch, and a bare `--keep-env PATH` still runs a program named PATH
 # (there is no separator, so the word is the command).

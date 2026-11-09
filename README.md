@@ -101,7 +101,7 @@ Options that matter most:
 | `-l, --label NAME` | the presented command line and comm |
 | `--comm NAME` | a comm separate from the label, at most 15 bytes |
 | `--argv0 NAME` | argv[0] of the program; the default is the command as typed |
-| `--keep-env` | leave `environ` visible in full, values included, so every variable the caller passed is readable again; a later `--keep-env=NAME` narrows it to the named variables |
+| `--keep-env` | leave `environ` visible in full, values included, so every variable the caller passed is readable again; a later `--keep-env=NAME` narrows it to the named variables. It takes no value, so `--keep-env NAME -- CMD` runs NAME as the program and warns, naming `--keep-env=NAME` |
 | `--keep-env=NAME` | keep only the named variables visible, repeatable; each named value is readable again, at its original position inside a window that otherwise reads as NUL padding |
 | `--env K=V`, `--env-file PATH` | set the child environment |
 | `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the caller's descriptor stays open and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |

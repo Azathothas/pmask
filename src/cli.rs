@@ -546,11 +546,15 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                             // command that works; warn once and run what
                             // the operator wrote, so the run is visible
                             // rather than narrowed (issue 14 N3).
+                            // The warning ignores `-q`, like the other
+                            // exposure warnings: a quiet run that keeps
+                            // the whole environment visible while the
+                            // operator meant one variable is the silent
+                            // degradation invariant 13 forbids.
                             if let (Some(next), Some(after)) = (argv.get(i + 1), argv.get(i + 2)) {
                                 if after.as_bytes() == b"--"
                                     && argv.len() > i + 3
                                     && looks_like_env_names(next.as_bytes())
-                                    && !quiet
                                 {
                                     eprintln!(
                                         "pmask: warning: --keep-env takes no value, so '{}' is \
