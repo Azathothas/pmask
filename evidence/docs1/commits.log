@@ -1,4 +1,7 @@
 $ git log --oneline d2f331a..HEAD
+42443c4 docs: note the gate is run unprivileged in DEPLOY
+8a23e4b docs: tighten the secret and mode wording
+155fd4a docs: add the docs1 evidence index
 38ce703 docs: same-uid reader also reads payload memory
 939fdf7 docs: the tracer pid is a thread, not the supervisor
 d847eff docs: name the argv source in SECURITY
@@ -15,7 +18,11 @@ c08e32c docs: add the audit and wrapper exposure to SECURITY
 f8ccfbc docs: state the audit-log exposure of literal secrets
 
 $ git diff --stat d2f331a..HEAD
- README.md      | 196 ++++++++++++++++++++++++++++++++++++++++++++++++++-------
- SECURITY.md    |  29 +++++++--
- docs/DEPLOY.md |  17 +++++
- 3 files changed, 214 insertions(+), 28 deletions(-)
+ README.md                       | 198 +++++++++++++++++++++++++++++++++++-----
+ SECURITY.md                     |  29 +++++-
+ docs/DEPLOY.md                  |  24 +++++
+ evidence/docs1/README.md        |  78 ++++++++++++++++
+ evidence/docs1/check-rename.log |   2 +
+ evidence/docs1/commits.log      |  21 +++++
+ evidence/docs1/style-checks.log |   5 +
+ 7 files changed, 328 insertions(+), 29 deletions(-)
