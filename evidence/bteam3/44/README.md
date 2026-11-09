@@ -15,6 +15,7 @@ warning and does not touch dumpability).
 | `dumpable-by-mode.log` | `sh /tmp/ndu.sh` | `PR_GET_DUMPABLE` in the payload for five flag combinations |
 | `note-plain.json`, `note-isolate.json` | `pmask --no-redact --no-dumpable --report=json --secret T=file:/etc/hostname -- /bin/true` and the `--isolate` form | the note that says the flag was not applied, and the `payload_dumpable` field issue 21 owns |
 | `unshare-vs-dumpable.log` | `sh /tmp/ndu3.sh` | the new defect: `--unshare --no-dumpable` denies only 3 of the 5 |
+| `nsenter-isolate-init.log` | `sudo nsenter -t LEAF -p -m sh -c 'cat /proc/1/comm'` | which process is the namespace init under `--isolate`: the grandchild `sleep`, not the labelled intermediate |
 | `unshare-dumpable-repeat.log` | `sh /tmp/ndu4.sh` | three repeats of the same row |
 | `userns-dumpable-control.log` | hand-written C, `/tmp/nd` | the controls that separate the cause of the new defect |
 | `userns-mapcurrent-control.log` | `unshare -U --map-current-user /tmp/nd` | the same control with the uid mapped to itself |
@@ -96,6 +97,6 @@ Nothing for this issue. Every row above was run on this host.
 
 ## Files
 
-- `tests/qa.d/44.sh` — the fragment, 14 cases.
+- `tests/qa.d/44.sh` — the fragment, 14 cases, all PASS on this host.
 - `docs/research/bteam-audit.md` is not this issue's; the audit warning
   lives in `src/run.rs` and `src/cli.rs` under issue 59.

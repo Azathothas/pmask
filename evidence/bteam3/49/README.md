@@ -15,6 +15,7 @@ the `nsenter` probe.
 | `unshare-exact-repro.log` | `sh /tmp/probe49d.sh` | the issue's own repro shape; shows why `pgrep -x sleep` is the wrong observer on this host |
 | `unshare-shapes.log` | `sh /tmp/probe49e.sh` | `--unshare` under four payload shapes |
 | `unshare-fingerprints.log` | `sh /tmp/probe49f.sh` | `NSpid`, `hidepid=invisible`, and the `nsenter` probe as root |
+| `nsenter-isolate-init.log` | the same probe under `--isolate`, four runs | which process is pid 1 of the private namespace |
 | `unshare-six-runs.log` | `sh /tmp/unshare6.sh` | six `--unshare` runs, release build |
 | `32bit-row.log` | `sh /tmp/probe49c.sh` plus the stderr of a 32-bit `echoargs` run | the 32-bit refusal and the real argv |
 
@@ -53,22 +54,39 @@ The mode table, measured in `mode-matrix-sleep.log`:
 | `--redact --isolate` | label + NUL | label | 0 bytes | tracer thread | two numbers |
 | 32-bit image | real argv | `testcases32` | real | tracer thread | one number |
 
-`--isolate` fingerprints, exactly as the issue states:
+`--unshare` and `--isolate` fingerprints, both measured here:
 
 ```
 mountinfo: 1859 903 0:131 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw,hidepid=invisible
 NSpid: 69563  1
-sudo nsenter -t <leaf> -p -m sh -c 'grep -E "^(Pid|PPid|NSpid):" /proc/self/status'
-  Pid: 3   PPid: 2   NSpid: 3
 sudo nsenter -t <leaf> -p -m sh -c 'tr "\0" " " < /proc/1/cmdline'
-  qa49f-69557
+  <label>          (in a --unshare run; under --isolate this reads the real argv,
+                    because there the namespace init is the leaf)
 ```
 
-The `/proc/1/cmdline` under `--unshare` is the label, and the in-namespace
-`Pid` is not 1: the payload is not the namespace init, the process that
-exec'd it is. That is a small correction to the issue's
-`in-namespace self-view: Pid: 2  PPid: 1` row, which was measured with a
-different payload shape.
+`nsenter ... -p` puts the shell into the payload's pid namespace, so the
+`Pid:` the shell reads for itself is the shell's, not the payload's.
+Only `/proc/1` and the host-side `NSpid` describe the namespace.
+
+The `/proc/1/cmdline` under `--unshare` is the label, and the leaf is
+`pid 1` of its own pid namespace (`NSpid: 2500327  1`). An earlier
+version of this note said the opposite, from reading the `nsenter`
+shell's own `Pid` as if it were the payload's; the leaf's `NSpid` and an
+in-namespace `cat /proc/1/comm` settle it, and both are in
+`nsenter-isolate-init.log`.
+
+Under `--isolate` the namespace init is the **leaf**, which is the
+process carrying the real argv:
+
+```
+run 1 intermediate=2479658 comm=iz-1-...   NSpid=[2479658]
+run 1 leaf=2479665         comm=sleep      NSpid=[2479665  1]
+```
+
+That is why `--isolate` has to be read by walking the tree: the
+intermediate is labelled and the leaf is not, and only the leaf is the
+namespace init. A one-level check sees the labelled process and reports
+clean. Four runs, all the same shape, in `nsenter-isolate-init.log`.
 
 The 32-bit row:
 
