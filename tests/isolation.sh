@@ -16,7 +16,8 @@
 #   I5  the IPC namespace is not the host's
 #   I6  the cgroup namespace is not the host's
 #   I7  the private /tmp is empty and the host's is not claimed
-#   I8  /dev holds only the bound device nodes, and they work
+#   I8  /dev holds only the bound device nodes and the members issue 25
+#       added, and they work
 #   I9  a refused mount is named and does not abort the run
 #   I10 Landlock denies a path outside its allowlist (with a positive control)
 #   I11 the payload's exit status and stdout pass through unchanged
@@ -551,7 +552,7 @@ if has "$probe_rep" "dev"; then
         fi
     done
     if [ -z "$leak" ]; then
-        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue shm pts fuse net console log core initctl ptmx"
+        skip "i8-control-host-dev-node-absent: this host's /dev has none of kvm mqueue fuse net console log core initctl"
     else
         case " $dev_list " in
             *" $leak "*)
