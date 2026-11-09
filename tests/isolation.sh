@@ -53,8 +53,26 @@ pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
+# The matrix group's pids and their start times, filled in when they are
+# spawned.  cleanup runs on every exit path, including the early SKIP gates
+# above, so the variables are declared before any of them.
+MATRIX_CTL_START=""
+MATRIX_SUP_START=""
+MATRIX_PID_START=""
+
 cleanup() {
+    # The scoped comm kill covers the supervisor and the masked payload:
+    # their comm is the suite's own `mkiso...` label.
     kill_comm mkiso KILL 2>/dev/null
+    # It does not cover the matrix control payload, which is a plain
+    # `testcases` process and outlived the suite.  The orphan then made
+    # `edge.sh e6-supervisor-selfmask` fail on the next run, because that
+    # case scans every /proc entry for a real argv shape and PMKISO- is
+    # one.  Kill it by the identity the suite recorded (kill_owned also
+    # refuses a recycled pid, so the cleanup cannot hit a stranger).
+    kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+    kill_owned "$MATRIX_PID" "$MATRIX_PID_START"
+    kill_owned "$MATRIX_SUP" "$MATRIX_SUP_START"
     rm -rf "$T"
 }
 trap cleanup EXIT
@@ -964,9 +982,13 @@ MATRIX_CTL=""
 MK_ISO_ENV="$MATRIX_CAN" "$TOOL" run --label "$MATRIX_LABEL" --no-dumpable \
     -- "$CASES" sleeper "$MATRIX_CAN" >/dev/null 2>"$T/matrix.err" &
 MATRIX_SUP=$!
+MATRIX_SUP_START=$(proc_start "$MATRIX_SUP")
 MATRIX_PID=$(matrix_child "$MATRIX_SUP")
+MATRIX_PID_START=""
+[ -n "$MATRIX_PID" ] && MATRIX_PID_START=$(proc_start "$MATRIX_PID")
 MK_ISO_ENV="$MATRIX_CAN" "$CASES" sleeper "$MATRIX_CAN" >/dev/null 2>&1 &
 MATRIX_CTL=$!
+MATRIX_CTL_START=$(proc_start "$MATRIX_CTL")
 sleep 0.2
 
 if [ -z "$MATRIX_PID" ] || [ ! -d "/proc/$MATRIX_PID" ] || [ ! -d "/proc/$MATRIX_CTL" ]; then
@@ -994,6 +1016,25 @@ else
     else
         fail "i20-comm-is-the-label (masked=[$m_comm] control=[$c_comm])"
     fi
+
+    # ---------------------- i21 to i36: the same-uid refusal matrix
+    # Every case below asserts that a *same-uid peer* is refused a file in
+    # the masked payload's /proc entry.  Root with CAP_SYS_PTRACE is not a
+    # same-uid-limited peer: the capability check in `ptrace_may_access`
+    # succeeds before the dumpable check is reached, so root reads environ,
+    # maps, fd, mem and the rest by design (issue #35).  Deciding these
+    # cases from there would report a false failure, and a PASS would be
+    # equally wrong because it would claim a guarantee that was never
+    # tested.  SKIP each one with the reason, as the root-only cases above
+    # already do.
+    if root_peer_observer; then
+        for c in i21-environ i22-maps i23-smaps i24-fd-and-fdinfo i25-exe \
+            i26-cwd-and-root i27-ns i28-auxv i29-syscall i30-io i31-mem \
+            i32-pidfd-getfd i33-process-vm-readv i34-process-vm-writev \
+            i35-ptrace-attach-and-seize i36-kcmp; do
+            skip "$c-refused-with-no-dumpable: $ROOT_PEER_REASON"
+        done
+    else
 
     # i19: environ is refused with --no-dumpable; the control's is readable
     # and carries the canary.
@@ -1153,6 +1194,52 @@ else
             fail "i36-kcmp-refused-with-no-dumpable (masked=[$m_out] control=[$c_out])"
         fi
     fi
+
+    fi  # ! root_peer_observer: the same-uid refusal matrix
+
+    # The control payload is not masked and carries the marker in argv.
+    # It has served its purpose by now, so stop it here and reap it rather
+    # than leaving a `testcases sleeper PMKISO-...` process behind for the
+    # rest of the gate (cleanup is the backstop, not the plan).
+    kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+    # `wait` on a live child blocks until it exits, and this payload is a
+    # `sleeper`: an unconditional wait after a kill that did not fire would
+    # hang the whole gate instead of failing it.  So poll for the process to
+    # be gone and never wait while it is alive.
+    mk_reap_i=0
+    while [ -d "/proc/$MATRIX_CTL" ] && [ "$mk_reap_i" -lt 20 ]; do
+        sleep 0.1
+        mk_reap_i=$((mk_reap_i + 1))
+    done
+    if [ -d "/proc/$MATRIX_CTL" ]; then
+        fail "i19-matrix-control-payload-stopped (pid $MATRIX_CTL survived its kill)"
+        # Backstop, still scoped: kill_owned re-checks uid and start time,
+        # so this cannot hit a recycled pid.
+        kill_owned "$MATRIX_CTL" "$MATRIX_CTL_START"
+        mk_reap_i=0
+        while [ -d "/proc/$MATRIX_CTL" ] && [ "$mk_reap_i" -lt 20 ]; do
+            sleep 0.1
+            mk_reap_i=$((mk_reap_i + 1))
+        done
+    else
+        pass "i19-matrix-control-payload-stopped"
+    fi
+    # Reap only a process that is already gone; otherwise leave it to the
+    # trap, which runs the same scoped kill at exit.
+    [ -d "/proc/$MATRIX_CTL" ] || wait "$MATRIX_CTL" 2>/dev/null
+    [ -d "/proc/$MATRIX_CTL" ] || MATRIX_CTL=""
+fi
+
+# The orphan guard: the property this suite promises is that no process it
+# started survives it.  Catches: the control payload leaking past the run
+# (the leak that made `edge.sh e6-supervisor-selfmask` fail on the next
+# run, because that case scans every /proc entry for a real argv shape and
+# `testcases sleeper PMKISO-...` is one).
+mkiso_left=$(sightings "PMKISO-$$")
+if [ "$mkiso_left" = 0 ]; then
+    pass "i37-no-pmkiso-process-survives-the-matrix"
+else
+    fail "i37-no-pmkiso-process-survives-the-matrix ($mkiso_left process(es) still carry PMKISO-$$)"
 fi
 
 echo "== VERDICT: FAIL=$FAIL =="

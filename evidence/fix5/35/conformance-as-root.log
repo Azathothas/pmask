@@ -1,0 +1,25 @@
+PASS args-hidden cmdline=[cfm-conf|]
+PASS args-visible-control canary visible in pid 2236945 without supervision
+PASS environ-hidden
+PASS environ-keep-control environ=[|||||||||||||||||||||PMK_CONF_KEEP=CFMCONF-gTSqWrxR-ARG|]
+PASS comm-is-label
+PASS comm-control unsupervised comm is [sh]
+PASS ps-args-is-label
+PASS ps-args-control
+PASS supervisor-selfmask comm=[cfm-conf] cmdline=[cfm-conf|]
+PASS same-uid-exe-maps exe=[/usr/bin/dash]
+PASS same-uid-environ-read
+SKIP holder-environ-refused: uid 0 with CAP_SYS_PTRACE reads a non-dumpable process's /proc entry, so a same-uid refusal cannot be observed from here
+PASS payload-session pid=2238919
+PASS secret-absent
+PASS core-limit-zero holder=[0 0] payload=[0 0]
+SKIP core-limit-control: this shell's hard RLIMIT_CORE is already 0, so a zero in the session proves nothing
+PASS secret-fd-is-memfd fd=3 seals=15 write_errno=1 link=/memfd:pmask-secret (deleted)
+PASS secret-fd-control seals=[-1] for a plain file (the memfd set is 15)
+PASS dumpable-default
+PASS dumpable-nodumpable
+SKIP nodumpable-refuses: uid 0 with CAP_SYS_PTRACE reads a non-dumpable process's /proc entry, so a same-uid refusal cannot be observed from here
+SKIP observer-other-uid: needs root to create a second uid; its cmdline and comm half is what args-hidden and comm-is-label measure
+SKIP observer-root: this suite runs as uid 0, so root's view cannot be observed from here
+SKIP observer-kernel: a kernel-level attacker is outside the process's view, so no case can measure it
+CONFORMANCE: PASS pass=18 fail=0 skip=6

@@ -1,0 +1,92 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS i0a-isolate-fs-refused-by-the-parser
+PASS i0a-help-does-not-advertise-isolate-fs
+PASS i0b-payload-unit-permits-ptrace
+PASS i17a-profile-ptrace-allowed (mode=redact reason=[] metadata_redaction=true)
+PASS i17b-profile-ptrace-banned (mode=plain reason=[seccomp] metadata_redaction=false)
+PASS i17c-profile-memfd-present (mode=redact reason=[] memfd_secret=true)
+PASS i17d-profile-memfd-absent (mode=redact reason=[] memfd_secret=false)
+PASS i17e-profile-userns-present (mode=isolate reason=[] isolation=true)
+PASS i17f-profile-userns-absent (mode=redact reason=[isolate_unavailable] isolation=false)
+PASS i17g-profile-landlock-abi-0 (mode=redact reason=[] landlock_abi=0)
+PASS i17h-profile-landlock-abi-1 (mode=redact reason=[] landlock_abi=1)
+PASS i17i-profile-landlock-abi-3 (mode=redact reason=[] landlock_abi=3)
+PASS i17j-profile-landlock-abi-6 (mode=redact reason=[] landlock_abi=6)
+PASS i17-control-ptrace-host-value-is-a-row-value (true)
+PASS i17-control-memfd-host-value-is-a-row-value (true)
+PASS i17-control-userns-host-value-is-a-row-value (true)
+PASS i17-control-landlock-host-value-is-a-number (6)
+PASS i17-control-a-wrong-mode-is-refused
+PASS i17-control-a-wrong-probe-is-refused
+PASS i1-effective-set-names-every-mechanism: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+PASS i1-set-starts-with-the-unconditional-namespaces
+PASS i1-off-switches-are-named-not-omitted
+PASS i2-no-new-privs-set-in-the-payload
+PASS i2-control-flag-clear-without-isolation
+PASS i3-payload-sees-only-itself (inside=1 host=53)
+PASS i3-control-pid-off-sees-the-host (off=56 host~53 isolated=1)
+PASS i4-neutral-hostname-inside (host=errand-pyztg9rss42g inside=pmask)
+PASS i4-control-without-isolation-sees-the-host-name
+PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533401])
+PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533470])
+PASS i6-cgroup-path-is-the-namespace-root
+PASS i7-private-tmp-hides-the-host's-files
+PASS i7-control-tmp-off-sees-the-host's-files
+PASS i7b-payload-under-tmp-still-runs (rc=0 inside=1)
+PASS i7b-payload-under-tmp-reports-the-tmp-degradation
+PASS i8-dev-holds-only-the-expected-nodes (fd full null random stderr stdin stdout tty urandom zero )
+PASS i8-dev-has-the-basic-nodes
+PASS i8-host-dev-node-is-gone (/dev/kvm exists on the host, absent inside)
+PASS i8-bound-node-is-usable
+PASS i9-refused-mount-does-not-abort-the-run
+PASS i9-refused-mount-is-named-in-the-description
+PASS i9-refused-mount-carries-a-degraded-line
+PASS i10-landlock-abi-is-reported (abi=6)
+PASS i10-landlock-still-allows-the-system-directories
+PASS i10-landlock-denies-a-path-outside-the-allowlist (/workspace/wt/fix5/tests/../Cargo.toml)
+PASS i10-control-canary-is-readable-without-isolation
+PASS i11-stdout-and-exit-status-pass-through (rc=7)
+PASS i11-handled-signal-reaches-the-payload (rc=42)
+PASS i11-pid-namespace-init-drops-a-default-action-signal (isolated rc=0, unisolated rc=143)
+PASS i12-env-reaches-the-isolated-payload
+PASS i12-env-file-reaches-the-isolated-payload
+PASS i12-control-env-not-set-without-the-flag
+PASS i12-inherited-path-survives
+PASS i13-label-not-applied-is-visible
+PASS i13b-supervisor-cmdline-is-the-label
+PASS i13c-supervisor-cmdline-is-the-program-basename
+PASS i14-isolate-refuses-close-on-exec
+PASS i14-refusal-advice-names-isolate
+PASS i15-isolate-refuses-an-env-secret
+PASS i15-refused-env-secret-leaves-no-process
+PASS i15-isolate-refuses-a-literal-secret
+PASS i15b-isolate-delivers-a-file-secret
+isolation.sh: 847: cannot open /proc/3715509/environ: Permission denied
+PASS i15-supervisor-environ-is-masked
+PASS i15-control-payload-environ-keeps-the-value (2)
+PASS i15-value-is-gone-after-the-run
+PASS i16-no-secret-close-on-exec-is-named
+PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=44)
+PASS i18-redact-and-no-redact-contradict
+PASS i19-matrix-sessions-are-live (masked=3720187 control=3720499)
+PASS i19-cmdline-is-the-label (bytes=12)
+PASS i20-comm-is-the-label (masked=mkisomatrix control=testcases)
+PASS i21-environ-refused-with-no-dumpable
+PASS i22-maps-refused-with-no-dumpable (control bytes=2757)
+PASS i23-smaps-refused-with-no-dumpable (control bytes=22901)
+PASS i24-fd-and-fdinfo-refused-with-no-dumpable (control fd=3 fdinfo=3)
+PASS i25-exe-refused-with-no-dumpable (control=/workspace/wt/fix5/tests/testcases)
+PASS i26-cwd-and-root-refused-with-no-dumpable (control cwd=/workspace/wt/fix5/tests root=/)
+PASS i27-ns-refused-with-no-dumpable (control=pid:[4026532664])
+PASS i28-auxv-refused-with-no-dumpable (control bytes=368)
+PASS i29-syscall-refused-with-no-dumpable (control bytes=57)
+PASS i30-io-refused-with-no-dumpable (control bytes=94)
+PASS i31-mem-refused-with-no-dumpable
+PASS i32-pidfd-getfd-refused-with-no-dumpable (masked=errno=EPERM control=ok)
+PASS i33-process-vm-readv-refused-with-no-dumpable (masked=errno=EPERM control=ok bytes=8)
+PASS i34-process-vm-writev-refused-with-no-dumpable (masked=read errno=EPERM control=ok bytes=8)
+PASS i35-ptrace-attach-and-seize-refused-with-no-dumpable (attach masked=errno=EPERM control=ok; seize masked=errno=EPERM control=ok)
+PASS i36-kcmp-refused-with-no-dumpable (masked=errno=EPERM control=ok result=0)
+PASS i19-matrix-control-payload-stopped
+PASS i37-no-pmkiso-process-survives-the-matrix
+== VERDICT: FAIL=0 ==
