@@ -29,6 +29,37 @@ const SYS_MEMFD_SECRET: libc::c_long = 447;
 const MFD_CLOEXEC: u32 = 0x0001;
 const MFD_ALLOW_SEALING: u32 = 0x0002;
 
+/// Create a `memfd_secret(2)` descriptor that the kernel closes at the
+/// next `exec` of any process that inherits it.
+///
+/// Every `memfd_secret` in this crate is created here.  The descriptor is
+/// an open handle on the plaintext, so a copy that survives an `exec`
+/// hands the secret to a descendant no matter what the delivery policy
+/// did to the delivered descriptor.  One creation site is what makes the
+/// flag impossible to forget (issue 15).
+pub(crate) fn secret_memfd() -> io::Result<libc::c_int> {
+    // SAFETY: plain syscall with constant arguments.
+    let fd = unsafe { libc::syscall(SYS_MEMFD_SECRET, MFD_CLOEXEC as libc::c_long) as libc::c_int };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+/// Is `memfd_secret(2)` usable here?  Probes through [`secret_memfd`], so
+/// the capability check creates the descriptor exactly the way the real
+/// buffers do, and closes it immediately.
+pub(crate) fn secret_memfd_available() -> bool {
+    match secret_memfd() {
+        Ok(fd) => {
+            // SAFETY: fd is ours and not used further.
+            unsafe { libc::close(fd) };
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 const F_ADD_SEALS: libc::c_int = 1033;
 /// `F_GET_SEALS`.  Not in the `libc` crate's constants yet.
 const F_GET_SEALS: libc::c_int = 1034;
@@ -142,11 +173,17 @@ impl SecBuf {
         if want as u64 > memlock_limit() {
             return Ok(None);
         }
-        // SAFETY: plain syscall with constant arguments.
-        let fd = unsafe { libc::syscall(SYS_MEMFD_SECRET, 0 as libc::c_long) } as libc::c_int;
-        if fd < 0 {
-            return Ok(None);
-        }
+        // A plain `memfd_secret` descriptor is inherited across every
+        // `fork` and survives every `exec` in the tree.  The descriptor is
+        // an open handle on the plaintext, so a descendant that keeps it
+        // can `mmap` the secret no matter what `--secret-close-on-exec`
+        // did to the delivered descriptor.  `secret_memfd` creates it
+        // `MFD_CLOEXEC`, so the kernel closes it at the first exec of
+        // anything that does not belong to the supervisor (issue 15).
+        let fd = match secret_memfd() {
+            Ok(fd) => fd,
+            Err(_) => return Ok(None),
+        };
         // A fresh memfd_secret has zero length; mapping more than the file
         // holds faults with SIGBUS on first touch, so size it first.
         // SAFETY: ftruncate on our own anonymous file.
