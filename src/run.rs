@@ -617,6 +617,20 @@ impl Runner {
                 "--secret-close-on-exec has nothing to close: no --secret was given".to_string(),
             );
         }
+        // A name with no descriptor to carry it is the same kind of
+        // no-op, and the operator has no other way to see it.
+        if self
+            .mask
+            .as_ref()
+            .is_some_and(|m| m.secret_fd_name_value().is_some())
+            && self.secrets.is_empty()
+        {
+            notes.push(
+                "--secret-fd-name has no effect: no --secret was given, so no descriptor is \
+                 delivered"
+                    .to_string(),
+            );
+        }
 
         // 0. Refuse a source that plain mode cannot protect, before any
         //    value is read.

@@ -559,6 +559,11 @@ impl Mask {
         self.secret_fd_name.as_deref()
     }
 
+    /// The `--memfd-name` value, when one was chosen.
+    pub fn memfd_name_value(&self) -> Option<&str> {
+        self.rexec_memfd_name.as_deref()
+    }
+
     /// True when `--image`, `--image-from-fd` or `--image -` supplied the
     /// program bytes.
     pub fn has_image(&self) -> bool {
@@ -1009,6 +1014,15 @@ impl Mask {
                 &self.rexec_image,
                 None | Some(crate::rexec::Source::Path(_))
             );
+        // A name that cannot be applied is a degradation, not a silent
+        // drop (invariant 13).  Either flag can be given without the mode
+        // that creates the object it names.
+        if self.rexec_memfd_name.is_some() && !self.rexec && !self.quiet {
+            eprintln!(
+                "pmask: --memfd-name has no effect: the run prepares no image, so add \
+                 --rexec, --image, --image-from-fd or --exec-once"
+            );
+        }
         if self.rexec_allow_disk && !rexec_allow_disk && !self.quiet {
             eprintln!(
                 "pmask: --rexec-allow-disk ignored: --image - and --image-from-fd have no \

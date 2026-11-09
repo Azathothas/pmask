@@ -306,6 +306,17 @@ fn main() {
         std::process::exit(run_with_secrets(cli));
     }
 
+    // `--secret-fd-name` with no `--secret` is the one name option the
+    // mask path cannot report: the descriptor name is applied by the
+    // runner, which is not reached here.  `--memfd-name` is reported by
+    // `Mask::to_config`, which every local run goes through.
+    if !cli.quiet && cli.mask.secret_fd_name_value().is_some() {
+        eprintln!(
+            "pmask: --secret-fd-name has no effect: no --secret was given, so no \
+             descriptor is delivered"
+        );
+    }
+
     if let Some(socket) = cli.daemon.take() {
         // Remote mode: the daemon holds the environment and supervises
         // the job; this process only forwards argv, stdio and the result.
