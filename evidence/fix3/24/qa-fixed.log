@@ -1,0 +1,9 @@
+PASS qa24-control-detects-the-old-line
+PASS qa24-unit-has-no-store-option
+PASS qa24-unit-execstart-binds (/usr/bin/pmaskd --socket %t/pmask/pmask.sock)
+PASS qa24-execstart-still-valid
+PASS qa24-help-claims-no-store
+PASS qa24-store-option-refused (rc=255, pmaskd: unknown option --store)
+PASS qa24-agent-owns-the-store
+PASS qa24-daemon-starts-with-the-documented-options
+== VERDICT: 0 failure(s) ==
