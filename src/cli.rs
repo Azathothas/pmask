@@ -874,14 +874,31 @@ pub const ARGS_FD_MAX: u64 = 8 * 1024 * 1024;
 
 impl Cli {
     /// Read the command from the `--args-from-fd` descriptor, when one
-    /// was given.  The descriptor is closed afterwards.
+    /// was given.  The argument source is consumed: its offset is left at
+    /// the end of the vector.
+    ///
+    /// The caller's descriptor stays open.  `--args-from-fd 0` names the
+    /// payload's own stdin, so closing the descriptor after the read
+    /// would hand the payload a closed fd 0.  The read happens on a
+    /// duplicate, which is what the `File` closes.
     pub fn load_args_fd(&mut self) {
         let Some(fd) = self.args_fd.take() else {
             return;
         };
-        // SAFETY: the descriptor number comes from the operator, who
-        // passes it open on purpose.  The File closes it after the read.
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        // SAFETY: F_DUPFD_CLOEXEC on a descriptor the operator passed
+        // open on purpose.  The duplicate is ours; the caller's
+        // descriptor is untouched.
+        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if dup < 0 {
+            die(&format!(
+                "--args-from-fd {}: cannot duplicate the descriptor: {}",
+                fd,
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: `dup` is the duplicate above.  The File closes it after
+        // the read.
+        let file = unsafe { std::fs::File::from_raw_fd(dup) };
         let mut data = Vec::new();
         // Read one byte past the limit so an oversize vector is detected
         // without buffering all of it.
