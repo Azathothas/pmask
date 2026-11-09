@@ -1,6 +1,6 @@
 # How to land this work
 
-This archive contains one branch, `qa/final`, on top of upstream
+This archive contains one branch, `main`, on top of upstream
 `fa46e62` (with the dependabot actions bump from PR #37 already merged).
 It closes the 57 open issues listed in `ISSUE-CLOSURE.md` plus the
 dependabot PR. Nothing here needs `gh` to build or verify.
@@ -12,10 +12,10 @@ dependabot PR. Nothing here needs `gh` to build or verify.
 ```sh
 git clone pmask-team-red.bundle pmask
 cd pmask
-git checkout qa/final
+git checkout -b main origin/main    # the bundle has no HEAD of its own
 git remote add upstream https://github.com/Azathothas/pmask
 # push to your fork, then open the pull request with the body in PR-BODY.md
-git push git@github.com:<you>/pmask.git qa/final:team-red/qa
+git push git@github.com:<you>/pmask.git main:team-red/qa
 gh pr create --repo Azathothas/pmask --base main --head <you>:team-red/qa \
     --title "Team Red: close the 57 issue backlog" --body-file PR-BODY.md
 ```
@@ -41,7 +41,7 @@ git am --3way patches/*.patch
 
 ### 4. Copy the tree
 
-`tree/` is the working tree at `qa/final`. Copy it over a checkout of
+`tree/` is the working tree at `main`. Copy it over a checkout of
 `fa46e62` and commit. It is relocatable: no absolute path, no home
 directory and no fixed prefix is baked in.
 
