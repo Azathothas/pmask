@@ -52,7 +52,7 @@ line exactly:
 | observer | sees |
 |---|---|
 | another uid | the label in `cmdline` and `comm`; no real argv or environ |
-| a monitoring agent of the same uid | the label, and also `exe`, `maps`, `fd/*` and `cwd`, which name the real binary; a `pmaskd` job's child on the composed daemon path reads `environ` as 0 bytes, and the holder's `environ` is refused (`EACCES`) |
+| a monitoring agent of the same uid | the label, and also `exe`, `maps`, `fd/*` and `cwd`, which name the real binary, plus the real argv and environment in `/proc/<pid>/mem`, because the payload's own copies stay readable; a `pmaskd` job's child on the composed daemon path reads `environ` as 0 bytes, and the holder's `environ` is refused (`EACCES`) |
 | the same, with `--no-dumpable` | the label; `environ`, `maps`, `auxv`, `exe`, `fd` and `/proc/<pid>/mem` are refused, and the five refusals are themselves a signal |
 | `ps` output pasted into a ticket or a chat | the label |
 | root on the host | **that** a pid exists, its `/proc/<pid>/exe`, its `maps`, its open files, its cgroups, and its memory via `PTRACE_ATTACH` |
