@@ -59,8 +59,10 @@ out of scope by construction.
 ## Mechanism
 
 `pmask` is a `ptrace` supervisor: the parent of the supervised tree. It
-seizes the child with `PTRACE_SEIZE` and releases it by writing one byte
-to a pipe. The child raises `SIGSTOP` and execs.
+seizes the child with `PTRACE_SEIZE`, stops it with `PTRACE_INTERRUPT`,
+and releases it by writing one byte to a pipe. The child never stops
+itself: a `--unshare` child is pid 1 of its own pid namespace, and the
+kernel discards a job-control stop such a process sends itself.
 
 ### Following the tree
 

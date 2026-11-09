@@ -1490,6 +1490,13 @@ fn child_exec(
         // that can end the child (a refused setuid, a refused seccomp
         // filter) runs after this point, so a failure is reported from a
         // seized tracee instead of racing the tracer's `PTRACE_SEIZE`.
+        //
+        // The tracer stops this process with `PTRACE_INTERRUPT` before it
+        // writes the go byte.  The child must not stop itself: a
+        // `--unshare` child is pid 1 of its own pid namespace, and the
+        // kernel discards a job-control stop such a process sends to
+        // itself, which used to cost the whole session its redaction
+        // (issue 4).
         let mut byte = 0u8;
         loop {
             let n = libc::read(go_r, &mut byte as *mut u8 as *mut libc::c_void, 1);
@@ -1501,7 +1508,6 @@ fn child_exec(
             }
             libc::_exit(126);
         }
-        libc::raise(libc::SIGSTOP);
 
         if in_userns {
             if let Err(e) = crate::userns::child_setup_proc() {

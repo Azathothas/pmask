@@ -372,9 +372,11 @@ impl Tracer {
     /// terminal state.
     ///
     /// `master` is forked and blocked reading `go_fd`.  The tracer seizes
-    /// it, releases it by writing one byte to `go_fd`, then takes the
-    /// child's `SIGSTOP` handshake stop as the point from which the first
-    /// exec is supervised.
+    /// it, stops it with `PTRACE_INTERRUPT`, takes that `PTRACE_EVENT_STOP`
+    /// as the handshake, releases it by writing one byte to `go_fd`, and
+    /// begins syscall supervision from there.  The stop must not come from
+    /// the child: a pid-namespace init cannot count on a job-control stop
+    /// it sends itself being delivered (issue 4).
     pub fn supervise(
         mut self,
         master: libc::pid_t,
@@ -474,17 +476,66 @@ impl Tracer {
             }
             return Err(e);
         }
-        let byte = [1u8; 1];
-        // SAFETY: go_fd is a valid pipe write end owned by this call.
-        unsafe {
-            libc::write(go_fd, byte.as_ptr() as *const libc::c_void, 1);
-            libc::close(go_fd);
+        // Ask the seized child to stop instead of waiting for a signal it
+        // sends itself.  The old handshake was `libc::raise(SIGSTOP)` in
+        // the child, and a process that is pid 1 of its own pid namespace
+        // (`--unshare`, `--redact --isolate`) cannot rely on that stop
+        // arriving: the kernel discards a job-control stop aimed at a
+        // namespace init, the tracer then took the next stop it saw (the
+        // exec event) as the handshake, and `supervise` returned without
+        // redacting anything (issue 4).  `PTRACE_INTERRUPT` is delivered
+        // by the kernel to the tracee, so the namespace cannot change the
+        // outcome.
+        //
+        // Order matters: interrupt, wait for the stop, and only then
+        // release the child.  The child cannot exec while it is stopped,
+        // so the stop that arrives is always the interrupt stop and never
+        // an exec event.
+        let rc = unsafe {
+            libc::ptrace(
+                arch::PTRACE_INTERRUPT as _,
+                master,
+                std::ptr::null_mut::<libc::c_void>(),
+                std::ptr::null_mut::<libc::c_void>(),
+            )
+        };
+        if rc == -1 {
+            let e = io::Error::last_os_error();
+            // SAFETY: closing the pipe ends and the report descriptor
+            // owned by this call.
+            unsafe {
+                libc::close(go_fd);
+                if report_fd >= 0 {
+                    libc::close(report_fd);
+                }
+            }
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                // The child is already gone (a refused setup step exits
+                // it before the handshake).  Reap it and report its own
+                // status, like the readiness-EOF path above.
+                let mut st = 0i32;
+                // SAFETY: plain waitpid of our own child.
+                unsafe {
+                    libc::waitpid(master, &mut st, libc::__WALL);
+                }
+                return Ok(finish_status(master, st));
+            }
+            // Nothing is traced: the child must not run unmasked.
+            // SAFETY: plain kill and reap of our own child.
+            unsafe {
+                libc::kill(master, libc::SIGKILL);
+                let mut st = 0i32;
+                libc::waitpid(master, &mut st, libc::__WALL);
+            }
+            return Err(e);
         }
         let status = match wait_master_stop(master) {
             Ok(s) => s,
             Err(e) => {
-                // SAFETY: the report descriptor is owned by this call.
+                // SAFETY: the descriptor and the pipe end are owned by
+                // this call.
                 unsafe {
+                    libc::close(go_fd);
                     if report_fd >= 0 {
                         libc::close(report_fd);
                     }
@@ -493,12 +544,42 @@ impl Tracer {
             }
         };
         if !libc::WIFSTOPPED(status) {
-            // died before stopping (for example an internal error)
+            // died before the handshake (for example an internal error)
+            // SAFETY: the pipe end is owned by this call.
+            unsafe { libc::close(go_fd) };
             return Ok(finish_status(master, status));
         }
+        // A `PTRACE_INTERRUPT` stop is `PTRACE_EVENT_STOP` with SIGTRAP.
+        // Any other stop here means the child got a job-control signal of
+        // its own; it is still a stop, so release it the same way, but
+        // say so: the handshake is then not the one this code installs.
+        let sig = libc::WSTOPSIG(status);
+        let event = (status as u32) >> 16;
+        if event != arch::PTRACE_EVENT_STOP || sig != libc::SIGTRAP {
+            vlog!(
+                self,
+                "master {}: handshake stop is sig {}/{}, not PTRACE_INTERRUPT",
+                master,
+                sig,
+                event
+            );
+        }
+        let byte = [1u8; 1];
+        // SAFETY: go_fd is a valid pipe write end owned by this call.
+        unsafe {
+            libc::write(go_fd, byte.as_ptr() as *const libc::c_void, 1);
+            libc::close(go_fd);
+        }
         self.register(master, Tracee::new(State::Slow));
-        // Signal 0 suppresses the handshake SIGSTOP.
-        self.resume(master, 0, true);
+        // PTRACE_SYSCALL starts the syscall supervision the first exec is
+        // swapped at.  A group-stop (the abnormal case above) needs
+        // SIGCONT to leave it.
+        let release = if sig == libc::SIGTRAP {
+            0
+        } else {
+            libc::SIGCONT
+        };
+        self.resume(master, release, true);
 
         loop {
             let waited = if self.master_exit.is_some() && self.table.is_empty() {
