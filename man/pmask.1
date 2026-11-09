@@ -118,10 +118,14 @@ Set no_new_privs before exec.
 Set-uid and file-capability programs gain nothing.
 .TP
 .B \-\-no\-exact
-Keep the original cmdline byte extent: the label is written over the
-real arguments, but
-.BR /proc/\fIpid\fB/stat
-still reports how many bytes they took.
+Leave the kernel's argv window where it is instead of moving it: the
+label is written over the real arguments, one NUL is left for the label
+and one for each original argument slot, and
+.BR /proc/\fIpid\fB/environ
+is a NUL block.
+The window's byte extent is therefore the label plus the slot count, not
+the original extent; a script payload, whose exec completes on the
+post-exec path, keeps the original extent.
 By default the kernel's argv and environment windows are moved onto the
 label with
 .BR prctl(PR_SET_MM_MAP) ,
@@ -453,7 +457,6 @@ when the host has them, and a private
 .BR /dev/shm .
 A member the host cannot provide is reported and counted as a
 degradation.
->>>>>>> qa/docs3
 .TP
 .B \-\-redact
 Ask for /proc redaction explicitly (the default).

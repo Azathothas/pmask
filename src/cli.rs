@@ -79,9 +79,12 @@ Options:
                        fd.  Core dumps and debugger attach stop working.
       --no-new-privs   Set no_new_privs before exec.  Set-uid and file
                        capabilities give nothing, for the whole tree.
-      --no-exact       Keep the original cmdline byte extent: the label is
-                       written over the real arguments but /proc/<pid>/stat
-                       still reports how many bytes they took.  By default
+      --no-exact       Leave the kernel's argv window where it is: the
+                       label is written over the real arguments and one NUL
+                       is left per original argument slot, so the window is
+                       the label plus the slot count rather than the
+                       original extent, and environ becomes a NUL block.
+                       By default
                        the kernel's argv and environment windows are moved
                        onto the label with prctl(PR_SET_MM_MAP), so the
                        cmdline is exactly the label and environ is empty

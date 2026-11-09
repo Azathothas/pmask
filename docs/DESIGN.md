@@ -190,7 +190,7 @@ after the snapshot, so the child still execs with the real values. The
 order is binding.
 
 A refused window relocation leaves the label in place and only keeps the
-original extent; the run prints one note and the session does not count
+slot-count extent; the run prints one note and the session does not count
 it as a degradation of the tree.
 
 The ptracer is a second thread of the supervisor (`src/mask.rs`), not a
@@ -319,11 +319,15 @@ i32 exit_code  u32 has_signal  i32 signal  u32 msg_len  msg
 
 A PING replaces the job frame with the four bytes `PMKP` and nothing
 after them. The daemon answers with the same response frame, whose
-message is one `key=value` line per fact: protocol version, label, uid,
-`run_as_uid`, job slots, environment count, allowed uids, socket mode,
-I/O and job timeouts, the job-argv cap, the peer identity method and the
-peer uid. It never reports an environment value. A PING is answered
-after the same uid check a job gets.
+message is one `key=value` line per fact. The body depends on who asks.
+The daemon's own uid and root get the full set: protocol version, label,
+uid, `run_as_uid`, job slots, environment count, allowed uids, socket
+mode, I/O and job timeouts, the job-argv cap, the peer identity method
+and the peer uid. Another uid admitted by `--allow-uid` gets the
+protocol version, the label, the daemon uid and `run_as_uid`, and a
+`detail=reduced` line; the policy fields are omitted from the wire, not
+zeroed. It never reports an environment value. A PING is answered after
+the same uid check a job gets.
 
 Limits: `argc <= 4096`, one argument `<= 1 MiB`, request `<= 8 MiB`,
 label `<= 4096` bytes without NUL, LF or CR, and the sum of `len + 1`

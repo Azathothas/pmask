@@ -702,7 +702,7 @@ impl Runner {
 
     /// Decide the mode from the host's capabilities and the request.
     ///
-    /// The rule is the ladder in `docs/DEFAULTS.md` section 4: a forced
+    /// The rule is the privilege ladder in `docs/DESIGN.md`: a forced
     /// mode wins; a host without `ptrace` runs plain; an explicit
     /// `--isolate` runs isolate when user namespaces are available and
     /// redact when they are not; every other run redacts.  A request the

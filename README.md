@@ -107,7 +107,7 @@ Options that matter most:
 | `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the caller's descriptor stays open and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
 | `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
 | `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
-| `--no-exact` | keep the kernel's original argv window instead of relocating it; `cmdline` is the label plus one NUL per argument |
+| `--no-exact` | leave the kernel's argv window where it is instead of relocating it; `cmdline` is the label plus one NUL per argument slot (measured: the extent is the label plus the slot count, not the original extent; a script payload keeps the original extent on its post-exec path), and `environ` is a NUL block |
 | `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `auxv`, `exe` and `fd`, and `/proc/<pid>/mem` is refused, so the real argv cannot be recovered from payload memory. The refusal is itself a fingerprint: five `EACCES` opens where an ordinary same-uid process succeeds. The supervisor is non-dumpable in every mode |
 | `--no-new-privs` | set-uid and file capabilities gain nothing |
 | `--watch-rename` | keep the label when a program renames itself |
