@@ -116,9 +116,9 @@ Options that matter most:
 | `--image PATH` | read the program bytes from PATH (or `-` for stdin) and exec them from a sealed image; implies `--rexec` |
 | `--image-from-fd N` | read the program bytes from descriptor N; implies `--rexec` |
 | `--exec-once` | reuse one sealed image per distinct program, keyed by resolved path and mtime, across the execs of the session; implies `--rexec` |
-| `--hugetlb` | ask for a hugetlbfs-backed image and report the backing; falls back to an ordinary memfd; implies `--rexec` |
+| `--hugetlb` | ask for a hugetlbfs-backed image and report the backing; a failed huge-page write falls back to an ordinary memfd on every source, `--image -` included, so an empty huge-page pool does not fail the run; implies `--rexec` |
 | `--unshare` | private user, pid and mount namespaces with a private procfs, when the kernel allows it |
-| `--isolate[=LIST]` | run the payload in fresh pid, net and tmp namespaces (default `all`) |
+| `--isolate[=LIST]` | run the payload in fresh pid, net and tmp namespaces (default `all`); `none` means no isolation at all; the fresh `/dev` is described below |
 | `--no-redact` | never touch `/proc` metadata, even where ptrace works |
 | `--scope-name NAME` | one transient systemd scope named NAME |
 | `--secret N=SRC` | deliver a secret on descriptor 3, 4, ...; `PMASK_SECRET_<NAME>=<fd>` names it in the child |
@@ -139,6 +139,16 @@ the report. A consumer that parses the stream sees the payload's bytes
 first, and a `| tee` keeps both. Send the payload's own output somewhere
 else, or read the final JSON object, when a parser must have the document
 alone.
+
+The fresh `/dev` under `--isolate` is a tmpfs with `/dev/null`,
+`/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`.
+It also binds the host's `/dev/pts` and `/dev/ptmx` when the host has
+them, creates a private `/dev/shm`, and adds the `/dev/fd`, `/dev/stdin`,
+`/dev/stdout` and `/dev/stderr` links through `/proc/self/fd`. Each member
+is optional. A member the host does not have, or a mount the kernel
+refuses, is named in the isolation report and counted, so a pty-using
+payload fails with `out of pty devices` only when the report says
+`/dev/pts` is absent.
 
 ### 2. Library: supervise from your own program
 
