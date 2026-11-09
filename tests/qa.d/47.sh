@@ -163,15 +163,14 @@ SUP=$!
 sleep 1
 DIRECT=""
 GRAND=""
-for d in /proc/[0-9]*; do
-    p=${d#/proc/}
-    case "$(cat "$d/comm" 2>/dev/null)" in
-        sleep) GRAND=$p ;;
-    esac
-done
-# The direct child is the labelled shell's process; the grandchild is the
-# `sleep`.  Find the labelled one by its comm and the sleep by its argv.
+# The direct child is the labelled shell's process; the grandchild is its
+# own `sleep`.  Find the grandchild through the direct child, never by a
+# host-wide `comm` scan: a `sleep` belonging to another process would be
+# picked up and the tracer check would read its (zero) TracerPid.
 DIRECT=$(child_of "$SUP")
+if [ -n "$DIRECT" ]; then
+    GRAND=$(child_of "$DIRECT")
+fi
 if [ -n "$GRAND" ] && [ -n "$DIRECT" ]; then
     dcmd=$(tr '\0' '|' < "/proc/$DIRECT/cmdline" 2>/dev/null)
     gcmd=$(tr '\0' '|' < "/proc/$GRAND/cmdline" 2>/dev/null)
