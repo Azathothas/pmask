@@ -9,17 +9,17 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 6 | `pmask store --help` and `pmask get --help` do not print help | `fa0204a`, `96a6c82` | `tests/qa.d/6.sh` | `evidence/fix2` |
 | 7 | `--env-file` parses two different grammars in pmask and pmaskd | `8b505d6` | `tests/qa.d/7.sh` | `evidence/fix3` |
 | 8 | Completions miss seven flags | `07340b9` | none | `evidence/fix5` |
-| 9 | `--report=json` is not one JSON object when the payload writes to stdout | `fa0204a` | `tests/qa.d/9.sh` | `evidence/fix2` |
+| 9 | `--report=json` is not one JSON object when the payload writes to stdout | `ad77b37`, `fa0204a` | `tests/qa.d/9.sh` | `evidence/fix2` |
 | 10 | Plain and isolate modes silently drop mask options | `2e1627b`, `fa0204a` | `tests/qa.d/10.sh` | `evidence/fix2` |
 | 11 | An unknown `--secret` scheme is silently delivered as a literal | `efbc85b` | `tests/qa.d/11.sh` | `evidence/fix3` |
 | 12 | `isolation.sh`, `compare.sh` and `conformance.sh` never run in CI | `030197a` | none | `evidence/fix5` |
 | 13 | `probe`/`doctor` report the exact cmdline window as active where redaction is unavailable | `2e1627b`, `fa0204a` | `tests/qa.d/13.sh` | `evidence/fix2` |
-| 14 | Assorted small CLI/UX nits (N1–N8) | `2e1627b`, `fa0204a` | `tests/qa.d/14.sh` | `evidence/fix2` |
+| 14 | Assorted small CLI/UX nits (N1–N8) | `d61e6b7`, `2e1627b`, `fa0204a` | `tests/qa.d/14.sh` | `evidence/fix2` |
 | 15 | The supervisor's `memfd_secret` buffer is not `MFD_CLOEXEC`, so the plaintext leaks into the tree | `b48373f`, `398eda3` | `tests/qa.d/15.sh` | `evidence/fix1` |
 | 16 | `--keep-env` followed by `--keep-env=NAME` exposes the whole environment | `b48373f`, `398eda3` | `tests/qa.d/16.sh` | `evidence/fix1` |
 | 17 | `--audit` aborts the supervisor on a closed stdout and kills the payload | `320c056`, `b48373f`, `398eda3` | `tests/qa.d/17.sh` | `evidence/fix1` |
 | 18 | `--job-timeout` overflow panics the daemon | `15c638f` | `tests/qa.d/18.sh` | `evidence/fix3` |
-| 19 | `--redact --isolate=net` discards the list and applies `--unshare` | `2e1627b`, `2b1dc3a`, `fa0204a`, `96a6c82` | `tests/qa.d/19.sh` | `evidence/fix2` |
+| 19 | `--redact --isolate=net` discards the list and applies `--unshare` | `ad77b37`, `2e1627b`, `2b1dc3a`, `fa0204a`, `96a6c82` | `tests/qa.d/19.sh` | `evidence/fix2` |
 | 20 | `--no-redact --isolate` runs plain and silently drops the isolation | `2e1627b`, `fa0204a` | `tests/qa.d/20.sh` | `evidence/fix2` |
 | 21 | `payload_dumpable` is false in plain mode while the payload is dumpable | `fa0204a` | `tests/qa.d/21.sh` | `evidence/fix2` |
 | 22 | SIGTERM cannot stop a single-job daemon while a client is silent with `--io-timeout 0` | `62e9811` | `tests/qa.d/22.sh` | `evidence/fix3` |
@@ -37,15 +37,15 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 34 | A ptrace-denied host gives a cryptic `session error` for a mask run | `fa0204a` | `tests/qa.d/34.sh` | `evidence/fix2` |
 | 35 | The test gate is not root-safe (`sudo sh tests/run.sh` fails) | `6fef4c3` | `tests/qa.d/35.sh` | `evidence/fix5` |
 | 36 | Assorted small CLI/docs nitpicks (F17, F22, F25, F27, F28) | `2e1627b`, `03a4be6`, `fa0204a` | `tests/qa.d/36.sh` | `evidence/fix2`, `evidence/fix5` |
-| 38 | [b-team] The tracer thread is named `pmask-tracer`, and `TracerPid` points at a thread of the supervisor | `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/38.sh` | `evidence/bteam2` |
-| 39 | [b-team] The supervisor's own `/proc` entry: the label, a zero argv window, two threads, and the `PMASK_NO_SELFMASK` escape | `ee9e7e2`, `26aeb7a`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/39.sh` | `evidence/bteam1` |
+| 38 | [b-team] The tracer thread is named `pmask-tracer`, and `TracerPid` points at a thread of the supervisor | `5abd5e4`, `45e7683`, `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/38.sh` | `evidence/bteam2` |
+| 39 | [b-team] The supervisor's own `/proc` entry: the label, a zero argv window, two threads, and the `PMASK_NO_SELFMASK` escape | `6ebbedd`, `36e134a`, `ee9e7e2`, `26aeb7a`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/39.sh` | `evidence/bteam1` |
 | 40 | [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/40.sh` | `evidence/bteam1` |
 | 41 | [b-team] The `environ` file of a masked process: zero bytes, a NUL run, or the kept variables | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/41.sh` | `evidence/bteam1` |
 | 42 | [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade | `199580b`, `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/42.sh` | `evidence/bteam1` |
 | 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
 | 44 | [b-team] `--no-dumpable` answers `EACCES` on five files and zeroes four `stat` fields | `ee9e7e2`, `66937c9`, `74fbe52`, `720873b`, `9ca47ad`, `8d1c552` | `tests/qa.d/44.sh` | `evidence/bteam3` |
-| 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
-| 46 | [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1` | `e77a5da`, `03720b3`, `c4b61fc`, `d155066`, `af95ff7` | `tests/qa.d/46.sh` | `evidence/bteam5` |
+| 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `ad77b37`, `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
+| 46 | [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1` | `5abd5e4`, `e77a5da`, `03720b3`, `c4b61fc`, `d155066`, `af95ff7` | `tests/qa.d/46.sh` | `evidence/bteam5` |
 | 47 | [b-team] End states: `--detach`, `--no-follow`, `--on-exit` and `PTRACE_O_EXITKILL` | `3eb7ab2`, `7f80d21`, `e51b7bd`, `ecd419d`, `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/47.sh` | `evidence/bteam2`, `evidence/fix4` |
 | 48 | [b-team] The launch window and the statistical side channels of supervision | `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/48.sh` | `evidence/bteam2` |
 | 49 | [b-team] Modes that do not redact: 32-bit images, plain, `--isolate` and `--unshare` | `66937c9`, `9ca47ad`, `74b7b6a` | `tests/qa.d/49.sh` | `evidence/bteam3` |
@@ -60,7 +60,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 58 | [b-team] The detector family that does not see pmask, and what pmask genuinely hides | `da57ffa`, `5f996f6` | `tests/qa.d/58.sh` | `evidence/bteam5` |
 | 59 | The supervisor's own exec writes the payload argv and any `literal:` secret into the kernel audit log | `9ca47ad`, `07d7cc8`, `6a1ba77`, `34b20e3` | `tests/qa.d/59.sh` | `evidence/bteam3` |
 | 60 | `--watch-rename` and `--no-dumpable` together cannot redirect a rename | `320c056`, `b48373f`, `398eda3` | `tests/qa.d/60.sh` | `evidence/fix1` |
-| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | none | none | none |
+| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | `bb9d755` | none | `evidence/docs2` |
 
 ## Details
 
@@ -101,6 +101,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #9 `--report=json` is not one JSON object when the payload writes to stdout
 
+- `ad77b37` test: cover the report sink, the composition and the image names
 - `fa0204a` test: add QA fragments for the fix2 issues
   Files: `man/pmask.1`, `src/cli.rs`, `src/main.rs`, `src/run.rs`, `tests/helpers/noptrace.c`
 - Test: `tests/qa.d/9.sh`
@@ -132,6 +133,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #14 Assorted small CLI/UX nits (N1–N8)
 
+- `d61e6b7` fix: warn instead of refusing the keep-env space form
+  Files: `README.md`, `man/pmask.1`, `src/cli.rs`
 - `2e1627b` docs: refresh the per-issue fragment logs
 - `fa0204a` test: add QA fragments for the fix2 issues
   Files: `man/pmask.1`, `src/cli.rs`, `src/main.rs`, `src/run.rs`, `tests/helpers/noptrace.c`
@@ -165,6 +168,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #19 `--redact --isolate=net` discards the list and applies `--unshare`
 
+- `ad77b37` test: cover the report sink, the composition and the image names
 - `2e1627b` docs: refresh the per-issue fragment logs
 - `2b1dc3a` fix: name a refused composed namespace set in the report
   Files: `src/run.rs`, `src/userns.rs`
@@ -291,6 +295,9 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #38 [b-team] The tracer thread is named `pmask-tracer`, and `TracerPid` points at a thread of the supervisor
 
+- `5abd5e4` test: tighten the 38 and 46 controls for the fixed tree
+- `45e7683` docs: date the audit capture against #38
+  Files: `docs/research/bteam-audit.md`
 - `fbc4666` test: report the launch-window spread instead of one sample
   The window is a few hundred microseconds, and the sampler finds the payload by scanning /proc, so a scan under load can take longer than the interval it is measuring. A single sample therefore sometimes reports "no window", which is a property of the instrument rather than of the mask. The masked rows are now repeated, the median of the attempts that caught a window is quoted with its min and max, and a row that missed every attempt prints SKIP with the reason instead of a zero. The per-attempt lines stay in the output so the spread is visible. Two measurement errors are corrected in the note with the numbers that replace them: * the median is quoted, not the largest. Taking the largest across retries is a biased estimator: repeating until the number looks big is how a measurement stops meaning anything. * the spawn-latency plain row is marked UNSTABLE in the recorded run, and the note says so rather than quoting the quieter run as if it were the only one. The masked median is the same across runs; the ratio moves with the denominator.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
@@ -303,6 +310,8 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #39 [b-team] The supervisor's own `/proc` entry: the label, a zero argv window, two threads, and the `PMASK_NO_SELFMASK` escape
 
+- `6ebbedd` test: reap a plain-mode payload before its supervisor
+- `36e134a` test: poll for the escape's argv instead of one sample
 - `ee9e7e2` fix: one warning for one exposure, and the thread names the label
   Files: `src/main.rs`, `src/subcmd.rs`
 - `26aeb7a` docs: record the refusal-before-warning ordering in the evidence
@@ -387,12 +396,14 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #45 [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem`
 
+- `ad77b37` test: cover the report sink, the composition and the image names
 - `0022762` docs: record the issue 45 memfd-name evidence
 - `20716d0` test: cover the memfd name options
 - Test: `tests/qa.d/45.sh`
 
 ### #46 [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1`
 
+- `5abd5e4` test: tighten the 38 and 46 controls for the fixed tree
 - `e77a5da` test: decide the 60 case from the observed shape
 - `03720b3` docs: correct the run count in the 46 evidence
 - `c4b61fc` docs: note the fragment race the 46 case hit
@@ -540,10 +551,22 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ### #61 Detection documentation contradicts its own measurements: a four-hunk patch
 
-No commit names this issue.
+- `bb9d755` docs: apply the four-hunk detection correction
+  Files: `docs/research/detection-measured.md`, `docs/research/detection-residue.md`, `docs/research/detection-techniques.md`
 
 ## Commits that name no issue
 
+- `dae8f8a` docs: correct the supervisor and isolate claims
+- `7c051c5` test: skip the root batch with the same reason as lib
+- `76878d9` test: match the control's own path and wait for it
+- `85714ed` test: reap a root-run payload with sudo
+- `6fe4c18` fix: harden the report sink, the namespace composition and names
+- `dbb5201` docs: mark the audit capture as the pre-38 build
+- `ce6f9e8` docs: correct the no-exact extent and the PING body
+- `c9cb23d` test: read the secret probe answer from stdout only
+- `f4e5c4a` docs: name the secret variable and the suite count
+- `218c8c4` style: indent the comment continuation lines
+- `0332162` docs: apply the source comment audit
 - `fc252c6` merge: docs3 latest
 - `4c9b1c3` docs: record the example formatting check
 - `2077d35` man: distinguish refused images from dropped rexec
@@ -589,7 +612,6 @@ No commit names this issue.
 - `33da474` docs: nested pmask read works under a mask
 - `c8d4839` test: reap the I19 matrix control so the next suite is clean
 - `f8ccfbc` docs: state the audit-log exposure of literal secrets
-- `bb9d755` docs: apply the four-hunk detection correction
 - `5b96f6e` fix: close the held ptmx fds on the failed-dev path
 - `8509579` merge: fix2 residual
 - `6ec1125` test: record the clean full-gate run

@@ -90,6 +90,18 @@ else
     skip "qa32-control-redact-audit-ok (this host cannot redact)"
 fi
 
+# `--redact --isolate=LIST` composes to the redaction mode (issue 19), so
+# it keeps its tracer and the audit rows are produced.  A check that only
+# looked at `isolate.is_some()` refused it and named a mode the run would
+# not take.
+"$TOOL" -q --redact --isolate=pid --audit -- /bin/true >"$D/ci.out" 2>"$D/ci.err"
+rc=$?
+if [ "$rc" = 0 ] && grep -q "^pmask audit: residue:" "$D/ci.out"; then
+    pass "qa32-composed-isolate-keeps-the-audit"
+else
+    fail "qa32-composed-isolate-keeps-the-audit (rc=$rc out=$(tr '\n' '|' <"$D/ci.out" | cut -c1-200) err=$(tr '\n' '|' <"$D/ci.err" | cut -c1-200))"
+fi
+
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ] || exit 1
 exit 0

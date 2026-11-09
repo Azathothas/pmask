@@ -10,6 +10,8 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Fixes
 
+- fix: warn instead of refusing the keep-env space form (`d61e6b7`)
+- fix: harden the report sink, the namespace composition and names (`6fe4c18`)
 - fix: close the held ptmx fds on the failed-dev path (`5b96f6e`)
 - fix: name a refused composed namespace set in the report (`2b1dc3a`)
 - fix: offer only json as the --report value (`03a4be6`)
@@ -54,6 +56,14 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Tests and gates
 
+- test: tighten the 38 and 46 controls for the fixed tree (`5abd5e4`)
+- test: skip the root batch with the same reason as lib (`7c051c5`)
+- test: match the control's own path and wait for it (`76878d9`)
+- test: reap a root-run payload with sudo (`85714ed`)
+- test: reap a plain-mode payload before its supervisor (`6ebbedd`)
+- test: cover the report sink, the composition and the image names (`ad77b37`)
+- test: poll for the escape's argv instead of one sample (`36e134a`)
+- test: read the secret probe answer from stdout only (`c9cb23d`)
 - test: make the VM gate skip repository-only checks (`882e2ad`)
 - test: record the final full-gate run (`2563d76`)
 - test: reap the I19 matrix control so the next suite is clean (`c8d4839`)
@@ -100,6 +110,12 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Documentation
 
+- docs: correct the supervisor and isolate claims (`dae8f8a`)
+- docs: date the audit capture against #38 (`45e7683`)
+- docs: mark the audit capture as the pre-38 build (`dbb5201`)
+- docs: correct the no-exact extent and the PING body (`ce6f9e8`)
+- docs: name the secret variable and the suite count (`f4e5c4a`)
+- docs: apply the source comment audit (`0332162`)
 - docs: record the example formatting check (`4c9b1c3`)
 - docs: add the CLI dumpable comment to the audit (`491ccac`)
 - docs: cover the dumpable comments in the audit (`0207666`)
@@ -201,6 +217,7 @@ Every commit on `qa/final` on top of `fa46e62`.
 
 ## Other
 
+- style: indent the comment continuation lines (`218c8c4`)
 - man: distinguish refused images from dropped rexec (`2077d35`)
 - man: qualify the daemon warning and audit record (`dcb22c3`)
 - man: state pmaskd store ownership and refusals (`ddff6dd`)
