@@ -41,9 +41,9 @@ git am --3way patches/*.patch
 
 ### 4. Copy the tree
 
-`tree/` is the working tree at `main`. Copy it over a checkout of
-`fa46e62` and commit. It is relocatable: no absolute path, no home
-directory and no fixed prefix is baked in.
+The archive's own directory is the working tree at `main`. Copy it over a
+checkout of `fa46e62` and commit. It is relocatable: no absolute path, no
+home directory and no fixed prefix is baked in.
 
 ## After landing
 
