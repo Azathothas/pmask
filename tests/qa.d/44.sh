@@ -212,8 +212,9 @@ else
         pass "44d-access-vs-open (open() and access() agree here:$cmp_out)"
     fi
 
-    # 44e: liveness.  The payload must be alive while 44b ran, and must
-    # still exit 0 on its own afterwards.
+    # 44e: liveness.  The payload must still be alive after every
+    # observation above, so none of those refusals is the EACCES of a
+    # process that had already died.
     if kill -0 "$PAY" 2>/dev/null; then
         pass "44e-payload-alive-under-the-flag"
     else
