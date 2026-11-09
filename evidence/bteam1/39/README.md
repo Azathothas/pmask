@@ -11,6 +11,8 @@ Host: Debian 13, kernel `6.12.113+deb13-amd64`, x86-64, uid 1000 (`agent`),
 | `audit-probe.log` | the kernel audit subsystem refuses `NETLINK_AUDIT` here, for root and for uid 1000 |
 | `audit-outcomes.log` | the four CLI outcomes the new check produces |
 | `window-measure.log` | 40 samples per mode of the supervisor's own cmdline during a `stdin:` secret block |
+| `zero-argv-window.log` | 12 runs sampling for an all-NUL cmdline: 5 saw it |
+| `repro-plain-exposure.log` | the plain-mode leak, and the startup NUL window in a redact run |
 | `qa39.log` | the fragment's own output |
 
 ## The default shape (measured)
@@ -52,6 +54,28 @@ A 20-sample sweep of a redact-mode run with `PMASK_NO_SELFMASK=1` and a
 `literal:` secret found the real argv in 2 of 20 samples
 (`selfmask-shape.log` section 2); the same run in plain mode serves it for
 the whole run (`selfmask-shape.log` section 3).
+
+## A window the issue names but does not measure
+
+The issue title mentions "a zero argv window".  Measured
+(`zero-argv-window.log`), it is real and intermittent: `zero_argv_block`
+runs at startup and the label is written later, so the supervisor's
+`cmdline` is a run of NUL bytes of the original length in between.
+
+```
+run  3: all-NUL samples=1 of 60, final bytes=10
+run  4: all-NUL samples=2 of 60, final bytes=10
+...
+runs with at least one all-NUL sample: 5 of 12 (720 samples in total)
+```
+
+5 of 12 runs showed it; each run sampled as fast as the shell can loop, so
+this is an observation about how often a poller catches it, not a
+probability.  It is not closable: the label cannot be written before the
+argv block is zeroed, because writing it first would leave the value
+readable.  A detector that samples fast enough sees a `cmdline` of NULs with
+the process still alive, which is not produced by any ordinary program.
+
 
 ## The audit subsystem is not reachable here
 

@@ -111,6 +111,32 @@ check warns there.  The probe is `caps::kernel_audit_reachable()`, an
 `AUDIT_GET` request over `NETLINK_AUDIT`, with `PMASK_PROBE_AUDIT` as the
 test hook, so both branches are exercised on any host.
 
+### The zero-argv window
+
+The issue's title names "a zero argv window" without measuring it.  It is
+real and intermittent (`evidence/bteam1/39/zero-argv-window.log`): the
+startup `zero_argv_block` runs before the label is written, so the
+supervisor's `cmdline` is a run of NUL bytes of the original length in
+between.
+
+```
+run  3: all-NUL samples=1 of 60, final bytes=10
+run  4: all-NUL samples=2 of 60, final bytes=10
+...
+runs with at least one all-NUL sample: 5 of 12 (720 samples in total)
+```
+
+5 of 12 runs caught it, sampling as fast as a POSIX shell loop can.  That is
+an observation about a poller, not a probability: the window is the time
+between the zeroing write and the label write in `main`, which is a handful
+of instructions plus the option parse.
+
+It is not closable.  The label cannot be written before the argv block is
+zeroed, because writing it first would leave the secret readable for the
+duration of the parse — which is the whole point of the ordering in
+invariant 12.  A detector that samples fast enough sees a live process with
+an all-NUL `cmdline`, which no ordinary program produces.
+
 ### Verdict: **partially closable**
 
 Closed: the silent publication of a `literal:`/`env:` value by the escape. It
@@ -118,11 +144,12 @@ now warns, and on an audited host it refuses unless `--allow-argv-secret`
 says otherwise.  Measured outcomes in
 `evidence/bteam1/39/audit-outcomes.log`.
 
-Not closed: the supervisor's own shape.  It is a labelled parent with a
-tracer task, and removing it means removing the self-mask — invariant 12, and
-a documented feature.  A supervisor that kept its real `comm` would trade the
-`pmask-tracer` signal for a `pmask` name, which is the louder fingerprint the
-issue itself names as the alternative.
+Not closed: the supervisor's own shape, or the zero-argv startup window.  The
+first is a labelled parent with a tracer task, and removing it means removing
+the self-mask (invariant 12, and a documented feature).  A supervisor that
+kept its real `comm` would trade the `pmask-tracer` signal for a `pmask`
+name, which is the louder fingerprint the issue itself names as the
+alternative.  The second is forced by the ordering: zero, then label.
 
 ### Trades of the alternatives
 
