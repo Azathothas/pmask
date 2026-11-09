@@ -246,9 +246,10 @@ before it zeroes the kernel argv block. A build that reads
 mask, finds no subcommand, prints the help text and exits 255. Reading
 the descriptor directly works in every mode and has no such requirement.
 
-The source decides what the host can still read. `file:`, `agent:`,
-`stdin` and `--args-from-fd` keep the value out of every command line
-that starts pmask. A `literal:` value travels in pmask's own argv until
+The source decides what the host can still read. `file:`, `agent:` and
+`stdin` keep the value out of every command line that starts pmask;
+`--args-from-fd` keeps the payload's own argument vector out of it. A
+`literal:` value travels in pmask's own argv until
 pmask masks itself, and the kernel audit subsystem writes the exec record
 (`type=EXECVE` and `type=PROCTITLE`) before that point. The cleartext
 value is therefore in the audit log for the retention of the log, not for
@@ -285,7 +286,7 @@ that kept the run below the strongest available one.
 
 | mode | selected by | redacts | does not |
 |---|---|---|---|
-| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, from the exec-entry stop, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary, and the payload's memory holds its real argv, unless `--rexec` and `--no-dumpable` are added |
+| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary, and the payload's memory holds its real argv, unless `--rexec` and `--no-dumpable` are added |
 | isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the intermediate process under the label; the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
 | plain | `--no-redact`, or a host that does not allow `ptrace` | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
 
@@ -417,6 +418,11 @@ stdio, signals and exit codes.
 sh tests/run.sh      # on a host that permits ptrace
 sh vm/run.sh         # anywhere: the same suites inside a QEMU micro-VM
 ```
+
+Run the native gate as an unprivileged uid. As root, `CAP_SYS_PTRACE`
+lets the observer read what a same-uid peer cannot, so the same-uid
+refusal cases cannot be decided. They print `SKIP` and name the root case
+instead of failing. `vm/run.sh` runs the suites as root and as uid 1000.
 
 `tests/run.sh` runs sixteen suites: validate, suite, stress, edge,
 daemon, daemon_neg, options, core, audit, store, isolation, lease,
