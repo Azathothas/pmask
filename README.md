@@ -511,8 +511,9 @@ read the conditions they print.
   `environ` and `ps`. It is still readable by the host: the payload holds
   it on an inherited descriptor whose `FD_CLOEXEC` is cleared on purpose,
   so every descendant inherits it, and `/proc/<child>/fd/<N>` names a
-  sealed `memfd` that a same-uid peer can open. `--secret-close-on-exec` closes
-  it in each of the payload's direct children at its fork, while the
+  sealed `memfd` that a same-uid peer can open.
+  `--secret-close-on-exec` closes it in each of the payload's direct
+  children at its fork, while the
   payload keeps it; a process that shares the payload's descriptor table
   (`clone(CLONE_FILES)` without `CLONE_THREAD`) is reported as a
   degradation. `--detach` cannot enforce the close below the payload, and
@@ -532,8 +533,12 @@ read the conditions they print.
   `E2BIG`.
 - Without `--detach`, every process of the tree carries the supervisor's
   pid in `/proc/<pid>/status` `TracerPid`, and a reader can see that the
-  tree is supervised. `--detach` brings it to 0 and gives up later-exec
-  coverage; the session summary counts each detach.
+  tree is supervised. That id is the tracer thread, not the supervisor
+  process: the thread's `comm` is `pmask-tracer`, and its `Tgid` is the
+  supervisor's pid while its `Pid` is the thread id, so the task
+  directory names every supervised tree. `--detach` brings `TracerPid` to
+  0 and gives up later-exec coverage; the session summary counts each
+  detach.
 - A session consumes the `SIGCHLD` notifications `CLD_STOPPED`,
   `CLD_TRAPPED`, `CLD_CONTINUED` and `CLD_DUMPED` for its tracees, so a
   program that watches those codes sees fewer of them.
