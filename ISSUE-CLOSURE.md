@@ -8,11 +8,11 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 5 | `pmask read NAME` fails inside a masked payload | `320c056`, `b48373f`, `398eda3` | `tests/qa.d/5.sh` | `evidence/fix1` |
 | 6 | `pmask store --help` and `pmask get --help` do not print help | `fa0204a`, `96a6c82` | `tests/qa.d/6.sh` | `evidence/fix2` |
 | 7 | `--env-file` parses two different grammars in pmask and pmaskd | `8b505d6` | `tests/qa.d/7.sh` | `evidence/fix3` |
-| 8 | Completions miss seven flags | `07340b9` | none | `evidence/fix5` |
+| 8 | Completions miss seven flags | `07340b9` | `scripts/check-completions.sh` (run by `tests/run.sh`) | `evidence/fix5` |
 | 9 | `--report=json` is not one JSON object when the payload writes to stdout | `ad77b37`, `fa0204a` | `tests/qa.d/9.sh` | `evidence/fix2` |
 | 10 | Plain and isolate modes silently drop mask options | `2e1627b`, `fa0204a` | `tests/qa.d/10.sh` | `evidence/fix2` |
 | 11 | An unknown `--secret` scheme is silently delivered as a literal | `efbc85b` | `tests/qa.d/11.sh` | `evidence/fix3` |
-| 12 | `isolation.sh`, `compare.sh` and `conformance.sh` never run in CI | `030197a` | none | `evidence/fix5` |
+| 12 | `isolation.sh`, `compare.sh` and `conformance.sh` never run in CI | `030197a` | `.github/workflows/ci.yml` `native-suites` job | `evidence/fix5` |
 | 13 | `probe`/`doctor` report the exact cmdline window as active where redaction is unavailable | `2e1627b`, `fa0204a` | `tests/qa.d/13.sh` | `evidence/fix2` |
 | 14 | Assorted small CLI/UX nits (N1–N8) | `d61e6b7`, `2e1627b`, `fa0204a` | `tests/qa.d/14.sh` | `evidence/fix2` |
 | 15 | The supervisor's `memfd_secret` buffer is not `MFD_CLOEXEC`, so the plaintext leaks into the tree | `b48373f`, `398eda3` | `tests/qa.d/15.sh` | `evidence/fix1` |
@@ -60,7 +60,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 | 58 | [b-team] The detector family that does not see pmask, and what pmask genuinely hides | `da57ffa`, `5f996f6` | `tests/qa.d/58.sh` | `evidence/bteam5` |
 | 59 | The supervisor's own exec writes the payload argv and any `literal:` secret into the kernel audit log | `9ca47ad`, `07d7cc8`, `6a1ba77`, `34b20e3` | `tests/qa.d/59.sh` | `evidence/bteam3` |
 | 60 | `--watch-rename` and `--no-dumpable` together cannot redirect a rename | `320c056`, `b48373f`, `398eda3` | `tests/qa.d/60.sh` | `evidence/fix1` |
-| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | `bb9d755` | none | `evidence/docs2` |
+| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | `bb9d755` | the corrected text itself; `evidence/docs2/61-git-apply-check.log` | `evidence/docs2` |
 
 ## Details
 
@@ -561,6 +561,7 @@ One section per issue. A commit is listed when its subject or body names the iss
 
 ## Commits that name no issue
 
+- `2ecca23` docs: regenerate the closure table for the final tree
 - `2a91253` merge: Team Red QA pass over the 57 issue backlog
 - `4e0bb8c` docs: name the report flag and the image family in refusals
 - `3394b8b` test: wait for the validate control instead of one sample
