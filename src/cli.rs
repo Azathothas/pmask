@@ -181,6 +181,22 @@ Secret side (works even where ptrace is refused):
   --secret-burn        seal the descriptors without F_SEAL_SHRINK, so the
                        reader can truncate a value to zero once it has used
                        it and cannot grow or rewrite it afterwards.
+  --secret-fd-name NAME
+                       Name the delivered secret memfd NAME instead of the
+                       default 'pmask-secret'.  /proc/<pid>/fd/N then reads
+                       '/memfd:NAME (deleted)', so a host-wide sweep for
+                       the default literal finds nothing.  NAME must be
+                       1..=200 bytes and must not contain '/', NUL, LF or
+                       CR.  The descriptor's seals and content are
+                       unchanged.  Example: --secret-fd-name
+                       "secret-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')".
+  --memfd-name NAME    Name the image memfd NAME instead of the label.
+                       /proc/<pid>/exe and the executable maps entries then
+                       read '/memfd:NAME (deleted)'.  Applies to --rexec,
+                       --image, --image-from-fd, --exec-once and --hugetlb,
+                       and to the temporary-file carrier's tag.  NAME is
+                       checked like --secret-fd-name.  Has no effect on a
+                       run that prepares no image.
   --report=json        print the run as one JSON object on stdout.  The
                        report describes a secret-side run, so it needs
                        --secret, --isolate or --no-redact; a plain mask
@@ -574,6 +590,18 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     mask = mask.hugetlb();
                     note_opt(&mut mask_opts, "--hugetlb");
                 }
+                "memfd-name" => {
+                    let v = take_value("--memfd-name", inline, &argv, &mut i);
+                    let name = label_from(&v);
+                    // Refuse at parse time, before the fork: a bad name
+                    // discovered in the child would end a run that has
+                    // already been promised.
+                    if let Err(e) = pmask::mem::validate_memfd_name(&name) {
+                        die(&format!("--memfd-name: {}", e));
+                    }
+                    mask = mask.memfd_name(name);
+                    note_opt(&mut mask_opts, "--memfd-name");
+                }
                 "rexec-allow-disk" => {
                     mask = mask.rexec_allow_disk();
                     note_opt(&mut mask_opts, "--rexec-allow-disk");
@@ -635,6 +663,15 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 "secret-burn" => {
                     secret_burn = true;
                     note_opt(&mut mask_opts, "--secret-burn");
+                }
+                "secret-fd-name" => {
+                    let v = take_value("--secret-fd-name", inline, &argv, &mut i);
+                    let name = label_from(&v);
+                    if let Err(e) = pmask::mem::validate_memfd_name(&name) {
+                        die(&format!("--secret-fd-name: {}", e));
+                    }
+                    mask = mask.secret_fd_name(name);
+                    note_opt(&mut mask_opts, "--secret-fd-name");
                 }
                 "secret-close-on-exec" => {
                     secret_close_on_exec = true;

@@ -163,6 +163,12 @@ pub struct Mask {
     rexec_exec_once: bool,
     rexec_hugetlb: bool,
     rexec_allow_disk: bool,
+    /// `--memfd-name NAME`: the memfd name for the image family.  `None`
+    /// keeps the sanitised label.
+    rexec_memfd_name: Option<String>,
+    /// `--secret-fd-name NAME`: the memfd name for a delivered secret.
+    /// `None` keeps [`crate::mem::DEFAULT_SECRET_FD_NAME`].
+    secret_fd_name: Option<String>,
     rexec_cache: crate::rexec::SharedCache,
     scope_name: Option<String>,
     run_as: Option<(u32, u32)>,
@@ -215,6 +221,8 @@ impl std::fmt::Debug for Mask {
             .field("rexec_exec_once", &self.rexec_exec_once)
             .field("rexec_hugetlb", &self.rexec_hugetlb)
             .field("rexec_allow_disk", &self.rexec_allow_disk)
+            .field("rexec_memfd_name", &self.rexec_memfd_name)
+            .field("secret_fd_name", &self.secret_fd_name)
             .field("scope_name", &self.scope_name)
             .field("run_as", &self.run_as)
             .field(
@@ -299,6 +307,8 @@ impl Mask {
             rexec_exec_once: false,
             rexec_hugetlb: false,
             rexec_allow_disk: false,
+            rexec_memfd_name: None,
+            secret_fd_name: None,
             rexec_cache: crate::rexec::shared_cache(),
             scope_name: None,
             run_as: None,
@@ -517,6 +527,38 @@ impl Mask {
         self
     }
 
+    /// Name the image memfd `name` instead of the label.
+    ///
+    /// This is `--memfd-name NAME`: `/proc/<pid>/exe` and the executable
+    /// `maps` entries then read `/memfd:<name> (deleted)` instead of
+    /// `/memfd:<label> (deleted)`.  The bytes and the sealing are
+    /// unchanged; only the string a reader sees changes.  The name is
+    /// checked by [`crate::mem::validate_memfd_name`] at `run`/`spawn`.
+    /// It does not imply [`Mask::rexec`]: a run that never prepares an
+    /// image ignores it.
+    pub fn memfd_name(mut self, name: impl Into<String>) -> Mask {
+        self.rexec_memfd_name = Some(name.into());
+        self
+    }
+
+    /// Name a delivered secret's memfd `name` instead of
+    /// [`crate::mem::DEFAULT_SECRET_FD_NAME`].
+    ///
+    /// This is `--secret-fd-name NAME`.  The descriptor's content and
+    /// seals are unchanged; only `/proc/<pid>/fd/N`'s `/memfd:` component
+    /// changes, so a sweep for the default literal finds nothing.  The
+    /// name is checked by [`crate::mem::validate_memfd_name`] at
+    /// `run`/`spawn` and again when the descriptor is created.
+    pub fn secret_fd_name(mut self, name: impl Into<String>) -> Mask {
+        self.secret_fd_name = Some(name.into());
+        self
+    }
+
+    /// The `--secret-fd-name` value, when one was chosen.
+    pub fn secret_fd_name_value(&self) -> Option<&str> {
+        self.secret_fd_name.as_deref()
+    }
+
     /// True when `--image`, `--image-from-fd` or `--image -` supplied the
     /// program bytes.
     pub fn has_image(&self) -> bool {
@@ -667,6 +709,12 @@ impl Mask {
                 return Err(invalid("scope name must not contain NUL"));
             }
         }
+        if let Some(n) = &self.rexec_memfd_name {
+            crate::mem::validate_memfd_name(n)?;
+        }
+        if let Some(n) = &self.secret_fd_name {
+            crate::mem::validate_memfd_name(n)?;
+        }
         Ok(())
     }
 
@@ -731,6 +779,7 @@ impl Mask {
             audit: self.audit,
             rexec_cache: self.rexec_cache.clone(),
             rexec_hugetlb: self.rexec_hugetlb,
+            rexec_memfd_name: self.rexec_memfd_name.clone(),
             rexec_per_exec: self.rexec_exec_once
                 && self.rexec
                 && !self.unshare
@@ -867,6 +916,7 @@ impl Mask {
             if let Some(source) = source {
                 let opts = crate::rexec::Options {
                     hugetlb: self.rexec_hugetlb,
+                    memfd_name: self.rexec_memfd_name.clone(),
                 };
                 let prepared = match (&source, self.rexec_exec_once) {
                     (crate::rexec::Source::Path(p), true) => {
@@ -903,9 +953,13 @@ impl Mask {
                         // the child cannot create a file between the fork
                         // and the exec without unsafe allocation.
                         let temp = if std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some() {
-                            crate::rexec::prepare_temp_named(&image, &label_text)
+                            crate::rexec::prepare_temp_named(
+                                &image,
+                                &label_text,
+                                &self.rexec_memfd_name,
+                            )
                         } else {
-                            crate::rexec::prepare_temp(&image, &label_text)
+                            crate::rexec::prepare_temp(&image, &label_text, &self.rexec_memfd_name)
                         };
                         match temp {
                             Ok(t) => rexec_temp = Some(std::sync::Arc::new(t)),

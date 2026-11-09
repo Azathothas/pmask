@@ -270,6 +270,56 @@ impl std::fmt::Debug for SecBuf {
     }
 }
 
+/// The name a delivered secret's memfd carries when the caller does not
+/// choose one.
+///
+/// `/proc/<pid>/fd/N` then reads `/memfd:pmask-secret (deleted)`, which is
+/// a pmask-specific literal: a host-wide sweep for it finds every delivery
+/// of this build.  [`SealedFd::new_named`] lets a caller replace it.
+pub const DEFAULT_SECRET_FD_NAME: &str = "pmask-secret";
+
+/// Longest accepted memfd name, in bytes.
+///
+/// The kernel accepts 249 bytes and silently truncates past that; a limit
+/// below the kernel's means a name that passes this check is carried
+/// whole, and a name that would have been truncated is refused instead.
+pub const MAX_MEMFD_NAME_LEN: usize = 200;
+
+/// Check a name for a `memfd_create` call.
+///
+/// A `/` is refused because it splits a `/memfd:` link into two path
+/// components in every renderer; NUL, LF and CR are refused because they
+/// corrupt the `/proc/<pid>/fd` symlink text a reader parses.  An empty
+/// name is refused because the kernel then shows a bare `/memfd:`.
+pub fn validate_memfd_name(name: &str) -> io::Result<()> {
+    if name.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "memfd name must not be empty",
+        ));
+    }
+    if name.len() > MAX_MEMFD_NAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "memfd name is {} bytes; the limit is {}",
+                name.len(),
+                MAX_MEMFD_NAME_LEN
+            ),
+        ));
+    }
+    if name
+        .bytes()
+        .any(|b| b == b'/' || b == 0 || b == b'\n' || b == b'\r')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "memfd name must not contain '/', NUL, LF or CR bytes",
+        ));
+    }
+    Ok(())
+}
+
 /// A read-only anonymous file holding `bytes`, sealed against writes and
 /// size changes, to be inherited by a child as a file descriptor.
 ///
@@ -300,19 +350,35 @@ impl SealedFd {
     /// A sealed descriptor whose value cannot change: the reader gets the
     /// bytes and no process can truncate, grow or write them.
     pub fn new(bytes: &[u8]) -> io::Result<SealedFd> {
-        SealedFd::create(bytes, SEALS_READ_ONLY)
+        SealedFd::new_named(DEFAULT_SECRET_FD_NAME, bytes)
     }
 
     /// A sealed descriptor that the reader may truncate exactly once, to
     /// zero length, after reading it.  The truncate cannot be undone: the
     /// file cannot be grown and cannot be written.
     pub fn new_burn(bytes: &[u8]) -> io::Result<SealedFd> {
-        SealedFd::create(bytes, SEALS_BURN)
+        SealedFd::new_burn_named(DEFAULT_SECRET_FD_NAME, bytes)
     }
 
-    fn create(bytes: &[u8], seals: libc::c_int) -> io::Result<SealedFd> {
-        let name = c"pmask-secret";
-        // SAFETY: constant C string, no aliasing.
+    /// [`SealedFd::new`] under a caller-chosen memfd name.
+    ///
+    /// The name is what `/proc/<pid>/fd/N` shows next to `/memfd:`, so a
+    /// name that does not contain the program name keeps the descriptor
+    /// out of a sweep for that literal.
+    pub fn new_named(name: &str, bytes: &[u8]) -> io::Result<SealedFd> {
+        SealedFd::create(name, bytes, SEALS_READ_ONLY)
+    }
+
+    /// [`SealedFd::new_burn`] under a caller-chosen memfd name.
+    pub fn new_burn_named(name: &str, bytes: &[u8]) -> io::Result<SealedFd> {
+        SealedFd::create(name, bytes, SEALS_BURN)
+    }
+
+    fn create(name: &str, bytes: &[u8], seals: libc::c_int) -> io::Result<SealedFd> {
+        validate_memfd_name(name)?;
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "memfd name contains NUL"))?;
+        // SAFETY: `name` is a valid NUL-terminated string we own for the call.
         let fd = unsafe { libc::memfd_create(name.as_ptr(), MFD_ALLOW_SEALING | MFD_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -487,6 +553,38 @@ mod tests {
                 -1
             );
         }
+    }
+
+    #[test]
+    fn memfd_name_validation_matrix() {
+        for ok in ["pmask-secret", "secret-deadbeef", "a", &"n".repeat(200)[..]] {
+            assert!(validate_memfd_name(ok).is_ok(), "{} was refused", ok);
+        }
+        for bad in ["", "a/b", "a\0b", "a\nb", "a\rb"] {
+            assert!(validate_memfd_name(bad).is_err(), "{:?} was accepted", bad);
+        }
+        let long = "n".repeat(MAX_MEMFD_NAME_LEN + 1);
+        let err = validate_memfd_name(&long).unwrap_err();
+        assert!(err.to_string().contains(&MAX_MEMFD_NAME_LEN.to_string()));
+    }
+
+    #[test]
+    fn sealed_fd_carries_the_requested_name() {
+        let want = format!("secret-{:08x}", 0xdead_beefu32);
+        let s = SealedFd::new_named(&want, b"abc").unwrap();
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", s.raw())).unwrap();
+        let link = link.to_string_lossy().into_owned();
+        assert_eq!(link, format!("/memfd:{} (deleted)", want));
+    }
+
+    // Mutation control: hard-coding the old name in `create` makes this
+    // fail, which is the whole point of the option.
+    #[test]
+    fn sealed_fd_default_name_is_the_documented_literal() {
+        let s = SealedFd::new(b"abc").unwrap();
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", s.raw())).unwrap();
+        let link = link.to_string_lossy().into_owned();
+        assert_eq!(link, format!("/memfd:{} (deleted)", DEFAULT_SECRET_FD_NAME));
     }
 
     #[test]

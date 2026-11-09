@@ -1,0 +1,53 @@
+## uname / identity
+6.12.113+deb13-amd64
+uid=1000(agent) gid=1000(agent) groups=1000(agent)
+uid_map:          0    1000000       1000       1000       1000          1       1001    1001001  999998999 
+unprivileged_bpf_disabled=2
+perf_event_paranoid=3
+
+## tracefs: read as uid 1000
+ls: cannot open directory '/sys/kernel/tracing': Permission denied
+## tracefs: read as root
+ls: cannot open directory '/sys/kernel/tracing': Permission denied
+## tracefs: write enable, as root
+sh: 1: cannot create /sys/kernel/tracing/events/sched/sched_process_exec/enable: Permission denied
+rc=2
+## tracefs: kprobe_events, as root
+sh: 1: cannot create /sys/kernel/tracing/kprobe_events: Permission denied
+rc=2
+## tracefs: fresh mount in a new mount namespace, as root
+mount: /tmp/b57t: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+rc=32
+## tracefs: remount /sys/kernel/tracing, as root
+mount: /sys/kernel/tracing: permission denied.
+       dmesg(1) may have more information after failed mount system call.
+rc=32
+
+## tools
+bpftool    not installed (command not found)
+bpftrace   not installed (command not found)
+perf       not installed (command not found)
+trace-cmd  not installed (command not found)
+
+## raw bpf(2), uid 1000 then root
+bpf(BPF_MAP_CREATE) = -1 errno=1 (Operation not permitted)
+bpf(BPF_MAP_CREATE) = -1 errno=1 (Operation not permitted)
+## raw perf_event_open(TRACEPOINT), uid 1000 then root
+perf_event_open(tracepoint) = -1 errno=13 (Permission denied)
+perf_event_open(tracepoint) = -1 errno=13 (Permission denied)
+## raw perf_event_open(SOFTWARE CPU_CLOCK), uid 1000 then root
+perf_event_open(software) = -1 errno=13 (Permission denied)
+perf_event_open(software) = -1 errno=13 (Permission denied)
+
+## process connector: subscribe as uid 1000 and as root
+subscribe send = -1 errno=111 (Connection refused)
+subscribe send = -1 errno=111 (Connection refused)
+
+## substitute observation: the ptrace relation is readable without eBPF
+supervisor=498776 payload=498784
+supervisor TracerPid=0
+payload    TracerPid=498782
+supervisor task names:
+  498776 b57tracer
+  498782 pmask-tracer

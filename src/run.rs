@@ -928,7 +928,11 @@ impl Runner {
         } else {
             self.delivery_mode
         };
-        let delivery = Delivery::with_mode(&secrets, delivery_mode)?;
+        let delivery = Delivery::with_mode_named(
+            &secrets,
+            delivery_mode,
+            self.mask.as_ref().and_then(|m| m.secret_fd_name_value()),
+        )?;
         if !secrets.is_empty() {
             // Once we hold plaintext, stop other processes of this account
             // from reading our memory.

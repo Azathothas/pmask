@@ -436,15 +436,32 @@ impl Delivery {
 
     /// Build a delivery with the given descriptor behaviour.
     pub fn with_mode(secrets: &[Secret], mode: DeliveryMode) -> io::Result<Delivery> {
+        Delivery::with_mode_named(secrets, mode, None)
+    }
+
+    /// Build a delivery with the given descriptor behaviour and memfd
+    /// name.
+    ///
+    /// `fd_name` is the name every delivered descriptor carries, which is
+    /// what `/proc/<pid>/fd/N` renders after `/memfd:`; `None` keeps
+    /// [`crate::mem::DEFAULT_SECRET_FD_NAME`].  An invalid name is
+    /// refused here, before a descriptor exists.
+    pub fn with_mode_named(
+        secrets: &[Secret],
+        mode: DeliveryMode,
+        fd_name: Option<&str>,
+    ) -> io::Result<Delivery> {
         let names: Vec<String> = secrets.iter().map(|s| s.name.clone()).collect();
         check_names(&names)?;
+        let fd_name = fd_name.unwrap_or(crate::mem::DEFAULT_SECRET_FD_NAME);
+        crate::mem::validate_memfd_name(fd_name)?;
         let mut fds = Vec::with_capacity(secrets.len());
         let mut env = Vec::with_capacity(secrets.len());
         for (i, s) in secrets.iter().enumerate() {
             let fd = match mode {
-                DeliveryMode::Burn => SealedFd::new_burn(s.buf.as_slice())?,
+                DeliveryMode::Burn => SealedFd::new_burn_named(fd_name, s.buf.as_slice())?,
                 DeliveryMode::Inherit | DeliveryMode::CloseOnExec => {
-                    SealedFd::new(s.buf.as_slice())?
+                    SealedFd::new_named(fd_name, s.buf.as_slice())?
                 }
             };
             env.push((
@@ -926,6 +943,41 @@ mod tests {
         v.push(Secret::from_bytes("ONE_MORE", b"v").unwrap());
         let err = Delivery::new(&v).unwrap_err();
         assert!(err.to_string().contains(&MAX_SECRETS.to_string()));
+    }
+
+    #[test]
+    fn delivery_names_every_descriptor() {
+        let a = Secret::from_bytes("A", b"1").unwrap();
+        let b = Secret::from_bytes("B", b"2").unwrap();
+        let d = Delivery::with_mode_named(&[a, b], DeliveryMode::Inherit, Some("secret-deadbeef"))
+            .unwrap();
+        for fd in d.raw_fds() {
+            let link = std::fs::read_link(format!("/proc/self/fd/{}", fd)).unwrap();
+            assert_eq!(
+                link.to_string_lossy(),
+                "/memfd:secret-deadbeef (deleted)",
+                "descriptor {} kept another name",
+                fd
+            );
+        }
+    }
+
+    // Mutation control: dropping the `validate_memfd_name` call from
+    // `with_mode_named` makes the empty-name case create a `/memfd:`
+    // descriptor instead of erroring.
+    #[test]
+    fn delivery_refuses_an_invalid_fd_name() {
+        let s = Secret::from_bytes("X", b"v").unwrap();
+        for bad in ["", "a/b", "a\nb"] {
+            let err = Delivery::with_mode_named(
+                std::slice::from_ref(&s),
+                DeliveryMode::Inherit,
+                Some(bad),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{:?} was accepted", bad));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

@@ -1,0 +1,60 @@
+== host ==
+Linux errand-pyztg9rss42g 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+uid=1000
+build=pmask 0.1.0-beta.1 (unknown)
+
+== 1. default secret name is unchanged ==
+fd=3
+bytes=8
+path=/memfd:pmask-secret (deleted)
+write-errno=1
+
+== 2. --secret-fd-name secret-deadbeef ==
+fd=3
+bytes=8
+path=/memfd:secret-deadbeef (deleted)
+write-errno=1
+
+== 3. live descriptor link, default and named, plus the sweep ==
+default: supervisor=2811931 payload=2811957
+/proc/2811957/fd/0 -> /dev/null
+/proc/2811957/fd/1 -> /tmp/a45-def.out
+/proc/2811957/fd/2 -> /dev/null
+/proc/2811957/fd/3 -> /memfd:pmask-secret (deleted)
+sweep for pmask-secret while alive: 1 link(s)
+named: supervisor=2832698 payload=2832725
+/proc/2832725/fd/0 -> /dev/null
+/proc/2832725/fd/1 -> /tmp/a45-nam.out
+/proc/2832725/fd/2 -> /dev/null
+/proc/2832725/fd/3 -> /memfd:secret-deadbeef (deleted)
+sweep for pmask-secret while alive: 0 link(s)
+
+== 4. image family, default and named ==
+default: exe=/memfd:sshd (deleted)
+  maps:
+    558d45475000-558d45490000 r--p 00000000 00:01 137727                     /memfd:sshd (deleted)
+    558d45490000-558d45516000 r-xp 0001a000 00:01 137727                     /memfd:sshd (deleted)
+named: exe=/memfd:image-1a2b3c4d (deleted)
+  maps:
+    562629c79000-562629c94000 r--p 00000000 00:01 136615                     /memfd:image-1a2b3c4d (deleted)
+    562629c94000-562629d1a000 r-xp 0001a000 00:01 136615                     /memfd:image-1a2b3c4d (deleted)
+
+== 5. --image PATH with --memfd-name ==
+exe=/memfd:blobs-9f8e7d6c (deleted)
+
+== 6. --exec-once carrier tag ==
+exe=/memfd:img-deadbeef (deleted) ino=137728
+
+== 7. name validation ==
+name=[] rc=255 err=[pmask: --secret-fd-name: memfd name must not be empty]
+name=[a/b] rc=255 err=[pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes]
+name=[a
+b] rc=255 err=[pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes]
+name=[ab] rc=255 err=[pmask: --secret-fd-name: memfd name must not contain '/', NUL, LF or CR bytes]
+201-byte name rc=255 err=[pmask: --secret-fd-name: memfd name is 201 bytes; the limit is 200]
+200-byte name path=/memfd:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn...
+
+== 8. unix-socket exception: names cannot reach /secretmem ==
+the supervisor's memfd_secret name is the kernel's '/secretmem';
+neither option changes it.  Confirmed by the audit row below.
+pmask audit: residue: 1 (exe, fd, mem, pid)
