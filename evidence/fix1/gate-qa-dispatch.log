@@ -1,5 +1,5 @@
 ################ qa: qa.d/15.sh
-    Finished `release` profile [optimized] target(s) in 0.05s
+    Finished `release` profile [optimized] target(s) in 0.02s
 PASS qa15-control-flags0-leaks
 PASS qa15-payload-fds
 PASS qa15-grandchild-fds
@@ -20,7 +20,7 @@ PASS qa17-first-row
 PASS qa17-full-audit-works
 PASS qa17-payload-exit-status
 ################ qa: qa.d/33.sh
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.03s
 PASS qa33-lf-refused
 PASS qa33-cr-refused
 PASS qa33-lf-isolate
@@ -29,7 +29,7 @@ PASS qa33-nul-covered-by-the-unit-test
 PASS qa33-tab-accepted
 PASS qa33-label-lf-refused-control
 ################ qa: qa.d/4.sh
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.04s
 PASS qa4-control-plain-cmdline-is-label
 PASS qa4-control-plain-environ-empty
 PASS qa4-control-plain-comm-is-label
@@ -61,7 +61,7 @@ PASS qa5-control-fd-env
 PASS qa5-selfmask-still-on
 PASS qa5-unshare-read
 ################ qa: qa.d/60.sh
-    Finished `release` profile [optimized] target(s) in 0.02s
+    Finished `release` profile [optimized] target(s) in 0.04s
 PASS qa60-both-comm-is-label
 PASS qa60-both-cmdline-is-label
 PASS qa60-both-payload-alive
