@@ -42,8 +42,9 @@ The limit table in `README.md` is the contract. In particular:
   `/proc/<pid>/cmdline` of a wrapper such as `sudo` for the wrapper's
   life, and in the interactive shell's history file. An `env:` source is
   in the caller's environment, which the shell and the wrapper already
-  hold. `file:`, `agent:`, `stdin` and `--args-from-fd` keep the value out
-  of the command line.
+  hold. `file:`, `agent:` and `stdin` keep the value out of the command
+  line, and `--args-from-fd` keeps the payload's argument vector out of
+  it.
 - `--keep-env` re-exposes the whole environment and `--keep-env=NAME`
   re-exposes the named values. A secret in either is readable by the same
   uid.
