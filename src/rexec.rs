@@ -26,7 +26,9 @@
 //! - A kernel with `vm.memfd_noexec` hardening can refuse `memfd_create` or
 //!   the later exec.  `prepare` returns the kernel error in that case.
 //! - Tools that look for `memfd:` executables can flag the process.  The
-//!   label sets the memfd name.
+//!   label sets the memfd name by default; `--memfd-name NAME` replaces it
+//!   with any name that passes [`crate::mem::validate_memfd_name`], so a
+//!   run can carry an opaque `/memfd:secret-1a2b3c4d` instead of the label.
 //!
 //! The memfd keeps `FD_CLOEXEC`.  The fd stays open across `fork` and closes
 //! at the exec.  The `Image` type closes the fd on drop.
@@ -133,10 +135,32 @@ pub enum Source {
 }
 
 /// Knobs for one image.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Ask for a hugetlbfs-backed memfd.
     pub hugetlb: bool,
+    /// Name the image memfd this instead of the label (`--memfd-name`).
+    ///
+    /// `None` keeps the historical behaviour: the presentation label,
+    /// sanitised by [`sanitize_name`].  `Some` is validated by the caller
+    /// when the option is parsed and re-validated by [`create_image`], so
+    /// a name that reaches this field through the library API is checked
+    /// too.  The temporary-file carrier is named separately: it must stay
+    /// one path component and is always derived from the label.
+    pub memfd_name: Option<String>,
+}
+
+impl Options {
+    /// The memfd name a new image gets for `label`.
+    ///
+    /// The temporary-file carrier uses the same string as its tag, so a
+    /// caller who chose an opaque name gets an opaque carrier too.
+    pub fn image_name(&self, label: &str) -> String {
+        match &self.memfd_name {
+            Some(n) => n.clone(),
+            None => sanitize_name(label),
+        }
+    }
 }
 
 /// Turn a label into a memfd name: printable ASCII except `/`, at most
@@ -292,11 +316,16 @@ fn memfd(name: &[u8], flags: libc::c_uint) -> io::Result<RawFd> {
 ///
 /// With `hugetlb`, a hugetlb memfd is tried first.  A refusal is returned
 /// as a note and the ordinary memfd is used instead, so `--hugetlb` never
-/// makes a run fail for lack of huge pages.
-fn create_image(label: &str, hugetlb: bool) -> io::Result<(RawFd, Backing, Option<String>)> {
-    let mut name = sanitize_name(label).into_bytes();
+/// makes a run fail for lack of huge pages.  The name is the caller's
+/// `--memfd-name` when one was given, otherwise the sanitised label; both
+/// are validated here, so a name that would corrupt the `/memfd:` link is
+/// refused before a descriptor exists.
+fn create_image(label: &str, opts: &Options) -> io::Result<(RawFd, Backing, Option<String>)> {
+    let name = opts.image_name(label);
+    crate::mem::validate_memfd_name(&name)?;
+    let mut name = name.into_bytes();
     name.push(0);
-    if hugetlb {
+    if opts.hugetlb {
         match memfd(
             &name,
             MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_HUGE_2MB,
@@ -329,11 +358,11 @@ fn fill(fd: RawFd, src: RawFd) -> io::Result<()> {
     seal(fd)
 }
 
-/// Copy `program` into a sealed memfd named after `label`.
+/// Copy `program` into a sealed memfd named after `label` or `opts`.
 ///
 /// Returns InvalidInput with "not an ELF image" when the file does not start
 /// with the ELF magic. Returns the kernel error when `memfd_create` or the
-/// sealing call fails.
+/// sealing call fails, and InvalidInput when the requested name is invalid.
 #[cfg(test)]
 pub fn prepare(program: &CStr, label: &str) -> io::Result<Image> {
     prepare_path(program, label, Options::default())
@@ -378,7 +407,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             "not an ELF image",
         ));
     }
-    let (image_fd, backing, note) = create_image(label, opts.hugetlb)?;
+    let (image_fd, backing, note) = create_image(label, &opts)?;
     let filled = write_all_fd(image_fd, &magic).and_then(|_| copy_into(fd, image_fd));
     match filled {
         Ok(()) => {}
@@ -403,7 +432,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
 
 /// Copy an already open source into a fresh image.
 fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
-    let (fd, backing, note) = create_image(label, opts.hugetlb)?;
+    let (fd, backing, note) = create_image(label, &opts)?;
     match fill(fd, src) {
         Ok(()) => Ok(Image {
             fd,
@@ -416,7 +445,9 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             // write then fails with ENOSPC.  Fall back rather than fail.
             // SAFETY: the descriptor is ours.
             unsafe { libc::close(fd) };
-            let mut name = sanitize_name(label).into_bytes();
+            // The fallback keeps the same name: a hugetlb refusal must not
+            // change what `/memfd:` reads.
+            let mut name = opts.image_name(label).into_bytes();
             name.push(0);
             let fd = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
                 .map_err(|e| with_context(e, "memfd_create refused"))?;
@@ -510,6 +541,10 @@ struct Key {
     mtime: (i64, i64),
     size: u64,
     hugetlb: bool,
+    /// `--memfd-name`.  Two sessions sharing one cache with different
+    /// names must not share an image, or the second run would inherit the
+    /// first one's `/memfd:` string.
+    memfd_name: Option<String>,
 }
 
 /// A bounded cache of sealed images keyed by resolved path and mtime.
@@ -547,6 +582,7 @@ impl Cache {
             mtime: (md.mtime(), md.mtime_nsec()),
             size: md.size(),
             hugetlb: opts.hugetlb,
+            memfd_name: opts.memfd_name.clone(),
         };
         if let Some(img) = self.entries.get(&key) {
             return Ok(img.clone());
@@ -582,15 +618,17 @@ impl Cache {
             mtime: (md.mtime(), md.mtime_nsec()),
             size: md.size(),
             hugetlb: opts.hugetlb,
+            memfd_name: opts.memfd_name.clone(),
         };
         if let Some(img) = self.temp_entries.get(&key) {
             return Ok(img.clone());
         }
         let c = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in program path"))?;
+        let name = opts.memfd_name.clone();
         let mut primary = prepare_path(&c, label, opts)?;
         relocate(&mut primary, IMAGE_FD_MIN)?;
-        let image = Arc::new(prepare_temp_named(&primary, label)?);
+        let image = Arc::new(prepare_temp_named(&primary, label, &name)?);
         self.temp_entries.insert(key.clone(), image.clone());
         self.temp_order.push_back(key);
         while self.temp_order.len() > CACHE_MAX {
@@ -636,20 +674,34 @@ pub fn shared_cache() -> SharedCache {
 /// The file lives on a mount that allows execution and is either an
 /// `O_TMPFILE` inode or a named file with mode 0600 that is removed when
 /// the `Image` drops.  The descriptor is moved above the secret-install
-/// range.
-pub fn prepare_temp(primary: &Image, label: &str) -> io::Result<Image> {
+/// range.  The name comes from `opts`, so `--memfd-name` covers the
+/// carrier as well as the memfd it was copied from.
+pub fn prepare_temp(primary: &Image, label: &str, name: &Option<String>) -> io::Result<Image> {
     let dir = choose_temp_dir()?;
-    let (fd, named, path) = create_temp_file(&dir, label, false)?;
+    let (fd, named, path) = create_temp_file(&dir, &temp_tag(label, name), false)?;
     fill_temp(primary, fd, dir, named, path)
 }
 
 /// Prepare a named temporary-file carrier.  A later exec needs a path the
 /// tracee can resolve without reading the supervisor's descriptors, so
 /// the unnamed `O_TMPFILE` form is not usable there.
-pub fn prepare_temp_named(primary: &Image, label: &str) -> io::Result<Image> {
+pub fn prepare_temp_named(
+    primary: &Image,
+    label: &str,
+    name: &Option<String>,
+) -> io::Result<Image> {
     let dir = choose_temp_dir()?;
-    let (fd, named, path) = create_temp_file(&dir, label, true)?;
+    let (fd, named, path) = create_temp_file(&dir, &temp_tag(label, name), true)?;
     fill_temp(primary, fd, dir, named, path)
+}
+
+/// The tag a temporary carrier's name starts with: the image name when
+/// one was chosen, otherwise the label.
+fn temp_tag(label: &str, name: &Option<String>) -> String {
+    match name {
+        Some(n) => n.clone(),
+        None => label.to_string(),
+    }
 }
 
 fn fill_temp(
@@ -807,11 +859,42 @@ fn choose_temp_dir() -> io::Result<PathBuf> {
     }))
 }
 
+/// A per-carrier 32-bit tag, used to make the temporary-file name unique
+/// across runs of the same pid and label.
+///
+/// `/dev/urandom` when it can be read; otherwise the clock and the pid,
+/// which is weaker but still distinguishes two carriers of one session
+/// (`O_EXCL` remains the authority on the name).
+fn random_tag() -> String {
+    let mut bytes = [0u8; 4];
+    let got = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| {
+            use std::io::Read;
+            f.read_exact(&mut bytes)
+        })
+        .is_ok();
+    let v = if got {
+        u32::from_le_bytes(bytes)
+    } else {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        (nanos ^ (std::process::id() << 16)).wrapping_mul(0x9e37_79b9)
+    };
+    format!("{:08x}", v)
+}
+
 /// Create the temporary carrier in `dir`: `O_TMPFILE` first, then a
 /// guarded named file.
+///
+/// The named form is `.pmask-rexec-<tag>-<pid>-<run>-<n>`: the `--memfd-name`
+/// value (or the label) makes the carrier recognisable to its owner, and the
+/// per-create 32-bit run tag keeps two sessions, and two carriers of one
+/// session, from sharing a name.  `O_EXCL` still decides the race.
 fn create_temp_file(
     dir: &Path,
-    label: &str,
+    tag: &str,
     named_only: bool,
 ) -> io::Result<(RawFd, bool, Option<PathBuf>)> {
     let c = CString::new(dir.as_os_str().as_bytes())
@@ -833,13 +916,14 @@ fn create_temp_file(
         }
         tmp_err = io::Error::last_os_error();
     }
-    let tag: String = sanitize_name(label)
+    let tag: String = sanitize_name(tag)
         .chars()
         .take(64)
         .map(|c| if c == '/' { '_' } else { c })
         .collect();
+    let run = random_tag();
     for n in 0..16u32 {
-        let name = format!(".pmask-rexec-{}-{}-{}", tag, std::process::id(), n);
+        let name = format!(".pmask-rexec-{}-{}-{}-{}", tag, std::process::id(), run, n);
         let mut path = dir.to_path_buf();
         path.push(&name);
         let pc = CString::new(path.as_os_str().as_bytes())
@@ -982,6 +1066,61 @@ mod tests {
     }
 
     #[test]
+    fn prepare_uses_the_requested_memfd_name() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let path = CString::new(exe.as_os_str().as_bytes()).expect("no NUL");
+        let opts = Options {
+            hugetlb: false,
+            memfd_name: Some("image-1a2b3c4d".to_string()),
+        };
+        let image = match prepare_path(&path, "the label", opts) {
+            Ok(i) => i,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => panic!("prepare failed: {}", e),
+        };
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", image.fd)).unwrap();
+        assert_eq!(
+            link.to_string_lossy(),
+            "/memfd:image-1a2b3c4d (deleted)",
+            "the label leaked into the memfd name"
+        );
+    }
+
+    // Mutation control: falling back to `sanitize_name(label)` in
+    // `create_image` makes this fail.
+    #[test]
+    fn prepare_without_a_name_uses_the_label() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let path = CString::new(exe.as_os_str().as_bytes()).expect("no NUL");
+        let image = match prepare(&path, "the label") {
+            Ok(i) => i,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => panic!("prepare failed: {}", e),
+        };
+        let link = std::fs::read_link(format!("/proc/self/fd/{}", image.fd)).unwrap();
+        assert_eq!(link.to_string_lossy(), "/memfd:the label (deleted)");
+    }
+
+    #[test]
+    fn prepare_refuses_an_invalid_memfd_name() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let path = CString::new(exe.as_os_str().as_bytes()).expect("no NUL");
+        let opts = Options {
+            hugetlb: false,
+            memfd_name: Some("a/b".to_string()),
+        };
+        let err =
+            prepare_path(&path, "label", opts).expect_err("a slash in the memfd name was accepted");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
     fn prepare_refuses_non_elf() {
         let dir = std::env::temp_dir().join(format!("pmask-rexec-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -1098,7 +1237,7 @@ mod tests {
             }
             Err(e) => panic!("prepare failed: {}", e),
         };
-        let temp = match prepare_temp(&primary, "temp") {
+        let temp = match prepare_temp(&primary, "temp", &None) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("skip: no temporary carrier: {}", e);

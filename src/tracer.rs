@@ -56,6 +56,10 @@ pub struct Config {
     pub rexec_cache: crate::rexec::SharedCache,
     /// `--hugetlb`: ask for a hugetlb backing for later-exec images too.
     pub rexec_hugetlb: bool,
+    /// `--memfd-name`: the memfd name for an image the tracer prepares
+    /// (`--exec-once` later execs), so every carrier of one session reads
+    /// the same `/memfd:` string.
+    pub rexec_memfd_name: Option<String>,
     /// `--audit`: print one residue row per tracee at each exec
     /// completion, and a residue count at session end.
     pub audit: bool,

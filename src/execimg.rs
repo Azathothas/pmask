@@ -1135,6 +1135,7 @@ impl Tracer {
         let label = String::from_utf8_lossy(&self.cfg.label).into_owned();
         let opts = crate::rexec::Options {
             hugetlb: self.cfg.rexec_hugetlb,
+            memfd_name: self.cfg.rexec_memfd_name.clone(),
         };
         let mut cache = self
             .cfg
