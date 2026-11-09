@@ -123,9 +123,11 @@ when either is missing. It does not treat "no auditctl" as a pass.
 
 ## 2. The records a launch leaves
 
-Five shapes `[guest]`. They are the kernel's; pmask cannot remove any of
-them, and the only one it can shape is the payload's, by rewriting the
-argument vector before the kernel reads it back.
+Five shapes `[guest]`, captured on the pre-#38 build whose tracer thread
+was named `pmask-tracer`. They are the kernel's; pmask cannot remove any
+of them, and the only one it can shape is the payload's, by rewriting the
+argument vector before the kernel reads it back. The thread's chosen name
+is the one field that changed with #38.
 
 ### 2.1 The supervisor's own exec
 
