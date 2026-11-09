@@ -309,7 +309,7 @@ pub struct Cli {
     pub secret_burn: bool,
     pub secret_close_on_exec: bool,
     /// `--no-dumpable`: the redaction mode makes `payload_dumpable` false;
-/// isolate and plain mode ignore it and leave the payload dumpable.
+    /// isolate and plain mode ignore it and leave the payload dumpable.
     pub no_dumpable: bool,
     /// `--report=json`: print the run as one JSON object.
     pub report_json: bool,
