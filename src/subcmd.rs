@@ -125,6 +125,7 @@ fn cmd_probe(args: &[OsString]) -> i32 {
 fn cmd_doctor(args: &[OsString]) -> i32 {
     let mut json = false;
     let mut require: Vec<String> = Vec::new();
+    let mut saw_require = false;
     let mut i = 0usize;
     while i < args.len() {
         let a = &args[i];
@@ -138,12 +139,8 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
             }
             b"--require" => match args.get(i + 1) {
                 Some(v) => {
-                    for name in v.to_string_lossy().split(',') {
-                        let n = name.trim();
-                        if !n.is_empty() {
-                            require.push(n.to_string());
-                        }
-                    }
+                    saw_require = true;
+                    push_required(&v.to_string_lossy(), &mut require);
                     i += 1;
                 }
                 None => {
@@ -152,13 +149,9 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
                 }
             },
             other if other.starts_with(b"--require=") => {
+                saw_require = true;
                 let v = String::from_utf8_lossy(&other[b"--require=".len()..]).into_owned();
-                for name in v.split(',') {
-                    let n = name.trim();
-                    if !n.is_empty() {
-                        require.push(n.to_string());
-                    }
-                }
+                push_required(&v, &mut require);
             }
             _ => {
                 eprintln!("pmask: doctor: unknown option '{}'", a.to_string_lossy());
@@ -166,6 +159,17 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
             }
         }
         i += 1;
+    }
+    // An empty requirement is an assertion that anything passes: the CI
+    // job that wrote `--require ''` gets exit 0 whatever this host lacks.
+    // Refuse it rather than answer a question nobody asked.
+    if saw_require && require.is_empty() {
+        eprintln!(
+            "pmask: doctor: --require needs at least one guarantee name; an empty list \
+             asserts nothing (drop --require, or name redact, isolate, exact, secret-mem, \
+             mlock, no-new-privs, non-dumpable or landlock)"
+        );
+        return 255;
     }
 
     let caps = Caps::detect();
@@ -286,17 +290,61 @@ fn verdict_of(caps: &Caps, require: &[String]) -> i32 {
     worst
 }
 
+/// Add the guarantee names from one `--require` value, dropping empty
+/// pieces so `--require a,,b` still names both.  Whether the value named
+/// anything at all is decided by the caller, which also sees the values
+/// of the other `--require` options.
+fn push_required(value: &str, out: &mut Vec<String>) {
+    for name in value.split(',') {
+        let n = name.trim();
+        if !n.is_empty() {
+            out.push(n.to_string());
+        }
+    }
+}
+
+/// Escape a string for a JSON string literal.
+///
+/// Every string this module writes into a report by hand goes through
+/// here: the store path and the agent socket path come from
+/// `XDG_DATA_HOME`, `PMASK_STORE` and `PMASK_SOCKET`, and the
+/// `--require` names come from argv, so `"`, `\` and a control byte are
+/// all reachable from an environment the operator controls.  A control
+/// byte becomes its `\u00XX` escape rather than a replacement character,
+/// so the value still reads back as what the host reported.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The machine-readable form of `doctor`: the same rows as `probe
 /// --json`, plus the store and agent lines and the per-request verdict.
+///
+/// Every string that came from outside this process is escaped; the
+/// report must parse whatever the environment holds.
 fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
     let sp = store::default_path();
+    let store_path = json_escape(&sp.display().to_string());
     let store_line = match std::fs::metadata(&sp) {
         Ok(md) => format!(
             "{{\"path\": \"{}\", \"bytes\": {}, \"exists\": true}}",
-            sp.display(),
+            store_path,
             md.len()
         ),
-        Err(_) => format!("{{\"path\": \"{}\", \"exists\": false}}", sp.display()),
+        Err(_) => format!("{{\"path\": \"{}\", \"exists\": false}}", store_path),
     };
     let sock = agent::default_socket();
     let mut wanted = String::new();
@@ -307,7 +355,7 @@ fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
         let st = guarantee(caps, name);
         wanted.push_str(&format!(
             "\n    {{\"name\": \"{}\", \"state\": \"{}\"}}",
-            name,
+            json_escape(name),
             st.map(|s| s.as_word()).unwrap_or("unknown")
         ));
     }
@@ -319,7 +367,7 @@ fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
         "{},\n  \"store\": {},\n  \"agent\": {{\"socket\": \"{}\", \"answering\": {}}},\n  \"required\": [{}],\n  \"exit\": {}\n}}\n",
         body,
         store_line,
-        sock.display(),
+        json_escape(&sock.display().to_string()),
         agent::ping(None),
         wanted,
         code
@@ -963,4 +1011,72 @@ pub fn parse_isolate(v: &[u8]) -> Option<Isolate> {
         }
     }
     Some(iso)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_escape_covers_every_byte_json_forbids_in_a_string() {
+        // The three that reach this module from the environment: the quote
+        // (XDG_DATA_HOME), the backslash (a Windows-style path or a
+        // templating artefact) and the control byte.
+        assert_eq!(json_escape("a\"b"), "a\\\"b");
+        assert_eq!(json_escape("a\\b"), "a\\\\b");
+        assert_eq!(json_escape("a\nb"), "a\\nb");
+        assert_eq!(json_escape("a\rb"), "a\\rb");
+        assert_eq!(json_escape("a\tb"), "a\\tb");
+        assert_eq!(json_escape("a\x08b"), "a\\bb");
+        assert_eq!(json_escape("a\x0cb"), "a\\fb");
+        assert_eq!(json_escape("a\x01b"), "a\\u0001b");
+        // Printable and non-ASCII characters pass through unchanged, so a
+        // path keeps the bytes the host reported.
+        assert_eq!(json_escape("/tmp/plain"), "/tmp/plain");
+        assert_eq!(json_escape("/tmp/naïve"), "/tmp/naïve");
+    }
+
+    /// Count the `"` bytes that are not preceded by an odd number of
+    /// backslashes: a well-formed JSON string has exactly two per string.
+    fn unescaped_quotes(s: &str) -> usize {
+        let mut n = 0usize;
+        let mut escaped = false;
+        for c in s.chars() {
+            match c {
+                '\\' if !escaped => escaped = true,
+                '"' if !escaped => {
+                    n += 1;
+                    escaped = false;
+                }
+                _ => escaped = false,
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn a_quoted_store_path_survives_the_report() {
+        // The issue's reproducer: XDG_DATA_HOME with a `"` in it.  The
+        // value must appear escaped, and no bare `"` may reach the report.
+        // `"path"`, the value string and `"exists"` are the only three
+        // string literals, so six unescaped quotes is a well-formed line.
+        let name = "qa\"path";
+        let line = format!(
+            "{{\"path\": \"{}\", \"exists\": false}}",
+            json_escape(&format!("/tmp/{}/pmask/store.enc", name))
+        );
+        assert_eq!(unescaped_quotes(&line), 6, "{}", line);
+        assert!(line.contains("qa\\\"path"), "{}", line);
+    }
+
+    #[test]
+    fn push_required_drops_empty_pieces_and_keeps_names() {
+        let mut out = Vec::new();
+        push_required("redact,, isolate", &mut out);
+        assert_eq!(out, vec!["redact".to_string(), "isolate".to_string()]);
+        let mut none = Vec::new();
+        push_required("", &mut none);
+        push_required(" , ", &mut none);
+        assert!(none.is_empty());
+    }
 }
