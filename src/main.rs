@@ -360,16 +360,6 @@ fn main() {
         std::process::exit(255);
     }
 
-    // Two documented escapes publish the place a `literal:` or `env:`
-    // secret lives: `PMASK_NO_SELFMASK` leaves the supervisor's own
-    // /proc entry real, and `--keep-env` leaves the payload's environ
-    // visible.  Name the exposure before any secret is read, so the
-    // operator can still change the command.  The check is CLI policy;
-    // a library caller chooses for itself.
-    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
-    check_no_selfmask(&cli, no_selfmask);
-    warn_keep_env_secret(&cli);
-
     // `--daemon` hands the job to a pmaskd, which owns the masking
     // policy and builds the job environment itself.  A flag that changes
     // what this process would do locally cannot be honoured there, and a
@@ -454,6 +444,20 @@ fn main() {
             reexec_in_scope(&name, &cli.reexec_argv, cli.quiet);
         }
     }
+    // Two documented escapes publish the place a `literal:` or `env:`
+    // secret lives: `PMASK_NO_SELFMASK` leaves the supervisor's own
+    // /proc entry real, and `--keep-env` leaves the payload's environ
+    // visible.  Name the exposure before any secret is read, so the
+    // operator can still change the command.  This runs after every
+    // refusal that makes the run impossible (`--daemon` with a local-only
+    // flag, a contradictory `--redact`/`--no-redact`, `--report` on a
+    // path with no report), so a warning never describes a run that will
+    // not happen.  The check is CLI policy; a library caller chooses for
+    // itself.
+    let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
+    check_no_selfmask(&cli, no_selfmask);
+    warn_keep_env_secret(&cli);
+
     // Read the command before every path that needs it: the runner path
     // and the mask path both consume it, so `--secret` with
     // `--args-from-fd` runs the program the descriptor names.
