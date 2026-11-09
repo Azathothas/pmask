@@ -294,6 +294,9 @@ pub struct Tracer {
     audit_header: bool,
     /// Read end of the child's `--rexec` step-report pipe, or -1.
     rexec_report_fd: RawFd,
+    /// The `--detach` release warning has been printed.  One line per
+    /// session: the count is in the session summary.
+    detach_warned: bool,
 }
 
 impl Tracer {
@@ -334,6 +337,7 @@ impl Tracer {
             audit_reasons: std::collections::BTreeSet::new(),
             audit_header: false,
             rexec_report_fd: -1,
+            detach_warned: false,
         }
     }
 
@@ -943,6 +947,18 @@ impl Tracer {
                 self.warn(format_args!("pid {}: detach failed: {}", pid, e));
             }
         } else {
+            // The `--detach` trade, at the moment it is taken: the pid
+            // still carries the label and the relocated window, but no
+            // supervisor remains, so a later exec of it runs fully real.
+            // One line per session; the summary's count covers the rest.
+            if self.cfg.detach && !self.detach_warned {
+                self.detach_warned = true;
+                self.warn(format_args!(
+                    "--detach: pid {} is released untraced, so its later execs are not \
+                     redacted",
+                    pid
+                ));
+            }
             vlog!(self, "pid {}: detached", pid);
         }
         self.unregister(pid);
