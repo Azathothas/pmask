@@ -112,7 +112,10 @@ trap 'rm -rf "$QA_TMP"' EXIT INT TERM
 if [ "${PMASK_QA_NO_TTY:-0}" != 1 ] && command -v setsid >/dev/null 2>&1; then
     if [ -t 0 ] || [ -t 1 ] || [ -t 2 ] || [ -r /dev/tty ]; then
         PMASK_QA_NO_TTY=1 export PMASK_QA_NO_TTY
-        exec setsid sh "$0" "$@" </dev/null
+        # `$0` may be a path relative to the caller's directory, and this
+        # script has already cd'd into its own, so re-exec by the name it
+        # has here.
+        exec setsid sh ./qa.sh "$@" </dev/null
     fi
 fi
 
