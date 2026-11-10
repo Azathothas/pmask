@@ -97,6 +97,16 @@ if [ "$(cat "$D/rf.out")" = "payload-line" ]; then
 else
     fail "qa9-report-file-keeps-payload (stdout=[$(cat "$D/rf.out")])"
 fi
+# An existing report file was 0644 before the run; the report narrows it.
+: >"$D/rep-existing.json"
+chmod 0644 "$D/rep-existing.json"
+"$TOOL" -q --no-redact --report-file "$D/rep-existing.json" -- /bin/true \
+    >/dev/null 2>&1
+rf_mode=$(stat -c '%a' "$D/rep-existing.json" 2>/dev/null)
+case "$rf_mode" in
+    600) pass "qa9-report-file-narrows-an-existing-file" ;;
+    *) fail "qa9-report-file-narrows-an-existing-file (mode=$rf_mode, want 600)" ;;
+esac
 # The document does not merely exist; it is the run report.
 mode=$(sed -n 's/^[[:space:]]*"mode": "\([^"]*\)".*/\1/p' "$D/rep.json" | head -1)
 if [ "$mode" = "plain" ]; then

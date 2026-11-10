@@ -576,6 +576,32 @@ One section per issue. The `fix commit` column names the commit whose change fix
 - `bb9d755` docs: apply the four-hunk detection correction
   Files: `docs/research/detection-measured.md`, `docs/research/detection-residue.md`, `docs/research/detection-techniques.md`
 
+## Corrections made after 0.1.0-beta.2
+
+The 0.1.0-beta.2 documentation made claims the code or a test contradicted.
+0.1.0-beta.3 corrects them. None of these changes a redaction mechanism; two
+of them change behaviour the old text described wrongly.
+
+| claim in 0.1.0-beta.2 | what the artefact said | fixed in |
+|---|---|---|
+| `README.md` installed from `releases/latest/download/...` | every pmask tag is a prerelease, which `releases/latest` skips, so the URL returned 404 | the README names the tag |
+| `--detach`, `--isolate` and `--no-redact` have no tracer | `Mask::spawn_prepared` spawns the tracer thread for every mode; `--detach` detaches each tracee, not the thread | `README.md`, `docs/THREAT-MODEL.md` |
+| `compare.sh` `mem_canary_readable` is "yes in every row" | `evidence/fix5/12/compare-conformance.log` records `SKIP` in `redacted-nodumpable` | `docs/THREAT-MODEL.md` (two rows) |
+| `AT_EXECFN` is rewritten in `saved_auxv` | only when the window relocation runs; `--no-exact` and a refused map leave the auxv alone, which `tests/qa.d/43.sh` asserts | `README.md`, `docs/THREAT-MODEL.md` |
+| the `--no-exact` span is the label plus one NUL per argument | a script payload keeps the original extent on its post-exec path, as `README.md` already said in the same table | `docs/THREAT-MODEL.md` |
+| `--secret-fd-name` is 1 to 200 printable bytes | `validate_memfd_name` refuses `/`, every C0 control byte and DEL, and accepts bytes above 0x7e | `README.md` |
+| `map_files` resolves to `/memfd:<label> (deleted)`, asserted by `compare.sh` | `tests/compare.sh` asserts a `*/memfd:*` target only | `README.md` |
+| the units use `ExecStart=/usr/bin/pmask` | `pmaskd@.service` uses `/usr/bin/pmaskd` | `README.md` |
+| the micro-VM gate runs "the full suite" | `vm/common.sh` stages nine suites and names the seven it does not stage | `README.md`, the 0.1.0-beta.2 notes |
+| `--memfd-name` uses the same name on every carrier | the memfd carriers use it as given; the temporary-file tag is sanitised and cut to 64 bytes | the notes, `src/rexec.rs` |
+| `hardening=heap` when `mlock` is unavailable | the tier is `secret_mem` where `memfd_secret` alone carried the value | `docs/THREAT-MODEL.md` |
+| `--report-file` creates a 0600 file | the mode applied only on creation, so an existing 0644 file kept its mode | `src/main.rs` narrows it, `tests/qa.d/9.sh` asserts it |
+| `--exec-once` is disabled under a mount namespace | a namespace set cleared the cache with no line; `--redact --isolate` dropped it silently | `src/mask.rs` names the reason, `tests/qa.d/61.sh` covers it |
+
+`evidence/bteam4/51/README.md` also says which of its two logs is the
+pre-fix run, so the `VERDICT: FAIL=2` line is not read as the state of the
+fragment at this tag.
+
 ## Commits whose message has no `#N` reference
 
 No entry below matches `#N` in its subject or body; that is not the same as naming no issue. `b6822b1` names its issues as a bare `19:` list, and `0b01a4f`, `9e1de9d` and `69cc3f8` name theirs only in a diff comment (#5, #17, #38). The `fix commit` column in the table above is the mapping.

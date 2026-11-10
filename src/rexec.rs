@@ -145,17 +145,19 @@ pub struct Options {
     /// sanitised by [`sanitize_name`].  `Some` is validated by the caller
     /// when the option is parsed and re-validated by [`create_image`], so
     /// a name that reaches this field through the library API is checked
-    /// too; every carrier then uses it byte-for-byte.  The temporary-file
-    /// carrier is named separately: it must stay one path component and is
-    /// always derived from the label.
+    /// too.  The memfd carriers use it as given.  The temporary-file
+    /// carrier has to stay one path component, so its tag is the same
+    /// name sanitised and cut to 64 bytes.
     pub memfd_name: Option<String>,
 }
 
 impl Options {
     /// The memfd name a new image gets for `label`.
     ///
-    /// The temporary-file carrier uses the same string as its tag, so a
-    /// caller who chose an opaque name gets an opaque carrier too.
+    /// The temporary-file carrier derives its tag from the same string, so
+    /// a caller who chose an opaque name gets an opaque carrier too; the
+    /// tag is sanitised and cut to 64 bytes because it is one path
+    /// component.
     pub fn image_name(&self, label: &str) -> String {
         match &self.memfd_name {
             Some(n) => n.clone(),

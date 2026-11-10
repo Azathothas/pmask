@@ -129,7 +129,7 @@ Options that matter most:
 | `--secret N=SRC` | deliver a secret on descriptor 3, 4, ...; `PMASK_SECRET_<NAME>=<fd>` names it in the child |
 | `--secret-burn` | let a cooperating reader truncate the value once and never grow it back |
 | `--secret-close-on-exec` | close the descriptor in each direct child of the payload at its fork, not in the payload; needs the ptrace supervisor, so plain and isolate modes refuse it |
-| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing; NAME is 1 to 200 printable bytes, no slash and no control byte |
+| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing; NAME is 1 to 200 bytes, no slash, no C0 control byte and no DEL |
 | `--memfd-name NAME` | name the image memfd NAME instead of the label; applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and `--hugetlb` |
 | `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
 | `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; the payload shares fd 1, so a consumer that has to parse the document uses `--report-file` or `--report-fd`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
@@ -417,7 +417,7 @@ because the one-shot map is not gated.
 | 0 | none | the argv and environment windows moved with `prctl(PR_SET_MM_MAP)` | a kernel built without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` turns it off |
 | 0 | none | `--detach`: `TracerPid` 0 for the payload | the detached process and its descendants are not redacted at later execs |
 | 0 | none | `--no-dumpable` makes `environ`, `maps`, `fd/*` and `exe` refused for the same uid | core dumps and debugger attach stop |
-| 0 | none | `--rexec`: `exe` names the memfd, not the file | `map_files` resolves to `/memfd:<label> (deleted)`, asserted by `tests/compare.sh`; `vm.memfd_noexec` may refuse |
+| 0 | none | `--rexec`: `exe` names the memfd, not the file | `map_files` resolves to a `/memfd:` target (asserted by `tests/compare.sh`); the full `/memfd:<label> (deleted)` text is what `readlink /proc/<pid>/exe` shows; `vm.memfd_noexec` may refuse |
 | 0 | a kernel that allows unprivileged user namespaces | `--unshare`: private pid namespace and private procfs | unavailable on hosts that gate user namespaces; opportunistic by design |
 | 0 | none | `--watch-rename`: comm stays the label after a self-rename | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
 | 2 | `CAP_SYS_RESOURCE` | the bare `PR_SET_MM_ARG_START`/`_ARG_END` operations, which would resize the window without rewriting the rest of the map | not used; the one-shot map at rung 0 already reaches the same result |
@@ -434,7 +434,7 @@ stdio, signals and exit codes.
 
 ```sh
 sh tests/run.sh      # on a host that permits ptrace
-sh vm/run.sh         # anywhere: the same suites inside a QEMU micro-VM
+sh vm/run.sh         # anywhere: the nine staged suites in a QEMU micro-VM
 ```
 
 Run the native gate as an unprivileged uid. As root, `CAP_SYS_PTRACE`
@@ -482,8 +482,10 @@ read the conditions they print.
   interpreter command line including the script's arguments and the
   environment, until the completion stop zeroes them; `tests/compare.sh`
   prints its duration.
-- `AT_EXECFN` is rewritten in `saved_auxv`, so `/proc/<pid>/auxv` and
-  anything reading it report the label. `getauxval(AT_EXECFN)` inside the
+- `AT_EXECFN` is rewritten in `saved_auxv` when the window relocation
+  runs, so `/proc/<pid>/auxv` and anything reading it report the label;
+  `--no-exact` and a refused `PR_SET_MM_MAP` leave the auxv alone.
+  `getauxval(AT_EXECFN)` inside the
   payload still returns the real path, because glibc reads the vector the
   kernel copied onto the stack at startup rather than the saved copy.
 - The relocating `prctl` is a single unprivileged call, but a kernel
@@ -569,7 +571,7 @@ the command and the host for each row, is in
 
 | signal | what it shows | when |
 |---|---|---|
-| the tracer thread | a second thread of the supervisor whose `comm` is the session's label, not the retired `pmask-tracer`; its `Tgid` is the supervisor's pid and its `Pid` is the thread id, so the pair `Tgid != Pid` is visible in `/proc/<sup>/task/<tid>/status` | every mode that keeps the tracer attached; `--detach`, `--isolate` and `--no-redact` have no tracer |
+| the tracer thread | a second thread of the supervisor whose `comm` is the session's label, not the retired `pmask-tracer`; its `Tgid` is the supervisor's pid and its `Pid` is the thread id, so the pair `Tgid != Pid` is visible in `/proc/<sup>/task/<tid>/status` | every mode that redacts; `--isolate` and `--no-redact` have no tracer, and `--detach` zeroes each tracee's `TracerPid` while the supervisor's thread lives for the session |
 | `TracerPid` | the tracer's thread id in `/proc/<pid>/status`, which is not the payload's parent and is absent from `readdir("/proc")` | every attached mode; `0` under `--detach` |
 | the label and `exe` split | `comm` and `cmdline` say the label, while `exe` and `maps` name the real binary | default; `--rexec` moves `exe` to `memfd:<label>` and leaves the open files and cgroup real |
 | the memfd names | `/proc/<pid>/exe -> /memfd:<label> (deleted)` for the image family, `/proc/<pid>/fd/N -> /memfd:pmask-secret (deleted)` for a delivered secret, `/secretmem (deleted)` for the supervisor's copy | `--rexec` and `--image`, `--secret`; the supervisor's secret buffer in the CLI path |
@@ -634,16 +636,20 @@ Binaries: `pmask` (CLI), `pmaskd` (daemon), and, with
 the suites use). Copy the binaries you want to a directory on `PATH`; no
 config file is read. The package also ships `man/pmask.1`,
 `man/pmaskd.8` and completions for bash, zsh and fish. The systemd units
-under `contrib/systemd/` use `ExecStart=/usr/bin/pmask`; for a portable
-install, copy the binaries to `/usr/bin` or edit `ExecStart` to the
-installed path.
+under `contrib/systemd/` use `ExecStart=/usr/bin/pmask` for
+`pmask-run@.service` and `ExecStart=/usr/bin/pmaskd` for
+`pmaskd@.service`; for a portable install, copy the binaries to `/usr/bin`
+or edit `ExecStart` to the installed path.
 
 ## Install
 
-Release binaries are static musl, for x86-64 and ARM64:
+Release binaries are static musl, for x86-64 and ARM64. Every tag so far
+carries a suffix, and GitHub publishes a suffixed tag as a prerelease,
+which `releases/latest` skips: name the tag in the URL.
 
 ```sh
-curl -fLO https://github.com/Azathothas/pmask/releases/latest/download/pmask-x86_64-unknown-linux-musl
+V=v0.1.0-beta.3
+curl -fLO "https://github.com/Azathothas/pmask/releases/download/$V/pmask-x86_64-unknown-linux-musl"
 chmod +x pmask-x86_64-unknown-linux-musl
 ./pmask-x86_64-unknown-linux-musl --version
 ```

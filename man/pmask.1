@@ -1,4 +1,4 @@
-.TH PMASK 1 "2026" "pmask 0.1.0-beta.2" "User Commands"
+.TH PMASK 1 "2026" "pmask 0.1.0-beta.3" "User Commands"
 .SH NAME
 pmask \- run a process tree with a redacted /proc entry
 .SH SYNOPSIS
@@ -215,6 +215,15 @@ Reuse one sealed image per distinct program, keyed by the resolved path
 and its mtime, across the execs of the session.
 Later execs use a guarded temporary-file image, because the supervisor
 is non-dumpable and the tracee cannot read its descriptors.
+The cache is unavailable where the tracee cannot see the supervisor's
+filesystem: under
+.BR \-\-unshare ,
+under a namespace set such as
+.BR "\-\-redact \-\-isolate" ,
+and with
+.BR \-\-run\-as .
+Each case prints one line naming the reason, and later execs run from
+the on-disk path.
 Implies
 .BR \-\-rexec .
 .TP
@@ -592,6 +601,9 @@ It implies
 so it needs the same secret-side run that flag needs.
 The file is opened before the payload runs; a path that cannot be
 written is a usage error and the payload does not start.
+A symbolic link at PATH is refused, and the file is narrowed to mode
+0600 whether this run created it or not, so an existing report file
+does not hand the document to another account.
 .TP
 .BI \-\-report\-fd " N"
 Write the

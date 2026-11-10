@@ -975,6 +975,15 @@ impl Mask {
                     "pmask: --exec-once unavailable: a private pid namespace hides the \
                      supervisor, so later execs run from the on-disk path"
                 );
+            } else if namespaces.is_some() {
+                // The cache path is resolved in the supervisor's mount
+                // namespace, so a tracee in a mount namespace of its own
+                // cannot see it.  `--redact --isolate` always creates one.
+                eprintln!(
+                    "pmask: --exec-once unavailable: a mount namespace hides the \
+                     supervisor's image from the tracee, so later execs run from the \
+                     on-disk path"
+                );
             } else if self.run_as.is_some() {
                 eprintln!(
                     "pmask: --exec-once unavailable: a dropped uid cannot execute the \

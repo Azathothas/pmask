@@ -17,7 +17,7 @@ the report becomes a public advisory after the release.
 ## Supported versions
 
 Only the latest release and `main` get fixes. A prerelease (a tag with a
-suffix, for example `v0.1.0-beta.2`) is replaced by the next release.
+suffix, for example `v0.1.0-beta.3`) is replaced by the next release.
 
 ## What pmask does not protect
 

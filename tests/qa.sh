@@ -102,6 +102,20 @@ mkdir -p "$QA_TMP" || {
 }
 trap 'rm -rf "$QA_TMP"' EXIT INT TERM
 
+# A fragment that reaches `/dev/tty` (a passphrase prompt, for one) blocks
+# only when the caller has a controlling terminal, so the same suite would
+# hang when a maintainer runs `sh tests/run.sh` from a shell and pass under
+# CI.  Re-exec once with no controlling terminal, so every fragment sees
+# the same no-tty host the CI job has.  `setsid` with a redirect from
+# /dev/null detaches from the terminal; `PMASK_QA_NO_TTY` marks the
+# re-exec so it cannot loop.
+if [ "${PMASK_QA_NO_TTY:-0}" != 1 ] && command -v setsid >/dev/null 2>&1; then
+    if [ -t 0 ] || [ -t 1 ] || [ -t 2 ] || [ -r /dev/tty ]; then
+        PMASK_QA_NO_TTY=1 export PMASK_QA_NO_TTY
+        exec setsid sh "$0" "$@" </dev/null
+    fi
+fi
+
 for c in qa.d/*.sh; do
     [ -f "$c" ] || continue
     N=$((N + 1))

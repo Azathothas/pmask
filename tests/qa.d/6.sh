@@ -38,8 +38,15 @@ trap cleanup EXIT
 # The gate runs without a controlling terminal, so a verb that needs a
 # passphrase prints the "no terminal" error.  That is the control: it
 # proves this fragment can tell "asked for a passphrase" from "printed
-# help".
-XDG_DATA_HOME="$D/data" "$TOOL" store list </dev/null >"$D/ctl.out" 2>"$D/ctl.err"
+# help".  `setsid` makes that true even when a maintainer runs this
+# fragment from a shell: without it the prompt opens /dev/tty and blocks.
+if command -v setsid >/dev/null 2>&1; then
+    XDG_DATA_HOME="$D/data" setsid "$TOOL" store list </dev/null \
+        >"$D/ctl.out" 2>"$D/ctl.err"
+else
+    XDG_DATA_HOME="$D/data" "$TOOL" store list </dev/null \
+        >"$D/ctl.out" 2>"$D/ctl.err"
+fi
 ctl_rc=$?
 if [ "$ctl_rc" != 0 ] && grep -q "passphrase" "$D/ctl.err"; then
     pass "qa6-control-a-verb-without-a-passphrase-prompts (rc=$ctl_rc)"

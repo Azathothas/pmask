@@ -383,7 +383,7 @@ impl ReportSink {
             // `O_NOFOLLOW`: a symlink planted at the path must not make
             // pmask truncate its target, and a symlink is a usage error
             // rather than something to follow.  `O_CLOEXEC` keeps the
-            // document out of the payload, and mode 0600 keeps a new file
+            // document out of the payload, and mode 0600 keeps the file
             // private to this account.  The lease audit sink opens its
             // file the same way.
             match std::fs::OpenOptions::new()
@@ -394,7 +394,18 @@ impl ReportSink {
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(path)
             {
-                Ok(f) => return Some(ReportSink::File(f, path.to_path_buf())),
+                Ok(f) => {
+                    // `mode` applies only when the file is created.  An
+                    // existing report file kept whatever mode it had, so a
+                    // 0644 path handed the run's report to every local
+                    // account.  Narrow it to 0600 now that it is ours.
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) = f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                        eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                        std::process::exit(255);
+                    }
+                    return Some(ReportSink::File(f, path.to_path_buf()));
+                }
                 Err(e) => {
                     eprintln!("pmask: --report-file {}: {}", path.display(), e);
                     std::process::exit(255);
