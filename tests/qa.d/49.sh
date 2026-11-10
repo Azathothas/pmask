@@ -78,6 +78,13 @@ leaf_of() {
 
 field() { sed -n "s/^$2:[[:space:]]*//p" "/proc/$1/status" 2>/dev/null; }
 cmdline_of() { tr '\0' '|' < "/proc/$1/cmdline" 2>/dev/null; }
+
+# ns_unavailable ERR_FILE: the run asked for namespaces and the host
+# refused them, so the mode fell back to redact or plain.  The namespace
+# fingerprints cannot exist; the row is a SKIP with the host's reason.
+ns_unavailable() {
+    grep -q 'no unprivileged user namespaces' "$1" 2>/dev/null
+}
 comm_of() { cat "/proc/$1/comm" 2>/dev/null; }
 envbytes() { wc -c < "/proc/$1/environ" 2>/dev/null | tr -d ' '; }
 envhas() {
@@ -167,7 +174,7 @@ fi
 set -- $(start isolate --isolate)
 SUP=$1
 LEAF=$2
-if [ -z "$LEAF" ]; then
+if [ -z "$LEAF" ] || ns_unavailable "$T/isolate.err"; then
     skip "49c-isolate-real (unprivileged user namespaces unavailable: $(head -2 "$T/isolate.err" | tr '\n' '|'))"
     skip "49c-isolate-procfs-fingerprint (no namespaces)"
     skip "49c-isolate-nspid-fingerprint (no namespaces)"
@@ -221,7 +228,7 @@ unshare_row() {
     set -- $(start "$u_name" "$@")
     u_sup=$1
     u_leaf=$2
-    if [ -z "$u_leaf" ]; then
+    if [ -z "$u_leaf" ] || ns_unavailable "$T/$u_name.err"; then
         skip "$u_name (user namespaces unavailable: $(head -2 "$T/$u_name.err" | tr '\n' '|'))"
         return
     fi

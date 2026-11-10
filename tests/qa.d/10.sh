@@ -66,7 +66,11 @@ check --no-new-privs --no-new-privs
 
 # Isolate mode is the other mode that cannot redact; it must say the same.
 "$TOOL" --isolate --report=json --comm qa10b -- /bin/true >"$D/i.json" 2>"$D/i.err"
-if grep -q -- "--comm was not applied" "$D/i.json"; then
+if grep -q '"mode_reason": "isolate_unavailable"' "$D/i.json"; then
+    # The host has no user namespaces, so --isolate selected redact and
+    # --comm was applied.  The isolate-mode note cannot be observed here.
+    skip "qa10-isolate-notes---comm (isolate unavailable on this host)"
+elif grep -q -- "--comm was not applied" "$D/i.json"; then
     pass "qa10-isolate-notes---comm"
 else
     fail "qa10-isolate-notes---comm (report: $(tr '\n' '|' <"$D/i.json" | cut -c1-300))"

@@ -268,6 +268,10 @@ case "$out" in
 esac
 out=$("$TOOL" --isolate --no-dumpable -- /bin/true 2>&1)
 case "$out" in
+    *"no unprivileged user namespaces"*)
+        # --isolate selected redact, so --no-dumpable was applied; the
+        # isolate-mode note cannot be observed on this host.
+        skip "44g-isolate-mode-note (isolate unavailable on this host)" ;;
     *"--no-dumpable was not applied"*"isolate mode"*)
         pass "44g-isolate-mode-note" ;;
     *)
