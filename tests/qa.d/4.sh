@@ -168,7 +168,7 @@ wait "$CTL_SUP" 2>/dev/null
 
 # ---- negative control: without any mask the marker IS visible.  A run
 # ---- that never saw the marker would make every absence vacuous.
-MARK_OUT=$("$TOOL" -q --no-redact -- /bin/sh -c 'tr "\0" "|" < /proc/self/cmdline' "$MARK" 2>/dev/null)
+MARK_OUT=$("$TOOL" -q --no-redact -- /bin/sh -c 'tr "\0" "|" < /proc/$$/cmdline' "$MARK" 2>/dev/null)
 case "$MARK_OUT" in
     *"$MARK"*) pass qa4-negative-control-marker-visible ;;
     *) fail "qa4-negative-control-marker-visible (no-redact cmdline=[$MARK_OUT])" ;;

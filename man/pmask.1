@@ -63,8 +63,9 @@ A line that writes
 NAME
 .B \-\-
 COMMAND prints one warning naming
-.BR \-\-keep\-env=NAME ,
-because the space form keeps everything and runs NAME as the program; the
+.BR \-\-keep\-env=NAME
+when NAME looks like a variable list, because the space form keeps
+everything and runs NAME as the program; the
 warning is printed even under
 .B \-q
 and the command still runs, since NAME is also a legal program name.
@@ -295,6 +296,9 @@ Selected by
 by a host that refuses ptrace, and by
 .B \-\-isolate
 where user namespaces are unavailable and ptrace is unavailable.
+A host that refuses ptrace still selects isolate for an
+.B \-\-isolate
+request that user namespaces can honour.
 .PP
 Selection order:
 .B \-\-redact
@@ -306,6 +310,12 @@ redacts the tree and creates the namespaces LIST names.
 .B \-\-isolate=none
 creates no namespace and the ordinary ladder decides between redact and
 plain.
+.B \-\-isolate
+is decided before the ptrace check: when user namespaces are available
+the namespaces are created with or without ptrace, and the mode reason
+names the ptrace refusal when there is one.
+Where user namespaces are unavailable the run redacts if ptrace works
+and runs plain if it does not.
 .B \-\-no\-redact \-\-isolate
 still creates the namespaces when the host grants them, because
 isolation does not need ptrace.
@@ -428,7 +438,11 @@ Secret-agent socket for
 sources.
 .TP
 .BI \-\-isolate "[=LIST]"
-Run the payload in fresh namespaces:
+Run the payload in fresh namespaces.
+On the isolate path, every run requests fresh user, mount, UTS, IPC and
+cgroup namespaces.
+.B LIST
+selects the optional axes:
 .B pid,net,tmp
 |
 .B all
@@ -440,8 +454,9 @@ means no isolation at all: no namespace is created, and the payload
 keeps the host's namespaces,
 .BR no_new_privs
 state and filesystem policy.
-A host that cannot create user namespaces runs the plain path and says
-so.
+A host that cannot create user namespaces does not enter this mode: the
+run redacts where ptrace works and runs plain where it does not, and
+names the unavailable axis.
 .PP
 The private
 .B /dev
@@ -581,9 +596,11 @@ written is a usage error and the payload does not start.
 .BI \-\-report\-fd " N"
 Write the
 .B \-\-report
-document to descriptor N, which is inherited by
+document to descriptor N, which
 .B pmask
-and closed afterwards.
+duplicates and marks close-on-exec.
+N must be 3 or higher: 0, 1 and 2 are refused with exit status 255, so
+the payload keeps its standard input, output and error.
 A descriptor that is not open is a usage error and the payload does not
 start.
 .SH SUBCOMMANDS

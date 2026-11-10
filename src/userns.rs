@@ -255,7 +255,15 @@ pub fn fork_in_userns_with(ns: ChildNs) -> io::Result<libc::pid_t> {
     // and the setgroups write fails with EACCES on a hardened supervisor.
     let mut ready = 0u8;
     // SAFETY: `ready` is a valid one byte buffer.
-    let n = unsafe { libc::read(rdy_r, &mut ready as *mut u8 as *mut libc::c_void, 1) };
+    let n = unsafe {
+        loop {
+            let n = libc::read(rdy_r, &mut ready as *mut u8 as *mut libc::c_void, 1);
+            if n < 0 && *libc::__errno_location() == libc::EINTR {
+                continue;
+            }
+            break n;
+        }
+    };
     close_quiet(rdy_r);
     if n != 1 {
         close_quiet(go_w);

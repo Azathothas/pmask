@@ -600,6 +600,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                         Some(p) => {
                             let key = OsString::from_vec(v[..p].to_vec());
                             let val = OsString::from_vec(v[p + 1..].to_vec());
+                            // One grammar for `--env` and `--env-file` in
+                            // every mode: the env-file parser applies the
+                            // same rule, and the plain/isolate paths do
+                            // not pass through `Mask::validate`.
+                            if let Err(e) = pmask::mask::validate_env_key(&key) {
+                                die(&e.to_string());
+                            }
                             mask = mask.env(key.clone(), val.clone());
                             env_overrides.push((key, val));
                         }

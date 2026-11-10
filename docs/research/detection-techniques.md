@@ -378,7 +378,7 @@ mode 4, a 10-byte span and an anonymous VMA for mode 2.
 | span not in `[stack]` | no | no | yes, `[anonymous]` | no |
 | `environ` empty | no | no | yes, 0 bytes | yes, 0 bytes |
 | `comm` versus `exe` | no | no | no | yes |
-| `AT_EXECFN` versus `env_end` | no | no | not measured | yes, see below |
+| `AT_EXECFN` versus `env_end` | no | no | not measured | no, see below |
 
 `[observed]` where a number or a VMA name is given.
 

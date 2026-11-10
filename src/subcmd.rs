@@ -600,6 +600,11 @@ fn cmd_store(args: &[OsString]) -> i32 {
                 eprintln!("pmask: store get needs a NAME");
                 return 255;
             };
+            let name = name.to_string_lossy();
+            if let Err(e) = secret::validate_name(name.as_ref()) {
+                eprintln!("pmask: store get: {}", e);
+                return 255;
+            }
             let st = match Store::open(&path, &pp) {
                 Ok(s) => s,
                 Err(e) => {
@@ -607,15 +612,22 @@ fn cmd_store(args: &[OsString]) -> i32 {
                     return 255;
                 }
             };
-            match st.get(&name.to_string_lossy()) {
+            match st.get(name.as_ref()) {
                 Some(v) => {
                     let mut out = io::stdout();
-                    let _ = out.write_all(v);
-                    let _ = out.write_all(b"\n");
-                    0
+                    let mut rc = 0;
+                    if let Err(e) = out
+                        .write_all(v)
+                        .and_then(|_| out.write_all(b"\n"))
+                        .and_then(|_| out.flush())
+                    {
+                        eprintln!("pmask: store get: {}", e);
+                        rc = 255;
+                    }
+                    rc
                 }
                 None => {
-                    eprintln!("pmask: no secret named '{}'", name.to_string_lossy());
+                    eprintln!("pmask: no secret named '{}'", name);
                     1
                 }
             }
@@ -874,16 +886,34 @@ fn cmd_get(args: &[OsString]) -> i32 {
         eprintln!("pmask: get needs a NAME (see 'pmask get --help')");
         return 255;
     };
+    if let Err(e) = secret::validate_name(&name) {
+        eprintln!("pmask: get: {}", e);
+        return 255;
+    }
     match agent::fetch(sock.as_ref(), &name) {
         Ok(v) => {
             let mut out = io::stdout();
-            let _ = out.write_all(v.as_slice());
-            let _ = out.write_all(b"\n");
-            0
+            let mut rc = 0;
+            if let Err(e) = out
+                .write_all(v.as_slice())
+                .and_then(|_| out.write_all(b"\n"))
+                .and_then(|_| out.flush())
+            {
+                eprintln!("pmask: get: {}", e);
+                rc = 255;
+            }
+            rc
         }
         Err(e) => {
+            let missing = agent::is_missing_name(&e);
             eprintln!("pmask: {}", e);
-            1
+            // The manual reserves 1 for a name the agent does not hold;
+            // a transport or protocol failure is 255.
+            if missing {
+                1
+            } else {
+                255
+            }
         }
     }
 }

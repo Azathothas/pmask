@@ -536,12 +536,9 @@ impl Tracer {
             if e.raw_os_error() == Some(libc::ESRCH) {
                 // The child is already gone (a refused setup step exits
                 // it before the handshake).  Reap it and report its own
-                // status, like the readiness-EOF path above.
-                let mut st = 0i32;
-                // SAFETY: plain waitpid of our own child.
-                unsafe {
-                    libc::waitpid(master, &mut st, libc::__WALL);
-                }
+                // status, like the readiness-EOF path above.  A failed
+                // reap must not read as exit 0: `st` would stay zero.
+                let st = wait_master_stop(master)?;
                 return Ok(finish_status(master, st));
             }
             // Nothing is traced: the child must not run unmasked.
@@ -1633,6 +1630,22 @@ impl Tracer {
                     // The new image is mapped and the program has not
                     // started yet.
                     self.on_exec_complete(pid, true);
+                }
+            }
+            State::Foreign => {
+                if si.exit_is_error() {
+                    // The 32-bit image was refused at entry, so no
+                    // inline arrays were swapped and there is nothing to
+                    // restore.  A tracee left in `Foreign` never takes
+                    // another exec-entry stop, so its next exec would run
+                    // unredacted; settle it back to `Slow` and keep it
+                    // syscall-supervised.
+                    self.set_state(pid, State::Slow);
+                    self.resume(pid, 0, true);
+                } else {
+                    // A successful foreign exec is refused at the
+                    // completion stop; keep the state that records it.
+                    self.resume_state(pid, 0);
                 }
             }
             _ => self.resume_state(pid, 0),

@@ -284,7 +284,15 @@ pub fn validate_comm(comm: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_env_key(key: &OsStr) -> io::Result<()> {
+/// Check an environment variable name for the bytes the kernel and the
+/// env-file parser accept: printable ASCII except space and `=`, and
+/// never empty.
+///
+/// The env-file parser (`daemon.rs`) applies the same range, so `--env`
+/// and `--env-file` accept exactly the same names.  A name reaches
+/// `/proc/<pid>/environ` and the daemon's line protocol, both of which a
+/// reader splits on whitespace or newlines.
+pub fn validate_env_key(key: &OsStr) -> io::Result<()> {
     let b = key.as_bytes();
     let shown = String::from_utf8_lossy(b);
     if b.is_empty() {
@@ -303,6 +311,13 @@ fn validate_env_key(key: &OsStr) -> io::Result<()> {
         return Err(invalid(&format!(
             "environment variable name {:?} must not contain NUL",
             shown
+        )));
+    }
+    if let Some(bad) = b.iter().find(|&&c| !(0x21..=0x7e).contains(&c)) {
+        return Err(invalid(&format!(
+            "environment variable name {:?} must be printable ASCII without spaces or \
+             control bytes (0x{:02x} is not)",
+            shown, bad
         )));
     }
     Ok(())
@@ -709,8 +724,8 @@ impl Mask {
 
     /// Run the program with an explicit environment instead of the
     /// inherited one (replaces it wholesale).  `run` and `spawn` return
-    /// an `InvalidInput` error for a name that is empty or contains `=`
-    /// or NUL.
+    /// an `InvalidInput` error for a name that is empty or contains `=`,
+    /// NUL, a space or a byte outside printable ASCII.
     pub fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
         mut self,
         vars: impl IntoIterator<Item = (K, V)>,
@@ -843,6 +858,12 @@ impl Mask {
             rexec_per_exec: self.rexec_exec_once
                 && self.rexec
                 && !self.unshare
+                // A mount namespace hides the supervisor's filesystem
+                // view: the cached image path is resolved in the
+                // supervisor's mount namespace, and the tracee cannot see
+                // it.  The same holds for the `--redact --isolate` set,
+                // which always creates a mount namespace.
+                && self.namespaces.is_none()
                 && self.run_as.is_none(),
             tree: TreeRegistry::default(),
         })

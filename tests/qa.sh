@@ -5,6 +5,11 @@
 # cannot poison another. A fragment prints PASS/FAIL/SKIP lines and exits
 # nonzero when a case fails. Empty fragments are a SKIP, never a pass.
 #
+# The dispatcher counts those lines per fragment.  A fragment that printed
+# only SKIPs decided nothing, so it contributes to `skipped=`, not
+# `passed=`; the final line carries both counts and a batch of skips cannot
+# read as coverage.  A failing fragment fails the batch.
+#
 # A fragment that starts a payload in a mode that does not redact it (plain
 # mode has no label to kill by) can leave that payload behind when it only
 # kills the supervisor.  A leftover `testcases` process with a real argv
@@ -21,6 +26,17 @@ cd "$(dirname "$0")"
 TESTS_DIR=$(pwd)
 FAIL=0
 N=0
+PASSED=0
+SKIPPED=0
+
+# count_fragments: how many fragments this tree has.
+count_fragments() {
+    cf_n=0
+    for cf_c in qa.d/*.sh; do
+        [ -f "$cf_c" ] && cf_n=$((cf_n + 1))
+    done
+    echo "$cf_n"
+}
 
 # The fragments assert what a *same-uid* observer can and cannot see: an
 # EACCES set, four zeroed stat fields, a refused `/proc/<pid>/mem`.  Root
@@ -28,11 +44,14 @@ N=0
 # root, and a suite that "fails" there is reporting the observer, not the
 # code.  The project's own suites skip the same cases per row (#35); this
 # dispatcher skips the whole batch once, with the reason, and the
-# unprivileged run is the one that decides them.
+# unprivileged run is the one that decides them.  The final line still
+# carries the fragment count, so the skip cannot read as coverage.
 if [ -r ./lib.sh ]; then
     . ./lib.sh
     if root_peer_observer; then
+        total=$(count_fragments)
         echo "SKIP qa fragments ($ROOT_PEER_REASON)"
+        echo "################ QA: SKIP cases=$total passed=0 skipped=$total"
         exit 0
     fi
 fi
@@ -75,18 +94,49 @@ reap_new_since() {
     done
 }
 
+QA_TMP=$(mktemp -d "${TMPDIR:-/tmp}/pmask-qa.XXXXXX" 2>/dev/null) \
+    || QA_TMP="/tmp/pmask-qa.$$"
+mkdir -p "$QA_TMP" || {
+    echo "FATAL: cannot create a capture directory for the fragments"
+    exit 2
+}
+trap 'rm -rf "$QA_TMP"' EXIT INT TERM
+
 for c in qa.d/*.sh; do
     [ -f "$c" ] || continue
     N=$((N + 1))
     before=$(live_tree_procs | tr '\n' ' ')
     echo "################ qa: $c"
-    sh "$c" || FAIL=1
+    # The fragment's output is captured so its verdict lines can be counted.
+    # A fragment that exits 0 after printing only SKIPs (or nothing) has
+    # decided no case, and that is a failure of this batch.  It goes to a
+    # file rather than a command substitution: a payload the fragment leaked
+    # would hold the write end of a pipe open and block the dispatcher
+    # before the sweep below could reap it.
+    out="$QA_TMP/$N.out"
+    sh "$c" >"$out" 2>&1
+    rc=$?
+    [ -s "$out" ] && cat "$out"
+    fp=$(grep -c '^PASS ' "$out")
+    ff=$(grep -c '^FAIL ' "$out")
+    fs=$(grep -c '^SKIP ' "$out")
+    PASSED=$((PASSED + fp))
+    SKIPPED=$((SKIPPED + fs))
+    if [ "$rc" != 0 ]; then
+        FAIL=1
+    fi
+    # A fragment that printed only SKIPs decided nothing; it is counted as
+    # skipped, not failed.  The summary line carries both counts, and the
+    # CI job requires at least one passing fragment, so a batch of skips
+    # cannot read as coverage.
+    rm -f "$out"
     reap_new_since "$before"
 done
 
 if [ "$N" = 0 ]; then
     echo "SKIP qa (no fragments)"
+    echo "################ QA: SKIP cases=0 passed=0 skipped=0"
     exit 0
 fi
-echo "################ QA: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL) cases=$N"
+echo "################ QA: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL) cases=$N passed=$PASSED skipped=$SKIPPED"
 exit "$FAIL"

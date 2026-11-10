@@ -88,7 +88,7 @@ jobs:
           for f in Cargo.toml Cargo.lock README.md LICENSE build.rs src/lib.rs man/pmask.1; do
             grep -qx "$f" "$RUNNER_TEMP/pkg.txt"
           done
-          if grep -E '^(\.cargo|\.github|docs|tests|vm|vendor|scripts|TODO|measurements|contrib)/' "$RUNNER_TEMP/pkg.txt"; then
+          if grep -E '^(\.cargo|\.github|docs|tests|vm|vendor|scripts|TODO|measurements|contrib|evidence)/' "$RUNNER_TEMP/pkg.txt"; then
             echo "repository files in the package"; exit 1
           fi
           cargo publish --dry-run --locked
@@ -174,15 +174,57 @@ jobs:
           cat "$log"
           # native-suites.sh fails an absent suite.  It cannot fail a suite
           # that skipped its own availability gate, and a job whose one
-          # purpose is isolation coverage must not pass on zero coverage:
-          # say which sysctl to change and fail.
+          # purpose is this coverage must not pass on zero coverage: name
+          # what is missing and fail.
           if grep -q '^SKIP i0-isolation-available' "$log"; then
             echo "::error::isolation.sh skipped its availability gate: the runner uid has no user namespaces"
             exit 1
           fi
+          if ! grep -q '^CONFORMANCE: PASS pass=' "$log"; then
+            echo "::error::conformance.sh did not report CONFORMANCE: PASS"
+            exit 1
+          fi
+          cpass=$(sed -n 's/^CONFORMANCE: PASS pass=\([0-9][0-9]*\).*/\1/p' "$log" | tail -1)
+          if [ "${cpass:-0}" -lt 1 ]; then
+            echo "::error::conformance.sh passed zero cases"
+            exit 1
+          fi
+          if ! grep -qx 'COMPARE: OK' "$log"; then
+            echo "::error::compare.sh did not report COMPARE: OK"
+            exit 1
+          fi
+          # COMPARE: OK is also printed when both map_files targets were
+          # unmeasurable, so require at least one target to have been read.
+          mapfiles=$(sed -n 's/^MAP_FILES //p' "$log" | tail -1)
+          rexec_target=$(printf '%s\n' "$mapfiles" | sed -n 's/.* rexec_target=\([^ ]*\).*/\1/p')
+          plain_target=$(printf '%s\n' "$mapfiles" | sed -n 's/.* plain_target=\([^ ]*\).*/\1/p')
+          if [ -z "$rexec_target" ] && [ -z "$plain_target" ]; then
+            echo "::error::compare.sh measured no map_files target: ${mapfiles:-no MAP_FILES line}"
+            exit 1
+          fi
           exit "$rc"
       - name: per-issue QA fragments
-        run: sh tests/qa.sh
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/qa.log"
+          rc=0
+          sh tests/qa.sh > "$log" 2>&1 || rc=$?
+          cat "$log"
+          # The dispatcher's summary line carries the counts.  A batch that
+          # skipped every fragment (root, or a tree with no fragments) must
+          # not pass this job: zero coverage is not a pass.
+          line=$(grep '^################ QA: ' "$log" | tail -1)
+          case "$line" in
+            *"QA: PASS"*) : ;;
+            *) echo "::error::the QA fragments did not pass: ${line:-no summary line}"; exit 1 ;;
+          esac
+          cases=$(printf '%s\n' "$line" | sed -n 's/.* cases=\([0-9][0-9]*\).*/\1/p')
+          passed=$(printf '%s\n' "$line" | sed -n 's/.* passed=\([0-9][0-9]*\).*/\1/p')
+          if [ "${cases:-0}" -lt 1 ] || [ "${passed:-0}" -lt 1 ]; then
+            echo "::error::the QA run reported no coverage: $line"
+            exit 1
+          fi
+          exit "$rc"
 
   msrv:
     runs-on: ubuntu-24.04

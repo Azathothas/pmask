@@ -153,6 +153,16 @@ else
 fi
 
 # ------------------------------------------------ q48d: syscall signature
+# A host without strace cannot answer this group.  The measurement says so
+# with one SKIP line; the dependent cases must report the same reason, not
+# fail for the absence of a tool.
+if grep -q '^SKIP syscall-startup' "$T/measure.log"; then
+    why=$(grep -m1 '^SKIP syscall-startup' "$T/measure.log")
+    skip "q48d-startup-signature-names-PR_SET_MM_MAP ($why)"
+    skip "q48d2-startup-signature-names-PR_SET_NAME ($why)"
+    skip "q48d3-startup-signature-names-PR_SET_DUMPABLE ($why)"
+    skip "q48d5-strace-f-finding-is-recorded ($why)"
+else
 if grep -q '^SYSCALL-STARTUP prctl(PR_SET_MM' "$T/measure.log"; then
     pass "q48d-startup-signature-names-PR_SET_MM_MAP"
 else
@@ -183,6 +193,7 @@ if grep -q '^FAILCHECK ' "$T/measure.log"; then
     pass "q48d5-strace-f-finding-is-recorded ($(grep -m1 '^FAILCHECK ' "$T/measure.log" | cut -c1-60))"
 else
     fail "q48d5-strace-f-finding-is-recorded (no FAILCHECK line)"
+fi
 fi
 
 # ------------------------------------------ q48e/f: the documented escape

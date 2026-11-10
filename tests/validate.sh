@@ -289,8 +289,10 @@ do
     # The masked run needs the same settle time before the sweep; sample
     # until the label is visible, then take one more reading.
     wp_i=0
+    # comm_count ends in `echo`, so its exit status is always 0: test the
+    # count itself, not the function's status.
     while [ "$wp_i" -lt 40 ]; do
-        comm_count "$FAKE15" >/dev/null 2>&1 && break
+        [ "$(comm_count "$FAKE15")" -gt 0 ] && break
         sleep 0.05 2>/dev/null || sleep 1
         wp_i=$((wp_i + 1))
     done

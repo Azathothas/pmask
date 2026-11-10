@@ -10,9 +10,9 @@
 # install several filters without being pmask.
 #
 # Cases:
-#   s1  --watch-rename: Seccomp_filters=2, NoNewPrivs=1, comm=label
-#   s1b control: the same payload without the flag: 1 filter, NNP=0
-#   s1c control: a plain process on this host: 1 filter, NNP=0
+#   s1  --watch-rename: Seccomp_filters=baseline+1, NoNewPrivs=1, comm=label
+#   s1b control: the same payload without the flag: baseline filters, NNP=0
+#   s1c control: a plain process on this host: the baseline itself
 #   s2  the redirect: a payload's prctl(PR_SET_NAME,"other") leaves the
 #       label as comm with the flag, and "other" without it
 #   s3  --no-new-privs alone: NNP=1 with ONE filter (the pair is the
@@ -106,6 +106,22 @@ row() {
     echo "filters=$(status_field "$1" Seccomp_filters) nnp=$(status_field "$1" NoNewPrivs) comm=$(status_field "$1" Name)"
 }
 
+# The host's own filter count is the baseline.  A container runtime or a
+# sandbox may install one on every process, and a host with none is just as
+# valid; the flag adds one filter to the payload's baseline, so the
+# absolute number is not portable.  Measure it before the cases that use it.
+/bin/sleep 4 &
+PLAIN=$!
+sleep 0.3
+BASE_FILTERS=$(status_field "$PLAIN" Seccomp_filters)
+BASE_NNP=$(status_field "$PLAIN" NoNewPrivs)
+kill "$PLAIN" 2>/dev/null
+wait "$PLAIN" 2>/dev/null
+if [ -z "$BASE_FILTERS" ]; then
+    skip "s1-watch-rename-filter-shape (this kernel does not report Seccomp_filters)"
+    exit 0
+fi
+
 # ------------------------------------------------- s1: the flag's shape
 "$TOOL" -q -l "$L" --watch-rename -- "$CASES" sleeper >/dev/null 2>"$D/s1.err" &
 SUP=$!
@@ -119,10 +135,10 @@ if [ -z "$PAY" ]; then
 else
     r=$(row "$PAY")
     case "$r" in
-        "filters=2 nnp=1 comm=$L")
+        "filters=$((BASE_FILTERS + 1)) nnp=1 comm=$L")
             pass "s1-watch-rename-filter-shape ($r)" ;;
         *)
-            fail "s1-watch-rename-filter-shape ($r, want filters=2 nnp=1 comm=$L)" ;;
+            fail "s1-watch-rename-filter-shape ($r, want filters=$((BASE_FILTERS + 1)) nnp=1 comm=$L)" ;;
     esac
     kill "$SUP" 2>/dev/null
     wait "$SUP" 2>/dev/null
@@ -138,10 +154,10 @@ else
     else
         r=$(row "$PAY")
         case "$r" in
-            "filters=1 nnp=0 comm=$L")
+            "filters=$BASE_FILTERS nnp=$BASE_NNP comm=$L")
                 pass "s1b-control-without-the-flag ($r)" ;;
             *)
-                fail "s1b-control-without-the-flag ($r, want filters=1 nnp=0 comm=$L)" ;;
+                fail "s1b-control-without-the-flag ($r, want filters=$BASE_FILTERS nnp=$BASE_NNP comm=$L)" ;;
         esac
     fi
     kill "$SUP" 2>/dev/null
@@ -156,10 +172,10 @@ PLAIN=$!
 sleep 0.3
 r=$(row "$PLAIN")
 case "$r" in
-    "filters=1 nnp=0 comm=sleep")
+    "filters=$BASE_FILTERS nnp=$BASE_NNP comm=sleep")
         pass "s1c-control-plain-process ($r)" ;;
     *)
-        fail "s1c-control-plain-process ($r, want filters=1 nnp=0 comm=sleep)" ;;
+        fail "s1c-control-plain-process ($r, want filters=$BASE_FILTERS nnp=$BASE_NNP comm=sleep)" ;;
 esac
 kill "$PLAIN" 2>/dev/null
 wait "$PLAIN" 2>/dev/null
@@ -212,10 +228,10 @@ if [ -z "$PAY" ]; then
 else
     r=$(row "$PAY")
     case "$r" in
-        "filters=1 nnp=1 comm=$L")
+        "filters=$BASE_FILTERS nnp=1 comm=$L")
             pass "s3-no-new-privs-alone-one-filter ($r)" ;;
         *)
-            fail "s3-no-new-privs-alone-one-filter ($r, want filters=1 nnp=1: the pair needs the filter count)" ;;
+            fail "s3-no-new-privs-alone-one-filter ($r, want filters=$BASE_FILTERS nnp=1: the pair needs the filter count)" ;;
     esac
 fi
 kill "$SUP" 2>/dev/null
@@ -231,10 +247,10 @@ if ! kill -0 "$SUP" 2>/dev/null; then
 else
     r=$(row "$SUP")
     case "$r" in
-        "filters=1 nnp=0 comm=$L")
+        "filters=$BASE_FILTERS nnp=$BASE_NNP comm=$L")
             pass "s4-supervisor-row ($r)" ;;
         *)
-            fail "s4-supervisor-row ($r, want filters=1 nnp=0 comm=$L)" ;;
+            fail "s4-supervisor-row ($r, want filters=$BASE_FILTERS nnp=$BASE_NNP comm=$L)" ;;
     esac
 fi
 kill "$SUP" 2>/dev/null
@@ -247,14 +263,19 @@ SUP=""
 # said so.  fix1 owns the fix (redirect to the label already mapped in the
 # presentation block, no write); this branch may or may not carry it when
 # the reconciler runs, so the case decides from the observed shape and
-# names which one it saw.  Three shapes are acceptable:
-#   1. the pair is refused before a payload exists, with a message;
+# names which one it saw.  Two shapes are acceptable:
+#   1. the pair is refused before a payload exists, with exit 255 and a
+#      message naming the redirect it cannot make;
 #   2. fixed: comm and the payload's own reading are both the label, which
 #      proves the payload's PR_SET_NAME("other") was redirected rather than
 #      not attempted;
 # The open defect (comm and the payload's reading both "other") is a FAIL
 # in this tree: issue 60 is fixed here, so a run that lands the rename is a
 # regression, not a documented shape.
+# The refusal shape is a documented usage refusal (exit 255) that names the
+# redirect it cannot make.  Any other no-payload outcome -- a crash, a
+# panic, an unrelated warning -- is a FAIL: non-empty stderr on its own
+# proves nothing.
 # No -q here: the degradation warning is printed at the default
 # verbosity only, so a quiet run would hide the evidence.
 err="$D/s5.err"
@@ -265,23 +286,39 @@ self=$(wait_report "$D/s5.out" "$D/s5.waited") || self=""
 PAY=$(await_pid "$SUP") || PAY=""
 comm=""
 [ -n "$PAY" ] && comm=$(status_field "$PAY" Name)
-kill "$SUP" 2>/dev/null
-wait "$SUP" 2>/dev/null
-SUP=""
-warn=$(grep -c 'cannot redirect a rename to the label' "$err" 2>/dev/null)
 waited=$(cat "$D/s5.waited" 2>/dev/null)
-if [ -z "$PAY" ]; then
-    if [ -s "$err" ]; then
-        pass "s5-watch-rename-no-dumpable (refused before a payload: $(head -1 "$err"))"
+sup_state=$(status_field "$SUP" State)
+if [ -n "$PAY" ]; then
+    kill "$SUP" 2>/dev/null
+    wait "$SUP" 2>/dev/null
+    SUP=""
+    warn=$(grep -c 'cannot redirect a rename to the label' "$err" 2>/dev/null)
+    if [ "$comm" = "$L2" ] && [ "$self" = "$L2" ]; then
+        pass "s5-watch-rename-no-dumpable (fixed: comm=$comm payload=$self)"
+        echo "NOTE s5 saw the fixed shape (issue #60): the redirect needed no write"
+    else
+        fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=${waited}s warn=$warn: neither the fixed shape nor the documented defect)"
+    fi
+elif [ -r "/proc/$SUP/status" ] && [ "${sup_state#Z}" = "$sup_state" ]; then
+    # A live supervisor with no observable payload is not the refusal
+    # shape, and `wait` here would hang on the parked payload.  A zombie is
+    # not live: `kill -0` would still succeed for one, so the state field is
+    # the test.
+    kill "$SUP" 2>/dev/null
+    wait "$SUP" 2>/dev/null
+    SUP=""
+    fail "s5-watch-rename-no-dumpable (no payload and the supervisor is still running: state=[$sup_state] stderr=$(head -1 "$err"))"
+else
+    wait "$SUP" 2>/dev/null
+    sup_rc=$?
+    SUP=""
+    if [ "$sup_rc" = 255 ] \
+        && grep -qF 'cannot redirect a rename to the label' "$err"; then
+        pass "s5-watch-rename-no-dumpable (refused before a payload: rc=255, $(head -1 "$err"))"
         echo "NOTE s5 saw the refusal shape"
     else
-        fail "s5-watch-rename-no-dumpable (no payload and no message)"
+        fail "s5-watch-rename-no-dumpable (no payload: rc=$sup_rc stderr=$(head -1 "$err"); a refusal is rc=255 naming the redirect)"
     fi
-elif [ "$comm" = "$L2" ] && [ "$self" = "$L2" ]; then
-    pass "s5-watch-rename-no-dumpable (fixed: comm=$comm payload=$self)"
-    echo "NOTE s5 saw the fixed shape (issue #60): the redirect needed no write"
-else
-    fail "s5-watch-rename-no-dumpable (comm=[$comm] payload=[$self] waited=${waited}s warn=$warn: neither the fixed shape nor the documented defect)"
 fi
 
 echo "== QA46: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL)"

@@ -309,6 +309,12 @@ impl DaemonStatus {
     /// policy, and the `detail=` line says so.  A client that reads the
     /// body as `key=value` lines sees the same keys it always did, minus
     /// the ones it may not have.
+    ///
+    /// The label is escaped only for the line discipline, and
+    /// [`DaemonStatus::parse`] reverses it: `\`, LF and CR become `\\`,
+    /// `\n` and `\r`, and every other byte is on the wire unchanged.  The
+    /// label in the body is therefore the label the job gets, not a log
+    /// rendering of it.
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("protocol={}\n", self.protocol));
@@ -321,7 +327,7 @@ impl DaemonStatus {
         ));
         out.push_str(&format!(
             "label={}\nuid={}\nrun_as_uid={}\n",
-            escape_for_log(&self.label, MAX_LABEL),
+            label_field(&self.label),
             self.uid,
             self.run_as_uid
         ));
@@ -386,7 +392,7 @@ impl DaemonStatus {
                         _ => StatusDetail::Full,
                     }
                 }
-                "label" => out.label = value.to_string(),
+                "label" => out.label = label_value(value),
                 "uid" => out.uid = value.parse().ok()?,
                 "run_as_uid" => out.run_as_uid = value == "true",
                 "jobs" => out.jobs = value.parse().ok()?,
@@ -414,6 +420,51 @@ impl DaemonStatus {
             None
         }
     }
+}
+
+/// The label field of the wire form.
+///
+/// The body is one `key=value` per line, so a label that carried a line
+/// break would end the line early.  Only `\`, LF and CR are escaped; every
+/// other byte is written as itself, which keeps a UTF-8 label readable
+/// instead of turning it into `\xNN` noise.  [`label_value`] reverses
+/// exactly these escapes.
+fn label_field(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    for ch in label.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Reverse [`label_field`].  Anything that is not one of the three
+/// escapes stays as written, so a body produced by an older daemon (or
+/// typed by hand) still parses.
+fn label_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Ask a running daemon to describe itself.
@@ -784,11 +835,14 @@ fn parse_env_text(path: &Path, text: &[u8]) -> io::Result<Vec<(OsString, OsStrin
                 "expected KEY=VALUE: the key is empty",
             ));
         }
-        if let Some(bad) = key.iter().find(|&&b| !(0x21..=0x7e).contains(&b)) {
-            let what = if *bad == b' ' || *bad == b'\t' {
-                "key contains a space".to_string()
-            } else {
-                format!("key contains a non-printable byte (0x{:02x})", bad)
+        // `Mask::env` and this parser must accept exactly the same names,
+        // so the rule lives in one place.  The message stays the env-file
+        // grammar's, because it names the byte that was refused.
+        if let Err(e) = crate::mask::validate_env_key(OsStr::from_bytes(key)) {
+            let what = match key.iter().find(|&&b| !(0x21..=0x7e).contains(&b)) {
+                Some(&b) if b == b' ' || b == b'\t' => "key contains a space".to_string(),
+                Some(&b) => format!("key contains a non-printable byte (0x{:02x})", b),
+                None => e.to_string(),
             };
             return Err(env_line_error(path, lineno, &what));
         }
@@ -2009,9 +2063,10 @@ pub fn serve(mut cfg: DaemonConfig) -> io::Result<()> {
         ));
     }
     crate::mask::validate_label(&cfg.label)?;
-    // The status a PING returns carries the label, and the wire form
-    // escapes it.  Refuse a label the status could not report whole
-    // rather than truncating it in every answer.
+    // The status a PING returns carries the label.  The wire form escapes
+    // only the bytes that would end a line, and the parser reverses them,
+    // so the label is reported whole as long as it fits the protocol
+    // limit; refuse a longer one rather than cutting it in every answer.
     if cfg.label.len() > MAX_LABEL {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2264,19 +2319,34 @@ pub fn escape_for_log(text: &str, limit: usize) -> String {
     out
 }
 
+/// How long `reject` keeps reading what the client still sends.
+///
+/// One deadline covers the whole drain, not one per read: a peer that
+/// dribbles a byte every second would otherwise extend the wait without
+/// bound, and with the default `--jobs 1` that wait is the accept loop.
+const REJECT_DRAIN: Duration = Duration::from_secs(2);
+
 /// Send a refusal and close the connection.  The daemon half-closes and
 /// reads what the client still sends, so the client reads the refusal
 /// instead of a connection reset.
+///
+/// The drain is bounded by the same wake-aware wait, so a client that
+/// never drains its own input cannot keep the daemon in `reject` either.
 fn reject(conn: &mut Conn, msg: &str) {
     let _ = write_response(conn, ExitState::plain(CODE_REFUSED, None), msg);
     conn.shutdown_write();
-    // Bounded by the same wake-aware wait: a client that never drains its
-    // own input must not keep the daemon in `reject` either.
     let saved = conn.read_timeout;
-    conn.set_read_timeout(Some(Duration::from_secs(2)));
+    let deadline = Instant::now() + REJECT_DRAIN;
     let mut buf = [0u8; 8192];
     let mut total = 0usize;
     while total < MAX_REQUEST {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if left.is_zero() {
+            break;
+        }
+        conn.set_read_timeout(Some(left));
         match conn.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => total += n,

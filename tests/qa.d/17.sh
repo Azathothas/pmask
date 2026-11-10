@@ -58,9 +58,14 @@ else
     fail "qa17-head-payload-survives (no $MARKER; supervisor rc=$sup_rc stderr=$(head -c 120 "$D/e.err" | tr '\n' ' '))"
 fi
 
-if [ "$sup_rc" = "134" ]; then
+if [ -z "$sup_rc" ]; then
+    # The status file is written by the same brace group that ran the
+    # supervisor.  If it is empty the run did not get far enough to report
+    # anything, and an empty string must not pass for "not 134".
+    fail "qa17-head-not-sigabrt (the supervisor's status was not recorded: $D/rc is empty)"
+elif [ "$sup_rc" = "134" ]; then
     fail "qa17-head-not-sigabrt (supervisor exited 134: SIGABRT)"
-elif [ -n "$sup_rc" ] && [ "$sup_rc" != "0" ]; then
+elif [ "$sup_rc" != "0" ]; then
     fail "qa17-head-not-sigabrt (supervisor exited $sup_rc)"
 else
     pass qa17-head-not-sigabrt

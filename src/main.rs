@@ -379,10 +379,19 @@ impl ReportSink {
     /// no report at all.
     fn open(file: Option<&std::path::Path>, fd: Option<libc::c_int>) -> Option<ReportSink> {
         if let Some(path) = file {
+            use std::os::unix::fs::OpenOptionsExt;
+            // `O_NOFOLLOW`: a symlink planted at the path must not make
+            // pmask truncate its target, and a symlink is a usage error
+            // rather than something to follow.  `O_CLOEXEC` keeps the
+            // document out of the payload, and mode 0600 keeps a new file
+            // private to this account.  The lease audit sink opens its
+            // file the same way.
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(path)
             {
                 Ok(f) => return Some(ReportSink::File(f, path.to_path_buf())),
@@ -393,6 +402,22 @@ impl ReportSink {
             }
         }
         if let Some(n) = fd {
+            // Descriptors 0, 1 and 2 are the payload's stdin, stdout and
+            // stderr.  The duplicate below is close-on-exec and the
+            // original is flagged close-on-exec too, so a payload that
+            // inherited one of those numbers would start with that stream
+            // closed.  Refuse the number instead: the payload keeps its
+            // stdio, and a report meant for stdout is the plain
+            // `--report=json` path.
+            if n <= 2 {
+                eprintln!(
+                    "pmask: --report-fd {}: descriptors 0, 1 and 2 are the payload's stdin, \
+                     stdout and stderr, and the report descriptor is close-on-exec, so the \
+                     payload would start with that stream closed; pass a descriptor above 2",
+                    n
+                );
+                std::process::exit(255);
+            }
             // SAFETY: `dup` on a descriptor the operator passed open; the
             // original stays open, so a shell redirect the caller still
             // owns is not closed by us.

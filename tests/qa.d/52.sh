@@ -34,8 +34,9 @@ while [ ! -S "$D/d.sock" ] && [ "$i" -lt 40 ]; do
     i=$((i + 1))
 done
 if [ ! -S "$D/d.sock" ]; then
+    # Nothing was decided.  A PASS banner here would claim the daemon shape
+    # was checked when the daemon never came up.
     skip "52-daemon-shape (daemon did not start: $(head -1 "$D/d.err"))"
-    echo "== QA52: PASS =="
     exit 0
 fi
 

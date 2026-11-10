@@ -53,7 +53,16 @@ fi
 # not part of this gate.
 for suite in validate suite stress edge daemon daemon_neg options core audit store isolation lease secrets compare conformance regressions; do
     if [ ! -f "$suite.sh" ]; then
-        echo "SKIP $suite (absent)"
+        # The micro-VM stages only nine suites and marks the tree with
+        # `.vm-staged`, so an absent suite there is expected.  In the native
+        # gate an absent suite is a missing check: failing here is the point,
+        # because "SKIP (absent)" over an ALL-PASS line reads as coverage.
+        if [ -f "$BIN_DIR/.vm-staged" ]; then
+            echo "SKIP $suite (absent; this VM tree stages a subset)"
+        else
+            echo "FAIL $suite (tests/$suite.sh is absent)"
+            FAIL=1
+        fi
         continue
     fi
     echo "################ $suite.sh"

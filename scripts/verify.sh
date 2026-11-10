@@ -1,20 +1,21 @@
 #!/bin/sh
 # Verify a checkout of this work without an absolute path, a fixed home,
-# or a fixed install prefix.  Run from the repository root:
+# or a fixed install prefix.  The script changes to the repository root,
+# so it runs from any directory:
 #
-#   sh verify.sh          native gate
-#   sh verify.sh --vm     native gate plus the pinned QEMU micro-VM gate
+#   sh scripts/verify.sh          native gate
+#   sh scripts/verify.sh --vm     native gate plus the pinned QEMU micro-VM gate
 #
 # Exit 0 only when every requested gate prints a pass.
 set -eu
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 VM=0
 case "${1:-}" in
     "") ;;
     --vm) VM=1 ;;
     -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d'; exit 0 ;;
-    *) echo "usage: sh verify.sh [--vm]" >&2; exit 2 ;;
+    *) echo "usage: sh scripts/verify.sh [--vm]" >&2; exit 2 ;;
 esac
 
 if ! command -v cargo >/dev/null 2>&1; then

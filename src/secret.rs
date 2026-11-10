@@ -120,7 +120,7 @@ impl Source {
         let (name, rest) = spec.split_once('=').ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("--secret wants NAME=SOURCE, got '{}'", spec),
+                "--secret wants NAME=SOURCE, and this argument has no '='",
             )
         })?;
         if name.is_empty() {
@@ -129,6 +129,7 @@ impl Source {
                 "--secret needs a non-empty NAME",
             ));
         }
+        validate_name(name)?;
         if name.len() > MAX_NAME_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -160,6 +161,11 @@ impl Source {
             // bare value: treat as a literal, so `--secret TOKEN=abc` works
             Source::Literal(rest.to_string())
         };
+        // The name after `agent:` is the one that becomes `GET <name>`;
+        // check it here so a bad one is refused before any run starts.
+        if let Source::Daemon(remote) = &source {
+            validate_name(remote)?;
+        }
         Ok((name.to_string(), source, unknown))
     }
 
@@ -360,6 +366,23 @@ fn env_suffix(name: &str) -> String {
         .to_string()
 }
 
+/// Refuse a secret name that carries a line break.
+///
+/// The agent's protocol is one command per line and the client builds
+/// `GET <name>` / `GETL <name> <ttl> <uses>` from the name, so LF or CR
+/// in it would start, or split, a command.  A name is data, not a
+/// command; every boundary that turns an operator-supplied name into
+/// that command calls this.
+pub fn validate_name(name: &str) -> io::Result<()> {
+    if name.contains('\n') || name.contains('\r') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secret name must not contain LF or CR",
+        ));
+    }
+    Ok(())
+}
+
 /// Reject a set of secret names that cannot be delivered without one
 /// silently replacing another.
 ///
@@ -387,6 +410,7 @@ pub fn check_names(names: &[String]) -> io::Result<()> {
                 "secret names must not be empty",
             ));
         }
+        validate_name(name)?;
         if name.len() > MAX_NAME_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

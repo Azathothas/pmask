@@ -146,8 +146,10 @@ EOF
 fi
 
 if [ -z "$SCAN" ]; then
+    # No reader means no case was decided: say SKIP and do not print a
+    # PASS verdict over an empty fragment.
     skip "q50-memory-reader (no C compiler: $(head -1 "$T/cc.err" 2>/dev/null))"
-    echo "== VERDICT: PASS failures=$FAIL (reader unavailable) =="
+    echo "== VERDICT: SKIP (the memory reader is unavailable) =="
     exit 0
 fi
 

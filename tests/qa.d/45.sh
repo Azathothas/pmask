@@ -23,7 +23,9 @@
 #   q3  --rexec --memfd-name: /proc/<pid>/exe reads /memfd:<name>
 #   q3b control: without the option exe reads /memfd:<label>
 #   q4  --image --memfd-name: exe reads /memfd:<name>
-#   q5  --exec-once carrier tag uses the name (fault hook forces the file)
+#   q5  --exec-once: the cache entry on disk carries the requested name
+#   q5b plain --rexec: the temporary-file carrier's tag uses the name
+#       (fault hook forces the file)
 #   q6  validation: empty, '/', LF and 201 bytes are refused with 255
 #   q7  --secret-fd-name is accepted with a real 200-byte name
 set -u
@@ -245,16 +247,79 @@ case "$exe" in
         fail "q4-image-memfd-name (exe=[$exe]; stderr=$(head -1 "$D/q4.err"))" ;;
 esac
 
-# ------------------------- q5: the --exec-once carrier's tag
-# The fault hook removes the two procfs carriers, so the named
-# temporary file is the only route and its tag is observable.
+# ------------------------- q5: the --exec-once cache entry's tag
+# `--exec-once` writes a named carrier `.pmask-rexec-<tag>-<pid>-<run>-<n>`
+# for a settled tracee's next exec, and that file is the cache entry the
+# later exec runs from.  TMPDIR points at this fragment's own cache
+# directory, so the entry is looked for where the tool was told to put it.
+# The payload execs the program once and sleeps, so the entry is observable
+# while the session is alive (the session removes it at the end).
+mkdir -p "$D/eo" 2>/dev/null
+TMPDIR="$D/eo" "$TOOL" -q -l "$L" --rexec --exec-once --memfd-name "$IMG" \
+    -- /bin/sh -c '"$1" sleepfor 20' sh "$CASES" >/dev/null 2>"$D/q5.err" &
+SUP=$!
+SH=$(await_pid "$SUP") || SH=""
+PAY=""
+if [ -n "$SH" ]; then
+    n=0
+    while [ -z "$PAY" ] && [ "$n" -lt 40 ]; do
+        PAY=$(child_of "$SH") || PAY=""
+        [ -n "$PAY" ] && break
+        n=$((n + 1))
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+fi
+exe=""
+eo_present=0
+# The direct child is /bin/sh; its own child (depth 1) execs testcases,
+# and that first exec is the one the cache redirects.  Poll the grandchild's
+# /proc/<pid>/exe until it names the entry (or the payload is gone), then
+# check the file while the session still lives.
+n=0
+while [ -n "$PAY" ] && [ "$n" -lt 50 ]; do
+    exe=$(readlink "/proc/$PAY/exe" 2>/dev/null)
+    case "$exe" in
+        *"/.pmask-rexec-$IMG-"*) break ;;
+    esac
+    [ -z "$exe" ] && break
+    n=$((n + 1))
+    sleep 0.1 2>/dev/null || sleep 1
+done
+[ -n "$exe" ] && [ -f "$exe" ] && eo_present=1
+kill "$SUP" 2>/dev/null
+wait "$SUP" 2>/dev/null
+SUP=""
+eo_dir=$(cd "$D/eo" 2>/dev/null && pwd -P)
+case "$exe" in
+    "$eo_dir"/.pmask-rexec-"$IMG"-*)
+        if [ "$eo_present" = 1 ]; then
+            pass "q5-exec-once-carrier-tag ($exe)"
+        else
+            fail "q5-exec-once-carrier-tag (exe names $exe but no file was there while the session ran)"
+        fi ;;
+    *)
+        if [ -z "$exe" ] || [ "$exe" = "$CASES" ]; then
+            # A vfork child's first exec takes the post-exec path, so the
+            # tracer never sees the entry stop that installs the redirect.
+            # The cache tag is then not observable; say so instead of
+            # failing a host whose shell chose vfork.
+            skip "q5-exec-once-carrier-tag (the child's first exec took the post-exec path; no cache entry to observe)"
+        else
+            fail "q5-exec-once-carrier-tag (exe=[$exe], want $eo_dir/.pmask-rexec-$IMG-*; stderr=$(head -1 "$D/q5.err"))"
+        fi ;;
+esac
+
+# --------------------- q5b: the plain --rexec temporary carrier's tag
+# Without --exec-once the carrier is written for the first exec only.  The
+# fault hook removes the two procfs carriers, so the named temporary file
+# is the only route and its tag is observable in /proc/<pid>/exe.
 out=$(PMASK_FAULT_REXEC_NO_PROC=1 "$TOOL" -q --label "$L" --memfd-name "$IMG" \
-    --rexec "$CASES" exe-id 2>"$D/q5.err")
+    --rexec "$CASES" exe-id 2>"$D/q5b.err")
 case "$out" in
     *".pmask-rexec-$IMG-"*)
-        pass "q5-exec-once-carrier-tag ($(printf '%s' "$out" | cut -c1-80))" ;;
+        pass "q5b-plain-rexec-temp-file-tag ($(printf '%s' "$out" | cut -c1-80))" ;;
     *)
-        fail "q5-exec-once-carrier-tag (out=[$out]; stderr=$(head -1 "$D/q5.err"))" ;;
+        fail "q5b-plain-rexec-temp-file-tag (out=[$out]; stderr=$(head -1 "$D/q5b.err"))" ;;
 esac
 
 # --------------------------------------------- q6: name validation

@@ -60,9 +60,12 @@ uid and gid.
 
 The socket path is visible in `/proc/net/unix` and `ss -x` to every uid,
 even when the node is 0600 inside a 0700 directory and connecting is
-refused. The PING reply describes the running configuration to any uid
-the daemon authorises: it carries counts and policy, never environment
-values.
+refused. The PING reply has two bodies. The daemon's own uid and root get
+the policy: the job slots, the environment variable count, the allowed
+uids, the socket mode, the timeouts, the peer identity and the peer uid.
+Another uid the daemon authorises gets `protocol`, `detail=reduced`,
+`label`, `uid` and `run_as_uid`, because it may run a job and needs to
+frame one. No field in either body carries an environment value.
 
 ## Secrets
 
@@ -71,7 +74,9 @@ holds the unlocked store, not `pmaskd`. `--secret` values never enter the
 child's argv or environ; the descriptor caveat above applies. The
 caller's side is separate: a `literal:` value is in pmask's own argv and
 in the audit log and the shell history, as listed under what pmask does
-not protect. The log masking is asserted by a test.
+not protect. The agent's use-audit line has no value field: it carries
+the time, the secret name, the peer pid and executable, and the lease id,
+and `tests/lease.sh` asserts that the value is not in it.
 
 ## Dependencies
 

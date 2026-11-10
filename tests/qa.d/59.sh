@@ -116,11 +116,20 @@ else
 fi
 
 # --------------------------------------- 59e: a file: source is quiet
+# `grep -c` prints 0 for a missing or empty file, so a failed run would
+# "pass" without a warning ever being possible.  The run must succeed and
+# the default-verbosity summary must be on stderr before the count means
+# anything.
 printf '%s\n' "$CANARY" >"$T/tok"
 chmod 600 "$T/tok"
 "$TOOL" -l "$LABEL" --secret "S=file:$T/tok" -- /bin/true >/dev/null 2>"$T/e.err"
+rc=$?
 n=$(warn_count "$T/e.err")
-if [ "${n:-0}" = 0 ]; then
+if [ "$rc" != 0 ]; then
+    fail "59e-file-source-is-quiet (rc=$rc: the run failed, so a zero count proves nothing: $(head -3 "$T/e.err" | tr '\n' '|'))"
+elif [ ! -s "$T/e.err" ]; then
+    fail "59e-file-source-is-quiet (empty stderr: the default-verbosity summary is missing, so a zero count is vacuous)"
+elif [ "${n:-0}" = 0 ]; then
     pass "59e-file-source-is-quiet"
 else
     fail "59e-file-source-is-quiet (warnings=$n: $(head -3 "$T/e.err" | tr '\n' '|'))"

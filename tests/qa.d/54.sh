@@ -131,11 +131,13 @@ else
     esac
     # The fact the issue rests on: the shipped build names the toolchain in
     # .comment.  If a later change removes it, this case fails and the
-    # packaging limit in the evidence is stale, which is the point.
+    # packaging note in evidence/fix5/54/ is stale, which is the point.
+    # Only a missing readelf is a skip (handled above); a built binary
+    # without the fact is a failure, not an undecided case.
     if readelf -p .comment "$bin" 2>/dev/null | grep -q 'rustc version'; then
         pass "qa54-shipped-build-names-the-toolchain-in-.comment"
     else
-        skip "qa54-shipped-build-names-the-toolchain-in-.comment (.comment is already gone: update the packaging note)"
+        fail "qa54-shipped-build-names-the-toolchain-in-.comment (.comment does not name the toolchain; the packaging note in evidence/fix5/54/ is stale)"
     fi
 fi
 

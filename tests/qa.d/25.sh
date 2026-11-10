@@ -36,10 +36,14 @@ skip() { echo "SKIP $*"; }
 PY=$(command -v python3 2>/dev/null)
 iso() {
     # iso OUT ERR -- ARGS...
+    # No -q: the isolation report (the `pmask: isolation:` line and its
+    # degradation lines) is printed at the default verbosity only, and q25f
+    # and q25g read it from ERR.  A quiet run would make those cases take
+    # their skip branch on every host.
     io_out=$1
     io_err=$2
     shift 3
-    "$TOOL" -q --isolate -l qa25 -- "$@" >"$io_out" 2>"$io_err" </dev/null
+    "$TOOL" --isolate -l qa25 -- "$@" >"$io_out" 2>"$io_err" </dev/null
 }
 
 # q25a control: the same probes without --isolate.  Without this, a host
@@ -62,6 +66,14 @@ if [ -n "$PY" ]; then
     rc=$?
     if [ "$rc" = 0 ] && [ "$(cat "$T/b.out")" = "PTY-OK" ]; then
         pass "q25b-pty-openpty-works-under-isolate"
+    elif grep -q 'out of pty devices' "$T/b.err" 2>/dev/null; then
+        # The host's devpts is mounted with a gid the payload's user
+        # namespace does not map (commonly gid=5), so the kernel refuses
+        # the slave.  The node is present (q25c) and the other members are
+        # usable (q25d/q25e); allocation is a property of the host's
+        # devpts, not of the private /dev.
+        dgid=$(sed -n 's|.* /dev/pts devpts .*gid=\([0-9]*\).*|\1|p' /proc/self/mounts | head -1)
+        skip "q25b-pty-openpty-works-under-isolate (the host's devpts is gid=${dgid:-unknown} and the payload's user namespace does not map it)"
     else
         fail "q25b-pty-openpty-works-under-isolate (rc=$rc out=[$(cat "$T/b.out")] err=[$(head -3 "$T/b.err")])"
     fi

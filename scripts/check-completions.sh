@@ -148,6 +148,24 @@ check_one() {
     fi
 }
 
+# The extracted count is a shape match, so a parser refactor can leave the
+# extraction yielding one option and every table agreeing with that one.
+# The floor makes a collapsed extraction a failure, not a pass.
+check_floor() {
+    cf_label=$1
+    cf_src=$2
+    cf_min=$3
+    if [ ! -f "$cf_src" ]; then
+        return 0
+    fi
+    cf_n=$(long_options "$cf_src" | grep -c .)
+    if [ "$cf_n" -ge "$cf_min" ]; then
+        pass "$cf_label-long-option-floor ($cf_n found, floor $cf_min)"
+    else
+        fail "$cf_label-long-option-floor ($cf_n found, want >= $cf_min: the extraction or the parser lost options)"
+    fi
+}
+
 # The reverse direction: a table that offers an option the parser refuses
 # is a completion that suggests a usage error.
 check_reverse_bash() {
@@ -174,6 +192,7 @@ check_reverse_bash() {
 }
 
 # --------------------------------------------------------------- pmask
+check_floor pmask src/cli.rs 40
 for f in completions/pmask.bash completions/pmask.fish completions/_pmask; do
     check_one "pmask-$(basename "$f")" src/cli.rs "$f" long
 done
@@ -181,6 +200,7 @@ check_one "pmask-pmask.bash" src/cli.rs completions/pmask.bash short
 check_reverse_bash src/cli.rs completions/pmask.bash pmask-pmask.bash
 
 # --------------------------------------------------------------- pmaskd
+check_floor pmaskd src/bin/pmaskd.rs 12
 for f in completions/pmaskd.bash completions/pmaskd.fish completions/_pmaskd; do
     check_one "pmaskd-$(basename "$f")" src/bin/pmaskd.rs "$f" long
 done

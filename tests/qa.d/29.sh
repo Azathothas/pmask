@@ -95,7 +95,7 @@ fi
 
 # ----------------------------------------------- a quote in the socket path
 SOCKQ="$D/sock\"et"
-PMASK_SOCKET="$SOCKQ" XDG_DATA_HOME="$D/plain" "$TOOL" doctor --json > "$D/sock.json" 2>"$D/sock.err"
+XDG_RUNTIME_DIR= PMASK_SOCKET="$SOCKQ" XDG_DATA_HOME="$D/plain" "$TOOL" doctor --json > "$D/sock.json" 2>"$D/sock.err"
 if jq -e . "$D/sock.json" >/dev/null 2>&1; then
     got=$(jq -r '.agent.socket' "$D/sock.json")
     [ "$got" = "$SOCKQ" ] \

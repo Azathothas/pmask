@@ -35,9 +35,13 @@ machines with no TEE and no hypervisor. Three faces: a library, a CLI
 | `src/bin/testcases.rs`, `src/bin/tc/*.rs` | probe dispatcher and probe subcommands |
 | `src/bin/protocases.rs` | raw protocol client for the daemon negative suite |
 | `tests/` | the suites; `run.sh` is the native gate |
+| `tests/qa.sh`, `tests/qa.d/` | the QA dispatcher and its numbered fragments, one per closed issue |
+| `scripts/` | the CI guards (rename, completions, notices, static link, artefacts) and `verify.sh`, the gate wrapper |
 | `vm/` | QEMU micro-VM harness (`run.sh`), shared parts (`common.sh`), debug runner (`debug.sh`) |
 | `measurements/` | speed and zapper comparison harnesses, and the one-off probes |
+| `evidence/` | raw logs for the b-team measurements, one directory per batch |
 | `docs/` | design, threat model, deployment, research, release notes |
+| `docs/COMMENT-AUDIT.md`, `docs/ISSUE-CLOSURE.md` | the source comments the fix branches corrected, and the per-issue fix, test and evidence record |
 | `man/`, `completions/` | manual pages and shell completions |
 | `contrib/` | systemd units, `tmpfiles.d` and `sysusers.d`, excluded from the crate |
 | `fuzz/` | the store header parser target |
@@ -119,9 +123,16 @@ cargo build --locked --release --bins --features testbins  # also the probes
 cargo clippy --all-targets -- -D warnings            # zero-warning policy
 cargo fmt --all -- --check                           # formatting
 cargo test --locked --lib                            # ptrace-free unit tests
+sh scripts/check-rename.sh                           # the retired project name
+sh scripts/check-completions.sh                      # completion tables against the parser
+python3 scripts/notices.py --check                   # THIRD_PARTY_NOTICES.md is current
+mandoc -T lint -W error man/pmask.1 man/pmaskd.8     # man pages
 sh tests/run.sh                                      # native gate (needs ptrace)
 sh vm/run.sh                                         # micro-VM gate (works anywhere)
 ```
+
+`scripts/verify.sh` runs the build, the lints, the guards and `tests/run.sh`;
+`scripts/verify.sh --vm` adds `vm/run.sh`.
 
 `tests/run.sh` needs a host where ptrace is permitted and
 `kernel.yama.ptrace_scope` is 0. Many sandboxes, including the usual dev

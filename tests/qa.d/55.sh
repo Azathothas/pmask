@@ -7,10 +7,10 @@
 # the surfaces that are readable here and names the ones this host cannot
 # exercise.
 set -u
-cd "$(dirname "$0")" || exit 2
-. ../lib.sh
+here=$(dirname "$0")
+cd "$here/.." || exit 2
+. ./lib.sh
 
-BIN_DIR=$(cd .. && pwd)
 TOOL="$BIN_DIR/pmask"
 [ -x "$TOOL" ] || { echo "FATAL: $TOOL is missing"; exit 2; }
 

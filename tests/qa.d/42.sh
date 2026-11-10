@@ -179,7 +179,7 @@ fi
 
 # --------------------- C8/C9: the 254 and 255-byte labels
 L254=$(printf 'L%.0s' $(seq 254))
-out=$(env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L254" -- "$CASES" sleeper QAMARK 2>&1) &
+env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L254" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
 SUP=$!
 PAY=""
 i=0

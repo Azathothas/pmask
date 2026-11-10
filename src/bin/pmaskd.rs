@@ -56,7 +56,7 @@ Options:
                         gid of the client instead of root.  A daemon that
                         serves other uids also needs a socket mode they
                         can reach, for example --socket-mode 666.
-      --socket-mode OCT Socket permission bits (default: 600)
+      --socket-mode OCT Socket permission bits, 001 to 777 (default: 600)
       --io-timeout SECONDS
                         Drop a client that stalls while it sends its
                         request or reads the response (default: 30;
@@ -224,7 +224,11 @@ fn parse() -> Args {
                 "socket-mode" => {
                     let v = lossy(take(&flag, inline, &argv, &mut i));
                     match u32::from_str_radix(v.trim_start_matches("0o"), 8) {
-                        Ok(m) => cfg.socket_mode = m,
+                        Ok(m) if (1..=0o777).contains(&m) => cfg.socket_mode = m,
+                        Ok(_) => die(
+                            "--socket-mode needs permission bits from 001 to 777; 0 makes the \
+                             socket unreachable",
+                        ),
                         Err(_) => die("--socket-mode needs an octal number"),
                     }
                 }

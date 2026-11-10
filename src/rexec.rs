@@ -145,8 +145,9 @@ pub struct Options {
     /// sanitised by [`sanitize_name`].  `Some` is validated by the caller
     /// when the option is parsed and re-validated by [`create_image`], so
     /// a name that reaches this field through the library API is checked
-    /// too.  The temporary-file carrier is named separately: it must stay
-    /// one path component and is always derived from the label.
+    /// too; every carrier then uses it byte-for-byte.  The temporary-file
+    /// carrier is named separately: it must stay one path component and is
+    /// always derived from the label.
     pub memfd_name: Option<String>,
 }
 
@@ -397,8 +398,12 @@ pub fn prepare_path(program: &CStr, label: &str, opts: Options) -> io::Result<Im
 /// fails (EINVAL or ENOSPC).  `--hugetlb` is documented never to fail a run
 /// for lack of huge pages, so every carrier-creation site retries here and
 /// reports the note at the default verbosity.
+///
+/// `name` is already the carrier name (`Options::image_name`, checked where
+/// it was decided), so it is used byte-for-byte: a retry must not change
+/// what `/proc/<pid>/exe` reads.
 fn ordinary_retry(name: &str, cause: &io::Error) -> io::Result<(RawFd, Option<String>)> {
-    let mut name = sanitize_name(name).into_bytes();
+    let mut name = name.as_bytes().to_vec();
     name.push(0);
     let fd = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
         .map_err(|e| with_context(e, "memfd_create refused"))?;
@@ -411,9 +416,14 @@ fn ordinary_retry(name: &str, cause: &io::Error) -> io::Result<(RawFd, Option<St
     ))
 }
 
-/// Create a hugetlb memfd named after `label`.
-fn huge_memfd(label: &str) -> io::Result<RawFd> {
-    let mut name = sanitize_name(label).into_bytes();
+/// Create a hugetlb memfd named `name`.
+///
+/// The name was decided by [`Options::image_name`] and checked where it was
+/// chosen (the path carrier) or is the sanitised label, so it is used
+/// byte-for-byte: the huge-page carrier must read the same `/memfd:`
+/// string as the ordinary one.
+fn huge_memfd(name: &str) -> io::Result<RawFd> {
+    let mut name = name.as_bytes().to_vec();
     name.push(0);
     memfd(
         &name,
@@ -460,9 +470,13 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
     }
     // The image name is the operator's choice when `--memfd-name` was
     // given, exactly as on the path carrier: `/proc/<pid>/exe` must read
-    // the same string whichever way the bytes arrived.
+    // the same string whichever way the bytes arrived.  Sanitising a
+    // validated name is what made a non-ASCII one differ by carrier, so
+    // the name is checked and then used byte-for-byte, like
+    // `create_image`.
     let image_name = opts.image_name(label);
-    let mut name = sanitize_name(&image_name).into_bytes();
+    crate::mem::validate_memfd_name(&image_name)?;
+    let mut name = image_name.as_bytes().to_vec();
     name.push(0);
     let spool = memfd(&name, MFD_CLOEXEC | MFD_ALLOW_SEALING)
         .map_err(|e| with_context(e, "memfd_create refused"))?;
@@ -506,7 +520,7 @@ fn seal_spool(spool: RawFd) -> io::Result<RawFd> {
 /// fails part-way.  `spool` still holds the whole image, so the ordinary
 /// memfd returned here is complete.  Every failure is a note, never an
 /// error: `--hugetlb` does not fail a run for lack of huge pages.
-fn finish_hugetlb(label: &str, spool: RawFd) -> io::Result<Image> {
+fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
     let fallback = |cause: String| -> io::Result<Image> {
         Ok(Image {
             fd: seal_spool(spool)?,
@@ -518,7 +532,7 @@ fn finish_hugetlb(label: &str, spool: RawFd) -> io::Result<Image> {
             path: None,
         })
     };
-    let huge = match huge_memfd(label) {
+    let huge = match huge_memfd(name) {
         Ok(fd) => fd,
         Err(e) => return fallback(e.to_string()),
     };

@@ -280,11 +280,23 @@ impl Tracer {
 
         // The redirect path lives after the 256-byte label scratch, so a
         // long label cannot overwrite it and it cannot overwrite the
-        // label.  A failed write drops the redirect; the exec then runs
-        // the original path.
+        // label.  It must also stay below the stack pointer: a path that
+        // reached `sp` would overwrite the tracee's live stack, and a
+        // truncated path names a different file, so the redirect is
+        // dropped and the exec runs the original path.
         let redirect_addr = base + 512;
         if let Some((_, bytes)) = &rexec_redirect {
-            if write_mem(pid, redirect_addr, bytes) != bytes.len() as isize {
+            if redirect_addr + bytes.len() as u64 > sp {
+                vlog!(
+                    self,
+                    "pid {}: --exec-once redirect path ({} bytes at {:#x}) would reach the stack at {:#x}; not applied",
+                    pid,
+                    bytes.len(),
+                    redirect_addr,
+                    sp
+                );
+                rexec_redirect = None;
+            } else if write_mem(pid, redirect_addr, bytes) != bytes.len() as isize {
                 self.warn(format_args!(
                     "pid {}: --exec-once redirect path could not be written",
                     pid

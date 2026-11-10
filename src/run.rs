@@ -790,22 +790,37 @@ impl Runner {
         // it does not).  Entering the isolation path here would create the
         // unconditional user/mount/UTS/IPC/cgroup namespaces anyway
         // (issue 26).
-        if !caps.ptrace {
-            return Selection {
-                mode: Mode::Plain,
-                reason: ptrace_reason(caps),
-            };
-        }
+        //
+        // A real isolation request is decided before the ptrace check:
+        // isolation does not need a tracer, so a host without ptrace must
+        // still get the namespaces the operator asked for.  The reason
+        // carries the ptrace refusal when the run is isolate-only, so the
+        // report does not claim the strongest mode was selected.
         if self.isolate.is_some() && !self.is_none_isolation() {
             if caps.userns {
                 return Selection {
                     mode: Mode::Isolate,
-                    reason: "",
+                    reason: if caps.ptrace { "" } else { ptrace_reason(caps) },
+                };
+            }
+            // No user namespace: the namespaces cannot be created.  The
+            // redaction path still works where ptrace does; where it does
+            // not, the run is plain and says why the namespaces are gone.
+            if caps.ptrace {
+                return Selection {
+                    mode: Mode::Redact,
+                    reason: "isolate_unavailable",
                 };
             }
             return Selection {
-                mode: Mode::Redact,
+                mode: Mode::Plain,
                 reason: "isolate_unavailable",
+            };
+        }
+        if !caps.ptrace {
+            return Selection {
+                mode: Mode::Plain,
+                reason: ptrace_reason(caps),
             };
         }
         Selection {
@@ -1214,6 +1229,14 @@ impl Runner {
                     }
                 };
                 mask = mask.inherit_fds_with(fds.clone(), cloexec);
+                // `Runner::audit` is the library-level spelling; the CLI
+                // also sets it on the mask it passes.  Applying it here
+                // makes a caller that only called `Runner::audit` get the
+                // residue rows from the session that produces them (the
+                // flag is a bool, so setting it twice is a no-op).
+                if self.requests_audit {
+                    mask = mask.audit();
+                }
                 // `--redact --isolate`: hand the requested namespace set to
                 // the redaction child.  The set is the parsed `Isolate`
                 // value, so `--isolate=net` yields a network namespace and
@@ -1563,6 +1586,12 @@ mod tests {
         let s = isolate.select_with(&caps_with(true, false, false, Some(0)));
         assert_eq!(s.mode, Mode::Redact);
         assert_eq!(s.reason, "isolate_unavailable");
+
+        // Isolation does not need a tracer: a host without ptrace still
+        // gets the namespaces, and the ptrace refusal is the reason.
+        let s = isolate.select_with(&caps_with(false, true, false, Some(0)));
+        assert_eq!(s.mode, Mode::Isolate);
+        assert_eq!(s.reason, "no_capability");
 
         let forced = Runner::new().no_redaction();
         let s = forced.select_with(&caps_with(true, true, false, Some(0)));
