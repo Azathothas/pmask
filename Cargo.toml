@@ -1,6 +1,6 @@
 [package]
 name = "pmask"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2021"
 rust-version = "1.85"
 description = "Confidential execution without trusted hardware: redact the /proc metadata of a process tree while programs keep their real arguments"
