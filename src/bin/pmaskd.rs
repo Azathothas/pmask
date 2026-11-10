@@ -157,7 +157,7 @@ fn number(flag: &str, text: &str) -> u64 {
     }
 }
 
-/// Read a seconds value and refuse one above [`MAX_TIMEOUT_SECS`].
+/// Read a seconds value and refuse one above [`pmask::daemon::MAX_TIMEOUT_SECS`].
 ///
 /// The bound is checked here, at parse time, so a value that would make a
 /// deadline overflow never reaches the daemon.  `u64::MAX` seconds is

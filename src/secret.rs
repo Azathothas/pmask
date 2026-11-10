@@ -219,7 +219,7 @@ fn scheme_candidate(rest: &str) -> Option<&str> {
 /// The one warning for a `--secret` source that named a scheme this
 /// build does not know.  Both surfaces that parse a spec print it: the
 /// CLI after it has read the whole command line, so the last `-q`
-/// decides, and [`Runner::secret_spec`] as it is called.
+/// decides, and [`crate::run::Runner::secret_spec`] as it is called.
 pub fn unknown_scheme_warning(name: &str, scheme: &str) -> String {
     format!(
         "warning: --secret {}: '{}:' is not a known secret scheme ({}); the value is \

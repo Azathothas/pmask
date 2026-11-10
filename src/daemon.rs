@@ -550,7 +550,7 @@ const CODE_REFUSED: i32 = 255;
 /// from the edge of the clock on every architecture.  `u64::MAX` seconds
 /// is about 5.8e11 years, so the value the operator can type has to be
 /// bounded before the addition, not after it.  `checked_add` in
-/// [`wait_job`] is the second guard, for a value that reaches the config
+/// `wait_job` is the second guard, for a value that reaches the config
 /// by another route.
 pub const MAX_TIMEOUT_SECS: u64 = 10 * 365 * 24 * 60 * 60;
 
