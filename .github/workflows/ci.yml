@@ -137,14 +137,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: install python3 and a C compiler
+      - name: python3 and a C compiler are present
         # isolation.sh runs helpers/procprobe.py for i32-i36 and
         # conformance.sh compiles helpers/compare-probe.c for six cases.
-        # Both are already on the image; installing them explicitly means a
-        # future image change cannot turn those cases into SKIPs unnoticed.
+        # Both are on the image; check them so a future image change
+        # cannot turn those cases into SKIPs unnoticed.  A check is used
+        # instead of `apt-get install`: the package lists on a hosted
+        # runner can stall, and these two are already installed.
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends python3 build-essential
+          python3 --version
+          cc --version | head -1
       - name: allow native ptrace and unprivileged user namespaces
         # The suites need ptrace (thousands of cases) and CLONE_NEWUSER
         # (isolation.sh).  Both are allowed for the runner uid here, not by
