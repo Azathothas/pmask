@@ -57,6 +57,9 @@ skip() { echo "SKIP $*"; }
 # The matrix group's pids and their start times, filled in when they are
 # spawned.  cleanup runs on every exit path, including the early SKIP gates
 # above, so the variables are declared before any of them.
+MATRIX_CTL=""
+MATRIX_SUP=""
+MATRIX_PID=""
 MATRIX_CTL_START=""
 MATRIX_SUP_START=""
 MATRIX_PID_START=""
