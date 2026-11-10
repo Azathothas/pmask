@@ -85,6 +85,14 @@ cmdline_of() { tr '\0' '|' < "/proc/$1/cmdline" 2>/dev/null; }
 ns_unavailable() {
     grep -q 'no unprivileged user namespaces' "$1" 2>/dev/null
 }
+
+# The probe is the reliable answer: the note is printed when a run ends,
+# which is after the row has read the leaf.  `isolation active` means the
+# host grants the namespaces the rows below need.
+NS_OK=0
+if "$TOOL" probe 2>/dev/null | grep -q 'isolation[[:space:]][[:space:]]*active'; then
+    NS_OK=1
+fi
 comm_of() { cat "/proc/$1/comm" 2>/dev/null; }
 envbytes() { wc -c < "/proc/$1/environ" 2>/dev/null | tr -d ' '; }
 envhas() {
@@ -174,7 +182,7 @@ fi
 set -- $(start isolate --isolate)
 SUP=$1
 LEAF=$2
-if [ -z "$LEAF" ] || ns_unavailable "$T/isolate.err"; then
+if [ -z "$LEAF" ] || [ "$NS_OK" = 0 ] || ns_unavailable "$T/isolate.err"; then
     skip "49c-isolate-real (unprivileged user namespaces unavailable: $(head -2 "$T/isolate.err" | tr '\n' '|'))"
     skip "49c-isolate-procfs-fingerprint (no namespaces)"
     skip "49c-isolate-nspid-fingerprint (no namespaces)"
@@ -228,7 +236,7 @@ unshare_row() {
     set -- $(start "$u_name" "$@")
     u_sup=$1
     u_leaf=$2
-    if [ -z "$u_leaf" ] || ns_unavailable "$T/$u_name.err"; then
+    if [ -z "$u_leaf" ] || [ "$NS_OK" = 0 ] || ns_unavailable "$T/$u_name.err"; then
         skip "$u_name (user namespaces unavailable: $(head -2 "$T/$u_name.err" | tr '\n' '|'))"
         return
     fi
