@@ -76,6 +76,9 @@ cleanup() {
     kill_owned "$MATRIX_PID" "$MATRIX_PID_START"
     kill_owned "$MATRIX_SUP" "$MATRIX_SUP_START"
     rm -rf "$T"
+    # A trap must not change the verdict: a cleanup command can fail when
+    # the matrix never ran, and a pass verdict would then exit nonzero.
+    :
 }
 trap cleanup EXIT
 

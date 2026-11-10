@@ -34,7 +34,12 @@ for suite in "$@"; do
     fi
     echo "################ $suite.sh"
     RAN=$((RAN + 1))
-    sh "$suite.sh" || FAIL=1
+    sh "$suite.sh"
+    src=$?
+    if [ "$src" != 0 ]; then
+        echo "FAIL $suite (exit $src)"
+        FAIL=1
+    fi
 done
 
 if [ -n "$MISSING" ]; then

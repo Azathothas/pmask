@@ -91,6 +91,7 @@ cleanup() {
     kill_comm "$LABEL" KILL 2>/dev/null
     kill_comm cfm-conf KILL 2>/dev/null
     rm -rf "$T"
+    :
 }
 trap cleanup EXIT INT TERM
 
