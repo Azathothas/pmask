@@ -56,14 +56,15 @@ Options:
                         gid of the client instead of root.  A daemon that
                         serves other uids also needs a socket mode they
                         can reach, for example --socket-mode 666.
-      --socket-mode OCT Socket permission bits (default: 600)
+      --socket-mode OCT Socket permission bits, 001 to 777 (default: 600)
       --io-timeout SECONDS
                         Drop a client that stalls while it sends its
                         request or reads the response (default: 30;
-                        0 means no limit)
+                        0 means no limit; at most 315360000, ten years)
       --job-timeout SECONDS
                         Kill a job tree that runs longer than this and
-                        return code 137 (default: no limit)
+                        return code 137 (default: no limit; at most
+                        315360000, ten years)
       --jobs N          Run up to N jobs at once, one worker process per
                         connection (default: 1)
       --max-job-bytes N Largest total size of the job arguments, each
@@ -156,6 +157,28 @@ fn number(flag: &str, text: &str) -> u64 {
     }
 }
 
+/// Read a seconds value and refuse one above [`pmask::daemon::MAX_TIMEOUT_SECS`].
+///
+/// The bound is checked here, at parse time, so a value that would make a
+/// deadline overflow never reaches the daemon.  `u64::MAX` seconds is
+/// about 5.8e11 years; the deadline is `Instant::now() + Duration`, which
+/// panics, and the panic would take the daemon down with it (issue 18).
+/// The limit is ten years, which is far past any real job and stays away
+/// from the edge of the clock on every architecture.
+fn seconds(flag: &str, text: &str) -> u64 {
+    let n = number(flag, text);
+    if n > daemon::MAX_TIMEOUT_SECS {
+        die(&format!(
+            "{} is {} s; the limit is {} s (ten years).  A value near u64::MAX would overflow \
+             the deadline and panic the daemon, so the limit is enforced rather than clamped",
+            flag,
+            n,
+            daemon::MAX_TIMEOUT_SECS
+        ));
+    }
+    n
+}
+
 fn parse() -> Args {
     let argv: Vec<OsString> = std::env::args_os().collect();
     let mut cfg = DaemonConfig::new();
@@ -201,16 +224,21 @@ fn parse() -> Args {
                 "socket-mode" => {
                     let v = lossy(take(&flag, inline, &argv, &mut i));
                     match u32::from_str_radix(v.trim_start_matches("0o"), 8) {
-                        Ok(m) => cfg.socket_mode = m,
+                        Ok(m) if (1..=0o777).contains(&m) => cfg.socket_mode = m,
+                        Ok(_) => die(
+                            "--socket-mode needs permission bits from 001 to 777; 0 makes the \
+                             socket unreachable",
+                        ),
                         Err(_) => die("--socket-mode needs an octal number"),
                     }
                 }
                 "io-timeout" => {
-                    cfg.io_timeout_secs = number(&flag, &lossy(take(&flag, inline, &argv, &mut i)));
+                    cfg.io_timeout_secs =
+                        seconds(&flag, &lossy(take(&flag, inline, &argv, &mut i)));
                 }
                 "job-timeout" => {
                     cfg.job_timeout_secs =
-                        number(&flag, &lossy(take(&flag, inline, &argv, &mut i)));
+                        seconds(&flag, &lossy(take(&flag, inline, &argv, &mut i)));
                 }
                 "jobs" => {
                     let n = number(&flag, &lossy(take(&flag, inline, &argv, &mut i)));

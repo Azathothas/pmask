@@ -54,7 +54,7 @@ rustup target list --installed | grep -q "^$MUSL_TARGET$" \
     || rustup target add "$MUSL_TARGET"
 
 cd "$ROOT"
-cargo build --release --target "$MUSL_TARGET" --bins --features testbins
+cargo build --locked --offline --release --target "$MUSL_TARGET" --bins --features testbins
 
 # The 32-bit probe for core.sh.  Non-fatal: a missing target or linker
 # leaves tests/testcases32 absent and the 32-bit case reports it.
@@ -64,7 +64,7 @@ if [ "$ARCH" = x86_64 ]; then
     if ! rustup target list --installed | grep -q "^$I686$"; then
         rustup target add "$I686" || echo "NOTE: cannot install target $I686"
     fi
-    if cargo build --release --target "$I686" --bin pmask-testcases --features testbins; then
+    if cargo build --locked --offline --release --target "$I686" --bin pmask-testcases --features testbins; then
         cp "${CARGO_TARGET_DIR:-$ROOT/target}/$I686/release/pmask-testcases" "$ROOT/tests/testcases32"
     else
         echo "NOTE: i686 build failed; tests/testcases32 not produced (32-bit case will not run)"

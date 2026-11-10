@@ -1,0 +1,24 @@
+sup=68648 pay=68651
+-- pid 68648 (qa44c-68646)
+   environ open=denied
+   maps open=denied
+   auxv open=denied
+   exe open=denied
+   fd dir=denied
+   fd/0 readlink=denied
+   cmdline open=ok
+   stat open=ok
+   stat48_51=0 0 0 0
+-- pid 68651 (qa44c-68646)
+   environ open=denied
+   maps open=denied
+   auxv open=denied
+   exe open=denied
+   fd dir=denied
+   fd/0 readlink=denied
+   cmdline open=ok
+   stat open=ok
+   stat48_51=0 0 0 0
+-- threads of the supervisor
+   68648 comm=qa44c-68646
+   68650 comm=pmask-tracer

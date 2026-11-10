@@ -25,6 +25,13 @@
 //! `agent:`; [`Runner::allow_argv_secret`] restores the old behaviour and
 //! prints the warning.  In redact mode the value is still briefly in
 //! pmask's argv, so the run warns once.
+//!
+//! No mode reaches the other three copies of the value: the kernel's
+//! audit record of pmask's own exec (written before pmask can rewrite
+//! anything), the shell history and any wrapper's argv.  The CLI prints
+//! one warning about them, before the run starts, through
+//! [`argv_secret_warning`]; it is louder when the host answers that the
+//! audit subsystem is enabled, because then the record already exists.
 
 use crate::caps::Caps;
 use crate::isolate::{self, Isolate};
@@ -205,6 +212,278 @@ pub struct SecretReport {
     pub fd: libc::c_int,
 }
 
+// ------------------------------------------------- the audit-log exposure
+
+/// `AUDIT_GET` from `linux/audit.h`: the message type that asks the kernel
+/// for its audit status.
+const AUDIT_GET: u16 = 1000;
+/// `NLM_F_REQUEST` from `linux/netlink.h`.
+const NLM_F_REQUEST: u16 = 0x01;
+/// `NLM_F_ACK` from `linux/netlink.h`.
+const NLM_F_ACK: u16 = 0x04;
+/// `NLMSG_ERROR` from `linux/netlink.h`.
+const NLMSG_ERROR: u16 = 0x02;
+/// `struct nlmsghdr` is 16 bytes on every Linux ABI.
+const NLMSG_HDR: usize = 16;
+/// `struct audit_status` starts with `mask`, then `enabled`, so the word
+/// this probe reads is the second `u32` after the header.
+const AUDIT_STATUS_ENABLED: usize = NLMSG_HDR + 4;
+
+/// What this host's kernel audit subsystem will do with an exec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditState {
+    /// The kernel answered with its audit status: auditing is on, so a
+    /// rule that covers this exec has already written it to the audit
+    /// log.  Whether a rule covers it is the deployment's business.
+    Enabled,
+    /// The kernel refused the query with `ECONNREFUSED`, which is how it
+    /// answers every audit request while auditing is off.
+    Disabled,
+    /// The question could not be put or the answer was neither of the
+    /// two above: no `NETLINK_AUDIT` socket, a seccomp filter, a locked
+    /// subsystem this process may not read.  Callers warn without
+    /// claiming either state.
+    Unknown,
+}
+
+/// Ask the kernel whether its audit subsystem is enabled.
+///
+/// The probe is the one `auditctl -s` makes: a `NETLINK_AUDIT` socket and
+/// an `AUDIT_GET` request.  It needs no privilege (the kernel answers
+/// `ECONNREFUSED` to an unprivileged caller while auditing is off), which
+/// is why it is done here rather than by running `auditctl`, whose own
+/// root check fails for the account pmask usually runs as.
+///
+/// The receive timeout bounds the probe: a kernel that never answers must
+/// not hang the run.  A probe that cannot answer is [`AuditState::Unknown`]
+/// and the caller warns without the stronger wording, so a failed probe
+/// never turns a warning into a refusal.
+///
+/// `PMASK_PROBE_AUDIT=1` (enabled) or `0` (disabled) replaces the answer
+/// and skips the syscalls.  It is the test hook for the two wordings, read
+/// once per call, in the same spirit as the `PMASK_PROBE_*` host-profile
+/// overrides in [`crate::caps`]; it changes no production behaviour beyond
+/// the adjective in one warning.
+pub fn audit_state() -> AuditState {
+    match std::env::var("PMASK_PROBE_AUDIT").as_deref() {
+        Ok("1") => return AuditState::Enabled,
+        Ok("0") => return AuditState::Disabled,
+        _ => {}
+    }
+    // SAFETY: a netlink socket owned by this call; it is closed below.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_AUDIT,
+        )
+    };
+    if fd < 0 {
+        return AuditState::Unknown;
+    }
+    let state = audit_state_on(fd);
+    // SAFETY: the descriptor is ours and is not used again.
+    unsafe { libc::close(fd) };
+    state
+}
+
+/// The body of [`audit_state`], on an open netlink socket.
+fn audit_state_on(fd: libc::c_int) -> AuditState {
+    // A zeroed `sockaddr_nl` binds the socket to this process, so the
+    // reply is addressed to it and not to another audit reader.
+    // SAFETY: `sockaddr_nl` is plain old data.
+    let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // SAFETY: binding our own socket to a zeroed address.
+    let bound = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if bound < 0 {
+        return AuditState::Unknown;
+    }
+    // A kernel that never answers must not hang the run.
+    let timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 200_000,
+    };
+    // SAFETY: a timeout on our own socket.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &timeout as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+
+    // struct nlmsghdr: len, type, flags, seq, pid.  Native endian, as
+    // netlink requires.
+    let mut request = [0u8; NLMSG_HDR];
+    request[0..4].copy_from_slice(&(NLMSG_HDR as u32).to_ne_bytes());
+    request[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+    request[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_ACK).to_ne_bytes());
+    request[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    // SAFETY: sending our own 16-byte request to the kernel.
+    let sent = unsafe {
+        libc::sendto(
+            fd,
+            request.as_ptr() as *const libc::c_void,
+            request.len(),
+            0,
+            &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if sent < 0 {
+        return AuditState::Unknown;
+    }
+    let mut reply = [0u8; 256];
+    // SAFETY: receiving into a buffer we own.
+    let n = unsafe { libc::recv(fd, reply.as_mut_ptr() as *mut libc::c_void, reply.len(), 0) };
+    if n < 0 {
+        return AuditState::Unknown;
+    }
+    parse_audit_reply(&reply[..n as usize])
+}
+
+/// Classify one netlink reply to the `AUDIT_GET` request.
+///
+/// Split from the socket code so the wire format is testable without a
+/// kernel that answers.  A status reply (`AUDIT_GET`) means auditing is
+/// on; `NLMSG_ERROR` with `ECONNREFUSED` is the kernel's "auditing is
+/// off" answer; a bare acknowledgement, another errno, or a short message
+/// is [`AuditState::Unknown`].
+fn parse_audit_reply(reply: &[u8]) -> AuditState {
+    if reply.len() < NLMSG_HDR {
+        return AuditState::Unknown;
+    }
+    let msg_type = u16::from_ne_bytes([reply[4], reply[5]]);
+    if msg_type == AUDIT_GET {
+        if reply.len() < AUDIT_STATUS_ENABLED + 4 {
+            return AuditState::Unknown;
+        }
+        let enabled = u32::from_ne_bytes([
+            reply[AUDIT_STATUS_ENABLED],
+            reply[AUDIT_STATUS_ENABLED + 1],
+            reply[AUDIT_STATUS_ENABLED + 2],
+            reply[AUDIT_STATUS_ENABLED + 3],
+        ]);
+        // 0 is off, 1 is on, 2 is on and locked.  Any other value is a
+        // kernel this probe does not know.
+        return match enabled {
+            1 | 2 => AuditState::Enabled,
+            0 => AuditState::Disabled,
+            _ => AuditState::Unknown,
+        };
+    }
+    if msg_type == NLMSG_ERROR && reply.len() >= NLMSG_HDR + 4 {
+        let err = i32::from_ne_bytes([
+            reply[NLMSG_HDR],
+            reply[NLMSG_HDR + 1],
+            reply[NLMSG_HDR + 2],
+            reply[NLMSG_HDR + 3],
+        ]);
+        if err == -libc::ECONNREFUSED {
+            return AuditState::Disabled;
+        }
+    }
+    AuditState::Unknown
+}
+
+/// The one warning a `literal:` or `env:` secret source earns, or `None`
+/// when every source is out of plain sight.
+///
+/// The text names the artefacts pmask cannot reach and points at the two
+/// ways out: a non-argv source for the value and `--args-from-fd` for the
+/// payload's own arguments.  It never includes a value, only names and
+/// source kinds.
+///
+/// A `literal:` value is in pmask's argv, so the kernel's exec record
+/// (`type=EXECVE` and `PROCTITLE`) holds it when the audit subsystem is
+/// enabled, and it is already written by the time pmask runs.  An `env:`
+/// value is in pmask's environment instead; the kernel's exec record does
+/// not carry the environment, so the audit clause is only claimed for a
+/// `literal:` source.
+///
+/// The text is stronger when [`audit_state`] answers
+/// [`AuditState::Enabled`] and a `literal:` source is present, because
+/// then the record exists and is permanent.  It never refuses: `literal:`
+/// is documented, and the operator may have a reason to keep it.
+pub fn argv_secret_warning(sources: &[(String, Source)]) -> Option<String> {
+    argv_secret_warning_with(sources, audit_state())
+}
+
+/// The body of [`argv_secret_warning`], with the audit answer supplied so
+/// the three wordings are testable on one host.
+fn argv_secret_warning_with(sources: &[(String, Source)], audit: AuditState) -> Option<String> {
+    let plain: Vec<&(String, Source)> = sources
+        .iter()
+        .filter(|(_, src)| src.is_in_plain_sight())
+        .collect();
+    if plain.is_empty() {
+        return None;
+    }
+    let list = plain
+        .iter()
+        .map(|(name, src)| format!("{}={}", name, src.describe()))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let literal = plain
+        .iter()
+        .any(|(_, src)| matches!(src, Source::Literal(_)));
+    let env = plain.iter().any(|(_, src)| matches!(src, Source::Env(_)));
+    let one = plain.len() == 1;
+    let mut text = format!(
+        "secret {}{} {} the value in pmask's own {}",
+        if one { "source " } else { "sources " },
+        list,
+        if one { "puts" } else { "put" },
+        match (literal, env) {
+            (true, true) => "argv or environment",
+            (false, true) => "environment",
+            (true, false) => "argv",
+            (false, false) => unreachable!("a plain-sight source is literal: or env:"),
+        }
+    );
+    if literal {
+        text.push_str(", where the shell history and any wrapper's argv keep a copy");
+        match audit {
+            AuditState::Enabled => text.push_str(
+                ", and this host's audit subsystem is enabled, so the kernel has already \
+                 written that argv into its audit log (type=EXECVE and PROCTITLE) for the life \
+                 of the log",
+            ),
+            AuditState::Disabled => text.push_str(
+                ", and the kernel audit log would hold it too if this host's audit subsystem \
+                 were enabled",
+            ),
+            AuditState::Unknown => text.push_str(
+                ", and the kernel audit log holds it too when this host's audit subsystem is \
+                 enabled (this run could not ask)",
+            ),
+        }
+    }
+    if env {
+        text.push_str(if literal { ", and" } else { ", where" });
+        text.push_str(
+            " /proc/<pmask-pid>/environ serves it until pmask masks itself and the shell \
+             history or a wrapper's environment may keep a copy; the kernel's exec record \
+             carries argv, not the environment",
+        );
+    }
+    text.push_str(
+        ". pmask cannot reach the copies outside its own process: use file:PATH, agent:NAME or \
+         stdin for the value, and --args-from-fd N to keep the payload's own arguments out of \
+         pmask's argv",
+    );
+    Some(text)
+}
+
 /// Builder for one supervised run.
 pub struct Runner {
     label: Option<String>,
@@ -215,6 +494,10 @@ pub struct Runner {
     verbose: bool,
     force_mode: Option<Mode>,
     isolate: Option<Isolate>,
+    /// `--redact --isolate`: redact the tree *and* give the payload the
+    /// requested namespaces.  Distinct from [`Runner::isolate`], which is
+    /// the namespace-only mode.
+    compose: Option<Isolate>,
     secrets: Vec<(String, Source)>,
     env_overrides: Vec<(OsString, OsString)>,
     socket: Option<PathBuf>,
@@ -223,6 +506,13 @@ pub struct Runner {
     close_on_exec: bool,
     allow_argv_secret: bool,
     no_dumpable: bool,
+    /// Mask options the caller passed, for the modes that cannot apply
+    /// them.  Every entry becomes one note, so a dropped option is never
+    /// silent (AGENTS.md invariant 13).
+    requested: Vec<&'static str>,
+    /// `--audit` was requested.  The rows need the tracer, so every
+    /// non-redaction mode refuses the request.
+    requests_audit: bool,
 }
 
 impl Default for Runner {
@@ -242,6 +532,7 @@ impl Runner {
             verbose: false,
             force_mode: None,
             isolate: None,
+            compose: None,
             secrets: Vec::new(),
             env_overrides: Vec::new(),
             socket: None,
@@ -250,6 +541,8 @@ impl Runner {
             close_on_exec: false,
             allow_argv_secret: false,
             no_dumpable: false,
+            requested: Vec::new(),
+            requests_audit: false,
         }
     }
 
@@ -292,8 +585,33 @@ impl Runner {
     }
 
     /// Run inside fresh namespaces (needs unprivileged user namespaces).
+    /// This is the namespace-only mode: the payload's `/proc` metadata is
+    /// not redacted, and every mask option that needs the tracer is
+    /// reported as not applied.
     pub fn isolate(mut self, iso: Isolate) -> Runner {
         self.isolate = Some(iso);
+        self
+    }
+
+    /// Redact the tree *and* give the payload the namespaces in `iso`:
+    /// the `--redact --isolate` composition.  The redaction path owns the
+    /// tree, and the payload is forked into the requested namespaces
+    /// before its exec.  A set the host cannot grant is reported as a
+    /// counted degradation, never silently replaced by `--unshare`'s
+    /// user+pid+mount set.
+    pub fn redact_with_isolate(mut self, iso: Isolate) -> Runner {
+        self.compose = Some(iso);
+        self
+    }
+
+    /// Record the mask options the caller passed, so the modes that
+    /// cannot apply one can name it in the run report.
+    pub fn requested_options(mut self, opts: &[&'static str]) -> Runner {
+        for o in opts {
+            if !self.requested.contains(o) {
+                self.requested.push(o);
+            }
+        }
         self
     }
 
@@ -345,11 +663,20 @@ impl Runner {
     }
 
     /// Record that the run asks for a non-dumpable payload
-    /// (`--no-dumpable`), so the report's `payload_dumpable` is false.
+    /// (`--no-dumpable`). The redaction mode makes the report field false;
+    /// isolate and plain mode leave the payload dumpable and say so.
     /// The redaction mode applies it at each exec; the isolate and plain
     /// modes do not change dumpability and say so in a note.
     pub fn no_dumpable(mut self, on: bool) -> Runner {
         self.no_dumpable = on;
+        self
+    }
+
+    /// `--audit`: one residue row per tracee.  The redaction mode owns the
+    /// tree the rows describe; every other mode refuses the flag instead
+    /// of printing nothing.
+    pub fn audit(mut self) -> Runner {
+        self.requests_audit = true;
         self
     }
 
@@ -375,7 +702,7 @@ impl Runner {
 
     /// Decide the mode from the host's capabilities and the request.
     ///
-    /// The rule is the ladder in `docs/DEFAULTS.md` section 4: a forced
+    /// The rule is the privilege ladder in `docs/DESIGN.md`: a forced
     /// mode wins; a host without `ptrace` runs plain; an explicit
     /// `--isolate` runs isolate when user namespaces are available and
     /// redact when they are not; every other run redacts.  A request the
@@ -396,10 +723,98 @@ impl Runner {
     }
 
     fn select_with(&self, caps: &Caps) -> Selection {
+        // `--redact --isolate` composes: the redaction path owns the tree
+        // and the payload is forked into the requested namespaces.  When
+        // ptrace is unavailable the namespace half still works, so the
+        // isolate path runs with the probe reason in `mode_reason` rather
+        // than dropping the namespaces the operator asked for.
+        if let Some(iso) = self.compose {
+            if !iso.none {
+                if !caps.userns {
+                    if caps.ptrace {
+                        return Selection {
+                            mode: Mode::Redact,
+                            reason: "isolate_unavailable",
+                        };
+                    }
+                    return Selection {
+                        mode: Mode::Plain,
+                        reason: ptrace_reason(caps),
+                    };
+                }
+                if caps.ptrace {
+                    return Selection {
+                        mode: Mode::Redact,
+                        reason: "",
+                    };
+                }
+                return Selection {
+                    mode: Mode::Isolate,
+                    reason: ptrace_reason(caps),
+                };
+            }
+        }
+        // `--no-redact` means exactly that: never touch /proc metadata.
+        // It does not mean "plain before isolate": a namespace request is
+        // still honourable without a tracer, and dropping it silently is
+        // the defect this ordering used to be (issue 20).  The pair takes
+        // the isolate path when the host grants it and the plain path with
+        // a note otherwise.
+        if self.force_mode == Some(Mode::Plain) {
+            if self.isolate.is_some() && !self.is_none_isolation() && caps.userns {
+                return Selection {
+                    mode: Mode::Isolate,
+                    reason: "forced",
+                };
+            }
+            if self.isolate.is_some() && !self.is_none_isolation() {
+                return Selection {
+                    mode: Mode::Plain,
+                    reason: "isolate_unavailable",
+                };
+            }
+            return Selection {
+                mode: Mode::Plain,
+                reason: "forced",
+            };
+        }
         if let Some(mode) = self.force_mode {
             return Selection {
                 mode,
                 reason: "forced",
+            };
+        }
+        // `--isolate=none` asks for no isolation, not for a different
+        // mode: the namespace request simply contributes nothing, and the
+        // ordinary ladder decides (redact where ptrace works, plain where
+        // it does not).  Entering the isolation path here would create the
+        // unconditional user/mount/UTS/IPC/cgroup namespaces anyway
+        // (issue 26).
+        //
+        // A real isolation request is decided before the ptrace check:
+        // isolation does not need a tracer, so a host without ptrace must
+        // still get the namespaces the operator asked for.  The reason
+        // carries the ptrace refusal when the run is isolate-only, so the
+        // report does not claim the strongest mode was selected.
+        if self.isolate.is_some() && !self.is_none_isolation() {
+            if caps.userns {
+                return Selection {
+                    mode: Mode::Isolate,
+                    reason: if caps.ptrace { "" } else { ptrace_reason(caps) },
+                };
+            }
+            // No user namespace: the namespaces cannot be created.  The
+            // redaction path still works where ptrace does; where it does
+            // not, the run is plain and says why the namespaces are gone.
+            if caps.ptrace {
+                return Selection {
+                    mode: Mode::Redact,
+                    reason: "isolate_unavailable",
+                };
+            }
+            return Selection {
+                mode: Mode::Plain,
+                reason: "isolate_unavailable",
             };
         }
         if !caps.ptrace {
@@ -408,27 +823,32 @@ impl Runner {
                 reason: ptrace_reason(caps),
             };
         }
-        if self.isolate.is_some() {
-            if caps.userns {
-                return Selection {
-                    mode: Mode::Isolate,
-                    reason: "",
-                };
-            }
-            return Selection {
-                mode: Mode::Redact,
-                reason: "isolate_unavailable",
-            };
-        }
         Selection {
             mode: Mode::Redact,
             reason: "",
         }
     }
 
+    /// The namespace set the selected mode should apply, if any.  `None`
+    /// when `--isolate` was not given or named `none`.
+    fn iso_set(&self) -> Option<Isolate> {
+        let iso = self.isolate.or(self.compose)?;
+        if iso.none {
+            None
+        } else {
+            Some(iso)
+        }
+    }
+
+    /// True when `--isolate=none` was the request: no isolation at all.
+    fn is_none_isolation(&self) -> bool {
+        self.isolate.is_some_and(|i| i.none) || self.compose.is_some_and(|i| i.none)
+    }
+
     /// True when isolation was asked for and the host refused it.
     pub fn isolate_unavailable(&self) -> bool {
-        self.isolate.is_some() && !Caps::cached().userns
+        let asked = self.isolate.is_some() || self.compose.is_some();
+        asked && !self.is_none_isolation() && !Caps::cached().userns
     }
 
     /// Check every secret source against the mode the run will use, and
@@ -539,10 +959,51 @@ impl Runner {
             ));
         }
         let mode_reason = self.mode_reason();
+        // `--audit` describes the tree the tracer owns.  The mode is only
+        // known here, after the probe, so this is where a host that
+        // selects plain mode (no ptrace) refuses the flag; the explicit
+        // `--no-redact`/`--isolate` pair is refused in `main`, before any
+        // secret is read.  Refusing instead of printing nothing keeps the
+        // promise the man page makes (issue 32).
+        if self.requests_audit && mode != Mode::Redact {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--audit needs the redaction mode: the selected mode is {}, which has no \
+                     tracer to describe the tree, so the audit rows would be empty; run where \
+                     ptrace is available, or drop --audit",
+                    mode.as_str()
+                ),
+            ));
+        }
         if self.isolate_unavailable() {
             notes.push(
                 "--isolate was requested but this host has no unprivileged user namespaces; \
                  running without it"
+                    .to_string(),
+            );
+        }
+        // `--isolate=none` asks for no isolation at all: no namespace, no
+        // `no_new_privs` and no Landlock.  The runner honours it by not
+        // entering the isolation path; the note makes the run's mode and
+        // the absence of a namespace report unambiguous (issue 26).
+        if self.is_none_isolation() {
+            notes.push(
+                "--isolate=none: the payload runs with the host's namespaces, no_new_privs \
+                 and filesystem policy unchanged"
+                    .to_string(),
+            );
+        }
+        // `--no-redact --isolate`: the pair used to select plain mode
+        // before the namespace request was read, so the isolation vanished
+        // (issue 20).  It now runs the isolation path; say that the
+        // redaction half was the operator's choice and the namespace half
+        // was delivered, so neither is inferred from an absence.
+        if self.force_mode == Some(Mode::Plain) && mode == Mode::Isolate && self.isolate.is_some() {
+            notes.push(
+                "--no-redact was honoured and --isolate still applies: isolation does not \
+                 need ptrace, so the payload gets its namespaces and its /proc metadata \
+                 stays visible"
                     .to_string(),
             );
         }
@@ -558,14 +1019,66 @@ impl Runner {
         }
         // `--no-dumpable` is a redaction-mode treatment: the tracer sets
         // `PR_SET_DUMPABLE=0` at each exec completion.  The other modes do
-        // not change dumpability, so the report's `payload_dumpable`
-        // describes the request and this note says it was not delivered.
+        // not change dumpability, so this note says it was not delivered.
         if self.no_dumpable && mode != Mode::Redact {
             notes.push(format!(
                 "--no-dumpable was not applied: {} mode does not change the payload's \
                  dumpability",
                 mode.as_str()
             ));
+        }
+        // Every other mask option needs the tracer too: the entry swap, the
+        // post-exec rebuild, the window relocation, the seccomp filter, the
+        // image carriers, the session-end policy or the namespace set.  A
+        // mode without a tracer cannot apply any of them, and a silent drop
+        // is a defect (AGENTS.md invariant 13), so each one is named with
+        // the reason.  `--no-dumpable`, the label and `--unshare` are
+        // handled above because their notes say something specific.
+        if mode != Mode::Redact {
+            for opt in &self.requested {
+                if matches!(*opt, "--no-dumpable" | "--audit" | "--isolate") {
+                    continue;
+                }
+                // These are applied by the non-redaction modes themselves:
+                // the environment pairs reach the payload, the scope
+                // re-exec happens before the mode is chosen, and a secret
+                // is delivered on a descriptor in every mode.
+                if matches!(
+                    *opt,
+                    "--env"
+                        | "--env-file"
+                        | "--secret"
+                        | "--socket"
+                        | "--allow-argv-secret"
+                        | "--secret-burn"
+                        | "--secret-close-on-exec"
+                        | "--scope-name"
+                ) {
+                    continue;
+                }
+                // Isolate mode sets PR_SET_NO_NEW_PRIVS in the payload as
+                // part of the isolation, so the option is satisfied there.
+                if *opt == "--no-new-privs" && mode == Mode::Isolate {
+                    continue;
+                }
+                // `--keep-env` asks for the inherited environment to stay
+                // visible; neither mode redacts it, so it is satisfied.
+                if *opt == "--keep-env" {
+                    continue;
+                }
+                // `--no-redact` asks for exactly what these modes do: no
+                // /proc treatment.  It is the reason the mode was chosen,
+                // not a request that was dropped.
+                if *opt == "--no-redact" {
+                    continue;
+                }
+                notes.push(format!(
+                    "{} was not applied: {} mode does not redact the payload's /proc \
+                     metadata, and this option needs the redaction path",
+                    opt,
+                    mode.as_str()
+                ));
+            }
         }
 
         // `--secret-close-on-exec` is enforced by the tracer: it closes the
@@ -617,9 +1130,35 @@ impl Runner {
                 "--secret-close-on-exec has nothing to close: no --secret was given".to_string(),
             );
         }
+        // A name with no descriptor to carry it is the same kind of
+        // no-op, and the operator has no other way to see it.
+        if self
+            .mask
+            .as_ref()
+            .is_some_and(|m| m.secret_fd_name_value().is_some())
+            && self.secrets.is_empty()
+        {
+            notes.push(
+                "--secret-fd-name has no effect: no --secret was given, so no descriptor is \
+                 delivered"
+                    .to_string(),
+            );
+        }
 
         // 0. Refuse a source that plain mode cannot protect, before any
-        //    value is read.
+        //    value is read.  The copies pmask cannot reach at all are the
+        //    CLI's loud warning, printed once to stderr before the run;
+        //    the report also records the exposure, so a CI job that reads
+        //    `--report=json` sees it without scraping stderr (invariant
+        //    13).
+        if !self.secrets.is_empty() && self.secrets.iter().any(|(_, src)| src.is_in_plain_sight()) {
+            notes.push(
+                "a literal: or env: secret value is in pmask's own argv or environment, \
+                 and the kernel audit log, the shell history and any wrapper's argv keep a \
+                 copy of it"
+                    .to_string(),
+            );
+        }
         notes.extend(self.check_sources(mode)?);
 
         // 1. Load secrets into protected memory.
@@ -637,7 +1176,11 @@ impl Runner {
         } else {
             self.delivery_mode
         };
-        let delivery = Delivery::with_mode(&secrets, delivery_mode)?;
+        let delivery = Delivery::with_mode_named(
+            &secrets,
+            delivery_mode,
+            self.mask.as_ref().and_then(|m| m.secret_fd_name_value()),
+        )?;
         if !secrets.is_empty() {
             // Once we hold plaintext, stop other processes of this account
             // from reading our memory.
@@ -686,6 +1229,46 @@ impl Runner {
                     }
                 };
                 mask = mask.inherit_fds_with(fds.clone(), cloexec);
+                // `Runner::audit` is the library-level spelling; the CLI
+                // also sets it on the mask it passes.  Applying it here
+                // makes a caller that only called `Runner::audit` get the
+                // residue rows from the session that produces them (the
+                // flag is a bool, so setting it twice is a no-op).
+                if self.requests_audit {
+                    mask = mask.audit();
+                }
+                // `--redact --isolate`: hand the requested namespace set to
+                // the redaction child.  The set is the parsed `Isolate`
+                // value, so `--isolate=net` yields a network namespace and
+                // the host's pid namespace instead of `--unshare`'s
+                // user+pid+mount set (issue 19).
+                if let Some(iso) = self.compose {
+                    if !iso.none {
+                        let ns = crate::userns::ChildNs {
+                            pid: iso.pid,
+                            net: iso.net,
+                            procfs: iso.pid,
+                            private_tmp: iso.private_tmp,
+                        };
+                        // The kernel can refuse a namespace set that the
+                        // userns probe said was possible (a seccomp
+                        // filter that filters by flag, a per-container
+                        // `unprivileged_userns_clone` change).  Probe the
+                        // whole set once, and name the refusal in the
+                        // report: the run still redacts, but the operator
+                        // must not believe the namespaces were applied.
+                        if let Err(e) = crate::userns::probe(ns) {
+                            notes.push(format!(
+                                "--isolate={} was not applied: this host refused the \
+                                 namespace set ({}); the tree is still redacted",
+                                isolate_spelling(iso),
+                                e
+                            ));
+                        } else {
+                            mask = mask.namespaces(ns);
+                        }
+                    }
+                }
                 // `Mask::env` adds each pair on top of the inherited
                 // environment.  `Mask::envs` would replace it wholesale,
                 // which dropped PATH and HOME from a `--secret` run.
@@ -728,7 +1311,7 @@ impl Runner {
                 child.wait()?
             }
             Mode::Isolate => {
-                let iso = self.isolate.unwrap_or_else(Isolate::all);
+                let iso = self.iso_set().unwrap_or_else(Isolate::all);
                 let prog = resolve_program(program.as_ref())?;
                 let mut argv_c: Vec<CString> = Vec::with_capacity(args.len() + 1);
                 argv_c.push(prog.clone());
@@ -785,7 +1368,7 @@ impl Runner {
                     notes.push(format!("could not make the supervisor non-dumpable: {}", e));
                 }
 
-                isolate::run(&iso, &prog, &argv_ptr, &envp_ptr, &fds, cloexec)?
+                isolate::run(&iso, &prog, &argv_ptr, &envp_ptr, &fds, cloexec, self.quiet)?
             }
             Mode::Plain => {
                 let prog = resolve_program(program.as_ref())?;
@@ -808,7 +1391,17 @@ impl Runner {
                         Ok(())
                     });
                 }
-                let status = cmd.status()?;
+                // The plain mode is the one path that runs a program
+                // through `std::process::Command`, whose own error text is
+                // the bare errno ("No such file or directory (os error
+                // 2)").  Name the program the same way the redaction path
+                // does, so a typo is attributable (issue 14 N1).
+                let status = cmd.status().map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("{}: {}", program.as_ref().to_string_lossy(), e),
+                    )
+                })?;
                 use std::os::unix::process::ExitStatusExt;
                 if let Some(sig) = status.signal() {
                     ExitState::plain(128 + sig, Some(sig))
@@ -836,14 +1429,35 @@ impl Runner {
             secrets_delivered: fds.len(),
             notes,
             ptrace,
-            // The child restores dumpability before its readiness byte,
-            // and the redaction mode sets PR_SET_DUMPABLE=0 at each exec
-            // only when `--no-dumpable` is set.  A `--secret` run is
-            // therefore dumpable unless the operator asked otherwise.
-            payload_dumpable: !self.no_dumpable,
+            // The field describes what the payload's `PR_GET_DUMPABLE`
+            // returns, not the flag's name: the redaction mode applies
+            // `--no-dumpable` at each exec, the isolate and plain modes
+            // never change dumpability.  Reporting the request made the
+            // document contradict the payload (issue 21).
+            payload_dumpable: mode != Mode::Redact || !self.no_dumpable,
             hardening,
             secrets: secrets_report,
         })
+    }
+}
+
+/// The `--isolate` spelling for a set, for a note that has to quote what
+/// the operator wrote.
+fn isolate_spelling(iso: Isolate) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if iso.pid {
+        parts.push("pid");
+    }
+    if iso.net {
+        parts.push("net");
+    }
+    if iso.private_tmp {
+        parts.push("tmp");
+    }
+    if parts.is_empty() {
+        "minimal".to_string()
+    } else {
+        parts.join(",")
     }
 }
 
@@ -973,6 +1587,12 @@ mod tests {
         assert_eq!(s.mode, Mode::Redact);
         assert_eq!(s.reason, "isolate_unavailable");
 
+        // Isolation does not need a tracer: a host without ptrace still
+        // gets the namespaces, and the ptrace refusal is the reason.
+        let s = isolate.select_with(&caps_with(false, true, false, Some(0)));
+        assert_eq!(s.mode, Mode::Isolate);
+        assert_eq!(s.reason, "no_capability");
+
         let forced = Runner::new().no_redaction();
         let s = forced.select_with(&caps_with(true, true, false, Some(0)));
         assert_eq!(s.mode, Mode::Plain);
@@ -1022,6 +1642,118 @@ mod tests {
             .allow_argv_secret();
         assert!(allowed.check_sources(Mode::Isolate).is_ok());
         assert_eq!(allowed.check_sources(Mode::Isolate).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_literal_source_warns_about_the_audit_log_and_the_arg_ways_out() {
+        let src = vec![("T".to_string(), Source::Literal("CANARY-9".into()))];
+        let text = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(text.contains("T=literal:"), "{}", text);
+        assert!(text.contains("shell history"), "{}", text);
+        assert!(text.contains("wrapper's argv"), "{}", text);
+        assert!(text.contains("kernel audit log"), "{}", text);
+        assert!(text.contains("--args-from-fd N"), "{}", text);
+        assert!(text.contains("file:PATH, agent:NAME or stdin"), "{}", text);
+        // The value is never in the warning.
+        assert!(!text.contains("CANARY-9"), "{}", text);
+    }
+
+    #[test]
+    fn an_enabled_audit_subsystem_makes_the_warning_stronger() {
+        let src = vec![("T".to_string(), Source::Literal("v".into()))];
+        let enabled = argv_secret_warning_with(&src, AuditState::Enabled).unwrap();
+        let unknown = argv_secret_warning_with(&src, AuditState::Unknown).unwrap();
+        let disabled = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(enabled.contains("has already written"), "{}", enabled);
+        assert!(!unknown.contains("has already written"), "{}", unknown);
+        assert!(unknown.contains("could not ask"), "{}", unknown);
+        assert!(disabled.contains("would hold it too"), "{}", disabled);
+    }
+
+    #[test]
+    fn an_env_source_claims_no_audit_record() {
+        let src = vec![("T".to_string(), Source::Env("TOKEN".into()))];
+        let text = argv_secret_warning_with(&src, AuditState::Enabled).unwrap();
+        assert!(text.contains("T=env:TOKEN"), "{}", text);
+        assert!(text.contains("/proc/<pmask-pid>/environ"), "{}", text);
+        assert!(text.contains("shell history"), "{}", text);
+        assert!(text.contains("wrapper's environment"), "{}", text);
+        // The kernel's exec record carries argv, not the environment.
+        assert!(!text.contains("type=EXECVE"), "{}", text);
+        assert!(
+            text.contains("carries argv, not the environment"),
+            "{}",
+            text
+        );
+    }
+
+    #[test]
+    fn a_mixed_source_list_names_both_places() {
+        let src = vec![
+            ("A".to_string(), Source::Literal("v".into())),
+            ("B".to_string(), Source::Env("TOKEN".into())),
+        ];
+        let text = argv_secret_warning_with(&src, AuditState::Disabled).unwrap();
+        assert!(
+            text.contains("sources A=literal:, B=env:TOKEN put"),
+            "{}",
+            text
+        );
+        assert!(text.contains("argv or environment"), "{}", text);
+    }
+
+    #[test]
+    fn a_source_out_of_plain_sight_earns_no_warning() {
+        let src = vec![
+            ("T".to_string(), Source::File(PathBuf::from("/tmp/x"))),
+            ("U".to_string(), Source::Stdin),
+        ];
+        assert!(argv_secret_warning_with(&src, AuditState::Enabled).is_none());
+    }
+
+    #[test]
+    fn the_netlink_reply_parser_reads_the_three_shapes() {
+        // A status reply: header, mask, enabled.
+        let mut status = [0u8; 16 + 8];
+        status[0..4].copy_from_slice(&24u32.to_ne_bytes());
+        status[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+        status[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&1u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&status), AuditState::Enabled);
+
+        // The same reply with auditing off, and with the locked value.
+        let mut off = status;
+        off[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&0u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&off), AuditState::Disabled);
+        let mut locked = status;
+        locked[AUDIT_STATUS_ENABLED..AUDIT_STATUS_ENABLED + 4].copy_from_slice(&2u32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&locked), AuditState::Enabled);
+
+        // An error reply: the kernel's answer while auditing is off.
+        let mut err = [0u8; 20];
+        err[4..6].copy_from_slice(&NLMSG_ERROR.to_ne_bytes());
+        err[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&(-libc::ECONNREFUSED).to_ne_bytes());
+        assert_eq!(parse_audit_reply(&err), AuditState::Disabled);
+
+        // Another errno, a bare acknowledgement and a short message are
+        // all "cannot tell", never "enabled" or "disabled".
+        let mut eperm = err;
+        eperm[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&(-libc::EPERM).to_ne_bytes());
+        assert_eq!(parse_audit_reply(&eperm), AuditState::Unknown);
+        let mut ack = err;
+        ack[NLMSG_HDR..NLMSG_HDR + 4].copy_from_slice(&0i32.to_ne_bytes());
+        assert_eq!(parse_audit_reply(&ack), AuditState::Unknown);
+        assert_eq!(parse_audit_reply(&[0u8; 8]), AuditState::Unknown);
+    }
+
+    #[test]
+    fn the_probe_answers_on_this_host() {
+        // The answer depends on the host, so the assertion is that the
+        // probe returns at all and never invents a state it cannot know.
+        let state = audit_state();
+        assert!(matches!(
+            state,
+            AuditState::Enabled | AuditState::Disabled | AuditState::Unknown
+        ));
     }
 
     #[test]

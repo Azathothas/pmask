@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa27-payload-still-runs (exit 7 passed through)
+FAIL qa27-quiet-isolate (isolation line printed: pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2)
+PASS qa27-quiet-isolate-no-degradation-lines
+PASS qa27-quiet-redact-isolate
+PASS qa27-control-not-quiet-prints-the-line
+PASS qa27-control-quiet-mask-summary
+== VERDICT: FAIL=1 ==

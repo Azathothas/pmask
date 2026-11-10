@@ -176,7 +176,17 @@ vm_stage() {
             echo "NOTE: tests/$s.sh absent, not copied"
         fi
     done
-    chmod +x "$st"/app/tests/*
+    # The staged tree has no cargo and no repository, so the checks that
+    # read `src/`, `completions/` or `scripts/` cannot run in the guest.
+    # `tests/run.sh` reads this marker and prints one SKIP with a reason
+    # instead of a FAIL for a check that has nothing to read; the native
+    # gate and the CI job run both without it.
+    : > "$st/app/tests/.vm-staged"
+    # The per-issue fragments stay out of the VM tree: many of them need
+    # python3, a C compiler, systemd or the repository's scripts, none of
+    # which the guest has.  The native gate runs them; `tests/run.sh`
+    # reads `.vm-staged` and prints one SKIP with that reason.
+    chmod +x "$st"/app/tests/* 2>/dev/null
 }
 
 # vm_pack STAGE-DIR OUT.cpio.gz

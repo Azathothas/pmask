@@ -1,0 +1,21 @@
+## issue 28: --hugetlb --image - falls back to an ordinary memfd
+$ cat /bin/true | ./pmask --hugetlb --image -
+pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd
+rc=0
+$ ./pmask --hugetlb --image ./testcases exe-id
+pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd
+exe=/memfd:testcases (deleted) ino=150234
+rc=0
+$ cat ./testcases | ./pmask --hugetlb --image-from-fd 0 exe-id
+pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd
+exe=/memfd:<fd image> (deleted) ino=152215
+rc=0
+--- tests/qa.d/28.sh ---
+    Finished `release` profile [optimized] target(s) in 0.05s
+INFO q28a-control the host lacks usable huge pages; the fallback is exercised
+PASS q28b-hugetlb-image-stdin-runs
+PASS q28e-hugetlb-image-stdin-payload-works
+PASS q28c-hugetlb-image-stdin-carries-the-degradation-note
+PASS q28d-hugetlb-image-from-fd-runs
+################ qa28: PASS
+rc=0

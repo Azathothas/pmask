@@ -1,0 +1,3 @@
+$ sudo bpftool prog list
+sudo: bpftool: command not found
+exit=1

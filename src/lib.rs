@@ -121,6 +121,13 @@ pub mod subcmd;
 mod tracer;
 mod userns;
 
+/// The namespace set a session asks the child to enter.
+///
+/// Re-exported because [`Mask::namespaces`] takes it: without this the
+/// method is unusable from another crate, since the type would be
+/// private.  The fields are the four requests the fork helper reads.
+pub use userns::ChildNs;
+
 pub use arch::arch_name;
 pub use mask::{Mask, MaskedChild};
 pub use remote::MAX_HIDDEN;

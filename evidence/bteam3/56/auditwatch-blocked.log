@@ -1,0 +1,5 @@
+$ ./target/release/pmask-testcases auditwatch 2 /tmp/aw.log
+auditwatch: skip: AUDIT_SET refused: Connection refused (os error 111) (errno 111)
+exit=1
+$ cat /tmp/aw.log.ready
+skip: AUDIT_SET refused: Connection refused (os error 111) (errno 111)

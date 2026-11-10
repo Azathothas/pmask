@@ -40,6 +40,37 @@ pub enum ProcMode {
     Plain,
 }
 
+/// The namespaces a redaction-mode child asks for.
+///
+/// The user namespace is always created: it is what makes the others
+/// possible for an unprivileged caller.  The mount namespace is created
+/// when a private `/proc` or a private `/tmp` is wanted.  Every field
+/// here is a request; a refusal is reported to the caller rather than
+/// aborting the run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChildNs {
+    /// Create a PID namespace (the child is pid 1 of it).
+    pub pid: bool,
+    /// Create a network namespace.
+    pub net: bool,
+    /// Mount a fresh `/proc` inside the mount namespace.
+    pub procfs: bool,
+    /// Mount an empty tmpfs on `/tmp` inside the mount namespace.
+    pub private_tmp: bool,
+}
+
+impl ChildNs {
+    /// True when at least one namespace or mount was asked for.
+    pub fn wanted(&self) -> bool {
+        self.pid || self.net || self.procfs || self.private_tmp
+    }
+
+    /// The mount namespace is implied by any mount request.
+    pub fn mount(&self) -> bool {
+        self.procfs || self.private_tmp
+    }
+}
+
 fn wait_for(pid: libc::pid_t) -> io::Result<libc::c_int> {
     let mut status: libc::c_int = 0;
     loop {
@@ -107,13 +138,17 @@ fn close_quiet(fd: libc::c_int) {
     }
 }
 
-/// Fork like `fork()` into new user, PID and mount namespaces.
+/// Fork like `fork()` into the namespaces `ns` asks for.
 ///
-/// Return 0 in the child and the child pid in the parent. The child is pid 1
-/// of the new PID namespace. The child waits on a pipe until the parent has
-/// written `setgroups`, `uid_map` and `gid_map`. If a write fails, the parent
-/// kills the child with SIGKILL, reaps it, and returns the error.
-pub fn fork_in_userns() -> io::Result<libc::pid_t> {
+/// Return 0 in the child and the child pid in the parent.  The user
+/// namespace is always created; `CLONE_NEWPID` is added when `ns.pid` is
+/// set, so that child is pid 1 of the new PID namespace, and
+/// `CLONE_NEWNS` is added whenever a mount is wanted (`ns.procfs` or
+/// `ns.private_tmp`) or `ns.pid` is set.  The child waits on a pipe until
+/// the parent has written `setgroups`, `uid_map` and `gid_map`.  If a write
+/// fails, the parent kills the child with SIGKILL, reaps it, and returns the
+/// error.
+pub fn fork_in_userns_with(ns: ChildNs) -> io::Result<libc::pid_t> {
     // Two pipes: `go` releases the child after the parent has written the
     // id maps, and `rdy` says the child has restored its dumpable flag so
     // the parent can open /proc/<pid>/setgroups at all.
@@ -136,7 +171,22 @@ pub fn fork_in_userns() -> io::Result<libc::pid_t> {
     // SAFETY: geteuid and getegid cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
 
-    let flags = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS | libc::SIGCHLD as libc::c_ulong;
+    // The mount namespace is the only namespace a private /proc or a
+    // private /tmp needs, and a PID namespace does not imply one.  An
+    // explicit request wins; otherwise ask for it exactly when a mount is
+    // wanted, so `--redact --isolate=net` gets a network namespace and the
+    // host's mount table.
+    let mount = ns.mount();
+    let mut flags = CLONE_NEWUSER | libc::SIGCHLD as libc::c_ulong;
+    if ns.pid {
+        flags |= CLONE_NEWPID;
+    }
+    if mount {
+        flags |= CLONE_NEWNS;
+    }
+    if ns.net {
+        flags |= libc::CLONE_NEWNET as libc::c_ulong;
+    }
     // SAFETY: a raw clone without CLONE_VM behaves like fork. All other
     // arguments are zero: the stack, parent_tid, child_tid and tls arguments
     // appear in a different order on x86_64 and aarch64, and zeros make the
@@ -205,7 +255,15 @@ pub fn fork_in_userns() -> io::Result<libc::pid_t> {
     // and the setgroups write fails with EACCES on a hardened supervisor.
     let mut ready = 0u8;
     // SAFETY: `ready` is a valid one byte buffer.
-    let n = unsafe { libc::read(rdy_r, &mut ready as *mut u8 as *mut libc::c_void, 1) };
+    let n = unsafe {
+        loop {
+            let n = libc::read(rdy_r, &mut ready as *mut u8 as *mut libc::c_void, 1);
+            if n < 0 && *libc::__errno_location() == libc::EINTR {
+                continue;
+            }
+            break n;
+        }
+    };
     close_quiet(rdy_r);
     if n != 1 {
         close_quiet(go_w);
@@ -305,6 +363,45 @@ pub fn child_setup_proc() -> io::Result<ProcMode> {
         last = err;
     }
     Err(last)
+}
+
+/// Create the namespaces in `ns` in a throwaway child and report whether
+/// the whole set came up.  Used before a run so a set the kernel refuses
+/// is named in the report instead of being discovered at the fork.
+pub fn probe(ns: ChildNs) -> io::Result<()> {
+    let pid = fork_in_userns_with(ns)?;
+    if pid == 0 {
+        // SAFETY: the child only exits.
+        unsafe { libc::_exit(0) };
+    }
+    match wait_for(pid) {
+        Ok(status) if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 => Ok(()),
+        _ => Err(io::Error::from_raw_os_error(libc::EPERM)),
+    }
+}
+
+/// Mount an empty tmpfs of mode 1777 on `/tmp` in the calling process's
+/// own mount namespace.  Used by the redaction-path composition, where
+/// the caller asked for a private `/tmp` without a private `/proc` or the
+/// rest of the isolation set.  Returns the bare errno so the child can
+/// print it without allocating.
+pub fn child_private_tmp() -> io::Result<()> {
+    // SAFETY: constant NUL-terminated strings; the call runs in the child's
+    // own mount namespace.
+    let rc = unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/tmp".as_ptr(),
+            c"tmpfs".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NODEV) as libc::c_ulong,
+            c"mode=1777".as_ptr() as *const libc::c_void,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// `CLONE_NEWUTS`.
@@ -445,7 +542,10 @@ mod tests {
             eprintln!("skip: user namespaces are not available here");
             return;
         }
-        let pid = match fork_in_userns() {
+        let pid = match fork_in_userns_with(ChildNs {
+            pid: true,
+            ..ChildNs::default()
+        }) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("skip: fork_in_userns refused: {}", e);

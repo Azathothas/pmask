@@ -1,0 +1,17 @@
+sup=55999 pay=56002
+sup_cmdline=qa44-55997|
+pay_cmdline=qa44-55997|
+pay_comm=qa44-55997
+environ head=EACCES-or-other
+maps head=EACCES-or-other
+auxv head=EACCES-or-other
+exe head=EACCES-or-other
+fd ls=denied
+fd/ ls=denied
+environ [ -r ]=no
+maps [ -r ]=yes
+exe [ -r ]=no
+stat48_51 0 0 0 0
+/tmp/probe44.sh: 27: cannot open /proc/56002/maps: Permission denied
+maps_lines=
+exe_link=

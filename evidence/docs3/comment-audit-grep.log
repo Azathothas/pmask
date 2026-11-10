@@ -1,0 +1,36 @@
+# comment audit excerpts from qa-base
+--- src/tracer.rs:34-36
+    pub no_dumpable: bool,
+    /// The children carry a seccomp filter that traps `prctl(PR_SET_NAME)`
+    /// (`SECCOMP_RET_TRACE`); the tracer reverts renames to the label.
+--- src/tracer.rs:1293,1294
+    /// `PTRACE_EVENT_SECCOMP`: the children carry a filter that traps
+    /// `prctl(PR_SET_NAME)` only.  The rename is redirected to the label.
+--- src/rexec.rs:28,29
+//! - Tools that look for `memfd:` executables can flag the process.  The
+//!   label sets the memfd name.
+--- src/rexec.rs:332
+/// Copy `program` into a sealed memfd named after `label`.
+--- src/daemon.rs:150
+//! # Secret store
+--- src/run.rs:347,349
+    /// Record that the run asks for a non-dumpable payload
+    /// (`--no-dumpable`), so the report's `payload_dumpable` is false.
+    /// The redaction mode applies it at each exec; the isolate and plain
+--- src/run.rs:839,841
+            // The child restores dumpability before its readiness byte,
+            // and the redaction mode sets PR_SET_DUMPABLE=0 at each exec
+            // only when `--no-dumpable` is set.  A `--secret` run is
+--- src/secret.rs:718,719
+/// Returns the process exit status: 0 on success, 1 when the secret cannot
+/// be found or read, 255 on a usage error.
+--- src/tracer.rs:358,362
+    /// `master` is forked and blocked reading `go_fd`.  The tracer seizes
+    /// it, releases it by writing one byte to `go_fd`, then takes the
+    /// child's `SIGSTOP` handshake stop as the point from which the first
+    /// exec is supervised.
+    pub fn supervise(
+--- src/tracer.rs:484
+        // Signal 0 suppresses the handshake SIGSTOP.
+--- src/cli.rs:249
+    /// `--no-dumpable`: the run report's `payload_dumpable` is false.

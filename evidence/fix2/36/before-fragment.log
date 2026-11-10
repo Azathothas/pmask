@@ -1,0 +1,21 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+FAIL qa36-f17-report-text-refused (rc=0 err=)
+FAIL qa36-f17-report-text-names-the-default (err=)
+FAIL qa36-f17-report-plain-refused (rc=0 err=)
+FAIL qa36-f17-report-plain-names-the-default (err=)
+PASS qa36-f17-control-json-still-accepted
+PASS qa36-f22-daemon-refuses-image
+FAIL qa36-f22-man-daemon-section-names-image (man page omits --image)
+PASS qa36-f22-man-daemon-section-is-present
+PASS qa36-f25-missing-secret-is-one (exit 1)
+PASS qa36-f25-usage-error-is-255 (exit 255)
+PASS qa36-f25-control-store-get-works
+FAIL qa36-f25-man-documents-the-convention (the page does not state it)
+FAIL qa36-f27-help-says-NAME (PMASK_SECRET_<N>)
+FAIL qa36-f27-help-drops-the-N-spelling
+PASS qa36-f27-man-says-NAME
+FAIL qa36-f27-code-and-help-agree (the help text changed under the test)
+FAIL qa36-f28-help-names-the-argv0-placeholder (the placeholder is undocumented)
+FAIL qa36-f28-man-names-the-argv0-placeholder
+PASS qa36-f28-argv0-can-override-the-placeholder
+== VERDICT: FAIL=11 ==

@@ -24,13 +24,45 @@ if command -v python3 >/dev/null 2>&1 && [ -f "$BIN_DIR/../scripts/unwrap_audit.
 else
     echo "SKIP unwrap-audit (no python3 or scripts/ staged)"
 fi
+# The completions are static tables for a hand-written parser, so the only
+# way they stay correct is a check that reads the parser.  It needs no
+# binary and no host capability, so a missing script is a failure.
+echo "################ completions"
+if [ -f "$BIN_DIR/.vm-staged" ]; then
+    echo "SKIP completions (the VM tree has no repository: src/ and completions/ are not staged; the native gate runs this)"
+elif [ -f "$BIN_DIR/../scripts/check-completions.sh" ]; then
+    sh "$BIN_DIR/../scripts/check-completions.sh" || FAIL=1
+else
+    echo "FAIL completions (scripts/check-completions.sh is absent)"
+    FAIL=1
+fi
+# The per-issue QA fragments.  run.sh orchestrates the suites and qa.sh
+# orchestrates the fragments, so one gate cannot silently skip the other.
+echo "################ qa fragments"
+if [ -f qa.sh ]; then
+    sh qa.sh || FAIL=1
+elif [ -f "$BIN_DIR/.vm-staged" ]; then
+    echo "SKIP qa fragments (tests/qa.sh is not staged in this VM tree)"
+else
+    echo "FAIL qa fragments (tests/qa.sh is absent)"
+    FAIL=1
+fi
 # compare.sh and conformance.sh are measurements and honesty checks rather
 # than pass/fail suites, so they run near the end and their verdict line
 # decides.  The speed and zapper comparisons live in measurements/ and are
 # not part of this gate.
 for suite in validate suite stress edge daemon daemon_neg options core audit store isolation lease secrets compare conformance regressions; do
     if [ ! -f "$suite.sh" ]; then
-        echo "SKIP $suite (absent)"
+        # The micro-VM stages only nine suites and marks the tree with
+        # `.vm-staged`, so an absent suite there is expected.  In the native
+        # gate an absent suite is a missing check: failing here is the point,
+        # because "SKIP (absent)" over an ALL-PASS line reads as coverage.
+        if [ -f "$BIN_DIR/.vm-staged" ]; then
+            echo "SKIP $suite (absent; this VM tree stages a subset)"
+        else
+            echo "FAIL $suite (tests/$suite.sh is absent)"
+            FAIL=1
+        fi
         continue
     fi
     echo "################ $suite.sh"

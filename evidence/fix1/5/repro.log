@@ -1,0 +1,21 @@
+# issue 5: pmask read / --version inside a masked payload
+
+## baseline: nested --version
+rc=255 stdout=[] stderr_bytes=11496
+
+## baseline: nested read T
+rc=255 stdout=[] stderr_bytes=11496
+
+## fixed: nested --version
+rc=0 stdout=[pmask 0.1.0-beta.1 (unknown)] stderr_bytes=0
+
+## fixed: nested read T
+rc=0 stdout=[SECRET-VALUE] stderr_bytes=0
+
+## fixed: nested read T under --unshare
+SECRET-VALUE
+rc=0
+
+## self-mask control: the supervisor's own /proc cmdline is the label
+1386179 cmdline=[lab-self|]
+1386188 cmdline=[lab-self|]

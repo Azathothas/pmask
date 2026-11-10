@@ -1,0 +1,32 @@
+# environ shapes under a mask
+# kernel 6.12.113+deb13-amd64 uid 1000
+== default (pid 84944)
+bytes=0 nuls=0 envspan=0
+0000000
+== no-exact (pid 84959)
+bytes=3 nuls=3 envspan=3
+0000000  \0  \0  \0
+0000003
+== keep-env (pid 84977)
+bytes=61 nuls=3 envspan=61
+0000000   P   A   T   H   =   /   u   s   r   /   b   i   n   :   /   b
+0000016   i   n  \0   V   E   R   Y   S   E   C   R   E   T   =   h   u
+0000032   n   t   e   r   2  \0   T   O   K   E   N   =   C   A   N   A
+0000048   R   Y   -   p   m   a   s   k   -   e   n   v  \0
+0000061
+== keep-env=TOKEN (pid 84992)
+bytes=25 nuls=3 envspan=25
+0000000  \0  \0   T   O   K   E   N   =   C   A   N   A   R   Y   -   p
+0000016   m   a   s   k   -   e   n   v  \0
+0000025
+== keep-env=PATH (pid 85007)
+bytes=21 nuls=3 envspan=21
+0000000   P   A   T   H   =   /   u   s   r   /   b   i   n   :   /   b
+0000016   i   n  \0  \0  \0
+0000021
+
+== a literal: secret under --keep-env leaves no value in environ
+0000000   P   A   T   H   =   /   u   s   r   /   b   i   n   :   /   b
+0000016   i   n  \0   P   M   A   S   K   _   S   E   C   R   E   T   _
+0000032   T   =   3  \0
+0000036

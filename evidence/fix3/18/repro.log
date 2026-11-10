@@ -1,0 +1,28 @@
+### baseline: /tmp/basebin/pmaskd (qa-base, fa46e62)
+
+$ pmaskd -q -S $D/j.sock --job-timeout 9223372036854775807 &
+$ pmask --daemon $D/j.sock -- /bin/true
+  daemon bound: yes
+pmask: daemon /tmp/tmp.twZYguubvd/j.sock: failed to fill whole buffer
+bash: line 34: 2595677 Aborted                 /tmp/basebin/pmaskd -q -S "$D/j.sock" --job-timeout 9223372036854775807 2> "$D/base.err"
+  client rc=255
+  daemon alive after the job: NO (it panicked)
+  daemon stderr:
+    
+    thread 'main' (2595677) panicked at src/daemon.rs:2096:14:
+    overflow when adding duration to instant
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+### fixed: target/release/pmaskd
+
+$ pmaskd -q -S $D/f.sock --job-timeout 9223372036854775807
+  pmaskd: --job-timeout is 9223372036854775807 s; the limit is 315360000 s (ten years).  A value near u64::MAX would overflow the deadline and panic the daemon, so the limit is enforced rather than clamped
+  rc=0
+
+$ pmaskd -q -S $D/f.sock --io-timeout 18446744073709551615
+  pmaskd: --io-timeout is 18446744073709551615 s; the limit is 315360000 s (ten years).  A value near u64::MAX would overflow the deadline and panic the daemon, so the limit is enforced rather than clamped
+
+$ pmaskd -q -S $D/f.sock --job-timeout 315360000  (the cap, accepted)
+  socket bound
+cap-ok
+  client rc=0

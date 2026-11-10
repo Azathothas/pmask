@@ -1,0 +1,11 @@
+PASS qa23-tmpfiles-has-no-store-file-line
+PASS qa23-tmpfiles-keeps-the-directory-line
+PASS qa23-tmpfiles-directory-mode-is-0700
+PASS qa23-control-a-pre-created-store-file-breaks-init
+PASS qa23-fresh-directory-starts-empty
+PASS qa23-store-init-succeeds-in-a-tmpfiles-style-directory (rc=0)
+PASS qa23-store-init-writes-the-magic (98 bytes)
+PASS qa23-store-file-mode-is-0600
+PASS qa23-tmpfiles-names-no-store-file-in-any-form
+QA23: PASS
+fixed exit=0

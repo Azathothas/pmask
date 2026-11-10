@@ -1778,6 +1778,12 @@ fn release(
     w: &mut impl Write,
     narrow: Option<LeasePolicy>,
 ) -> io::Result<bool> {
+    // The request line is one command per line: a name with a line break
+    // would start, or split, a command.  A name is data.
+    if name.contains('\n') || name.contains('\r') {
+        reply_err(w, "a secret name must not contain LF or CR")?;
+        return Ok(false);
+    }
     if !shared.policy.allows(exe, name) {
         reply_err(
             w,
@@ -1980,6 +1986,18 @@ fn check_ok(line: &str) -> io::Result<usize> {
     }
 }
 
+/// True when `err` is the agent's refusal for a name it does not hold.
+///
+/// The reply is one `ERR` line and carries no code, so its text is the
+/// only discriminator.  The agent writes `no secret named '...'` for the
+/// absent case, and every other refusal names what failed (a locked
+/// store, a policy, a lease).  `pmask get` uses this to keep the manual's
+/// exit codes: 1 for an absent name, 255 for a transport or protocol
+/// error.
+pub fn is_missing_name(err: &io::Error) -> bool {
+    err.to_string().starts_with("no secret named ")
+}
+
 fn request(socket: Option<&PathBuf>, command: &str) -> io::Result<SecBuf> {
     let s = connect(socket)?;
     let mut w = s.try_clone()?;
@@ -2027,6 +2045,7 @@ impl FetchSpec {
     /// bound.  Anything else is part of the name, so a name that happens
     /// to contain `?` keeps working.
     pub fn parse(text: &str) -> io::Result<FetchSpec> {
+        crate::secret::validate_name(text)?;
         let Some((name, suffix)) = text.split_once('?') else {
             return Ok(FetchSpec {
                 name: text.to_string(),
@@ -2100,6 +2119,9 @@ pub fn fetch_leased(
     name: &str,
     lease: Option<LeasePolicy>,
 ) -> io::Result<SecBuf> {
+    // This is the last boundary before the name is pasted into a command
+    // line, so a caller that bypasses [`FetchSpec::parse`] is still safe.
+    crate::secret::validate_name(name)?;
     let command = match lease {
         None => format!("GET {}", name),
         Some(p) => format!("GETL {} {} {}", name, p.ttl_secs, p.uses),

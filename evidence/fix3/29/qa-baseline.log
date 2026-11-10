@@ -1,0 +1,11 @@
+PASS qa29-control-json-parses
+FAIL qa29-store-path-in-json (jq: jq: parse error: Invalid numeric literal at line 38, column 68)
+FAIL qa29-store-backslash-in-json (jq: jq: parse error: Invalid escape at line 38, column 68)
+FAIL qa29-agent-socket-in-json (jq: jq: parse error: Invalid numeric literal at line 39, column 54)
+FAIL qa29-require-quote-escaped (jq: jq: parse error: Invalid numeric literal at line 41, column 22)
+FAIL qa29-empty-require-refused (rc=0, err=[])
+FAIL qa29-eq-empty-require-refused (rc=0, err=[])
+FAIL qa29-comma-require-refused (rc=0, err=[])
+PASS qa29-valid-require-still-works
+PASS qa29-control-no-require-exits-zero
+== VERDICT: 7 failure(s) ==

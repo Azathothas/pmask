@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS d1-masked-pid-has-all-four-views (pid=348857 getdents64=present readdir=present stat=present kill0=present)
+NOTE d1 masked payload comm=[qa58-label] cmdline=[qa58-label|]; this family
+     never reads them, which is why it cannot fire
+PASS d2-control-unmasked-pid-has-the-same-views (pid=349603 getdents64=present readdir=present stat=present kill0=present)
+SKIP d3-processdecloak (sandfly-processdecloak: command not found)
+SKIP d4-unhide-sees-no-pmaks-pid (unhide: command not found)
+SKIP d5-chkproc-does-not-name-the-payload (chkproc: command not found)
+SKIP d6-rkhunter-hidden-procs (rkhunter: command not found)
+SKIP d7-pspy-prints-the-label (pspy: command not found)
+SKIP d8-zapper (zapper: command not found)
+SKIP d9-lsrootkit (lsrootkit: command not found)
+PASS d10-strace-attaches-to-the-control-only (control=[strace: Process 351038 attached])
+== QA58: PASS

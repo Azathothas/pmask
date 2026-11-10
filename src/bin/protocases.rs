@@ -28,7 +28,7 @@
 //!   connect-and-close SOCKET     connect and close at once
 //!   fds SOCKET N [ARGV...]       send N descriptors (0 and 5 are errors)
 //!   stall SOCKET                 send fds, then nothing; print the wait
-//!   as-uid UID SOCKET [ARGV...]  drop to UID, then send a correct request
+//!   as-uid UID SOCKET [ping]       drop to UID, then send a job or PING
 
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
@@ -349,6 +349,14 @@ fn as_uid(args: &[String]) -> ! {
     }
     let mut stream = connect(sock);
     send_first(&stream, VERSION, &three_fds());
-    let _ = stream.write_all(&frame(0, b"", &argv_from(&args[2..])));
+    // `as-uid UID SOCKET ping` asks the PING question as that uid, so a
+    // suite can check the daemon's answer (or its refusal) for a caller
+    // that is not the daemon's own account.  Every other form sends a
+    // job frame, which is what the authorisation check is the same for.
+    if args.get(2).map(String::as_str) == Some("ping") {
+        let _ = stream.write_all(MAGIC_PING);
+    } else {
+        let _ = stream.write_all(&frame(0, b"", &argv_from(&args[2..])));
+    }
     exit(print_response(&mut stream));
 }

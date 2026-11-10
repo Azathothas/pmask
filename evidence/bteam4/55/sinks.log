@@ -1,0 +1,31 @@
+pmask: warning: /etc/hostname is mode 0644; other accounts can read it
+{
+  "mode": "plain",
+  "mode_reason": "forced",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hardening": "locked",
+  "exit": {"code": 0, "signal": null},
+  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed": 0},
+  "secrets": [
+    {"name": "T", "locked": true, "secret_mem": false, "fd": 3}],
+  "notes": []
+}
+rc=0
+--- audit:
+pmask audit: header pid comm exe tracer cmdline_bytes nul_ratio fds
+pmask audit: pid=999511 comm=b4s exe=/usr/bin/sleep tracer=999510 cmdline_bytes=4 nul_ratio=0.25 fds=0:/dev/null,1:pipe:[77980519],2:pipe:[77980519]
+pmask audit: residue: 1 (exe, mem, pid)
+--- probe:
+pmask capability report
+  arch=x86_64 kernel=6.12.113+deb13-amd64 tier=redact+isolate
+
+  secret fds               active       
+  memfd_secret             unavailable  pages are locked but still reachable through the kernel direct map
+  mlock                    active       
+  non-dumpable             active       
+  metadata redaction       active       
+  exact cmdline window     active       
+  isolation                active       
+  landlock                 active       
+  no_new_privs             active       

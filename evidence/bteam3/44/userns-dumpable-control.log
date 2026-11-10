@@ -1,0 +1,25 @@
+=== control A: no userns, dumpable=0 ===
+set dumpable=0 pid=76648
+  environ denied
+  maps denied
+  auxv denied
+  exe denied
+  fd denied
+
+=== control B: userns (unshare -U -r), dumpable=0 ===
+set dumpable=0 pid=76655
+  environ ok
+  maps ok
+  auxv ok
+  exe ok
+  fd ok
+  nspid=76655
+=== control D: userns owned by root, payload uid 1000 (reader is uid 1000, not the owner) ===
+set dumpable=0 pid=81767
+pid=81764
+  nspid=81764 uid=1000	0	0	0
+  environ denied
+  maps denied
+  auxv denied
+  exe denied
+  fd denied

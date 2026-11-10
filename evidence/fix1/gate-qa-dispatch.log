@@ -1,0 +1,77 @@
+################ qa: qa.d/15.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa15-control-flags0-leaks
+PASS qa15-payload-fds
+PASS qa15-grandchild-fds
+PASS qa15-secret-still-works
+PASS qa15-probe-agrees
+################ qa: qa.d/16.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa16-keep-then-name
+PASS qa16-keep-then-name-narrow
+PASS qa16-name-then-keep
+PASS qa16-name-only
+PASS qa16-control-default
+################ qa: qa.d/17.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa17-head-payload-survives
+PASS qa17-head-not-sigabrt
+PASS qa17-first-row
+PASS qa17-full-audit-works
+PASS qa17-payload-exit-status
+################ qa: qa.d/33.sh
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa33-lf-refused
+PASS qa33-cr-refused
+PASS qa33-lf-isolate
+PASS qa33-lf-no-redact
+PASS qa33-nul-covered-by-the-unit-test
+PASS qa33-tab-accepted
+PASS qa33-label-lf-refused-control
+################ qa: qa.d/4.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa4-control-plain-cmdline-is-label
+PASS qa4-control-plain-environ-empty
+PASS qa4-control-plain-comm-is-label
+PASS qa4-control-plain-marker-not-in-cmdline
+PASS qa4-control-plain-payload-alive
+PASS qa4-negative-control-marker-visible
+PASS qa4-unshare-cmdline-is-label
+PASS qa4-unshare-environ-empty
+PASS qa4-unshare-comm-is-label
+PASS qa4-unshare-marker-not-in-cmdline
+PASS qa4-unshare-payload-alive
+PASS qa4-unshare-is-pid1
+PASS qa4-unshare-private-pidns
+PASS qa4-isolate-cmdline-is-label
+PASS qa4-isolate-environ-empty
+PASS qa4-isolate-comm-is-label
+PASS qa4-isolate-marker-not-in-cmdline
+PASS qa4-isolate-payload-alive
+PASS qa4-isolate-is-pid1
+PASS qa4-isolate-private-pidns
+PASS qa4-handshake-is-tracer-interrupt
+################ qa: qa.d/5.sh
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa5-version
+PASS qa5-read
+PASS qa5-read-no-help
+PASS qa5-control-no-redact
+PASS qa5-control-fd-env
+PASS qa5-selfmask-still-on
+PASS qa5-unshare-read
+################ qa: qa.d/60.sh
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa60-both-comm-is-label
+PASS qa60-both-cmdline-is-label
+PASS qa60-both-payload-alive
+PASS qa60-no-silent-continue
+PASS qa60-both-outcome-is-defined
+PASS qa60-control-plain-rename-lands
+PASS qa60-watch-comm-is-label
+PASS qa60-watch-cmdline-is-label
+PASS qa60-watch-payload-alive
+PASS qa60-unshare-comm-is-label
+PASS qa60-unshare-cmdline-is-label
+PASS qa60-unshare-payload-alive
+################ QA: PASS cases=7

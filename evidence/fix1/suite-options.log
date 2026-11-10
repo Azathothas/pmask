@@ -1,0 +1,90 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS o1-help-names-selfmask-escape
+PASS o1-help-documents-dash-label
+PASS o2-argv0-override
+PASS o3-default-argv0-is-original-string
+PASS o4-comm-override
+PASS o4-comm-over-15-bytes-rejected
+PASS o5-nul-label-rejected-run-and-spawn
+PASS o6-newline-label-rejected
+PASS o7-dash-label-forms-agree
+PASS o8-debug-hides-env
+PASS o9-env-reaches-program
+PASS o9-env-file-reaches-program
+PASS o9-env-and-env-file-hidden-from-proc
+PASS o9-control-keep-env-secret-visible
+PASS o10-keep-env-name-visible-secret-hidden
+PASS o10-control-default-redacts-path
+PASS o11-args-from-fd-secret-absent
+PASS o11-args-from-fd-program-gets-arguments
+PASS o11-control-observer-sees-plain-argv
+options.sh: 334: cannot open /proc/499057/environ: Permission denied
+PASS o12-supervisor-comm-is-label
+PASS o12-supervisor-cmdline-is-label
+PASS o12-supervisor-hides-argv-and-environ
+PASS o12-control-no-selfmask-leaves-argv
+PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
+INFO self-entry-window 479ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
+PASS o14-on-exit-detach-keeps-background-child
+PASS o14-on-exit-kill-terminates-background-child
+PASS o14-on-exit-wait-waits (detach=0s wait=3s)
+SKIP o15-no-dumpable (needs root to switch to uid 1000)
+PASS o16-no-new-privs-sets-flag
+PASS o16-watch-rename-implies-no-new-privs
+PASS o16-control-default-leaves-flag-clear
+PASS o17-watch-rename-keeps-label
+PASS o17-control-without-watch-rename-comm-changes
+PASS o17b-watch-rename-refusal-is-fatal
+PASS o17b-watch-rename-success-is-silent
+PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
+PASS o18-rexec-maps-has-no-disk-path
+PASS o18-control-exe-is-disk-path
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=30)
+PASS o20-daemon-with-mask-options-warns
+PASS o20-quiet-suppresses-daemon-warning
+PASS o20-control-label-only-has-no-warning
+PASS o21-env-file-no-separator-refused
+PASS o21-env-file-empty-key-refused
+PASS o21-env-file-nul-byte-refused
+PASS o21-control-good-key-accepted
+PASS o22-secret-keeps-path
+PASS o22-secret-keeps-home
+PASS o22-secret-fd-map-present
+PASS o22-plain-secret-keeps-path
+PASS o23-args-from-fd-oversize-refused
+PASS o24-daemon-refuses-secret
+PASS o24-daemon-refuses-isolate
+PASS o24-daemon-refuses-no-redact
+PASS o24-control-daemon-alone-connects
+PASS o25-doctor-help-names-landlock
+PASS o25-doctor-accepts-landlock
+PASS o26-secret-args-from-fd-runs-the-program
+PASS o27-report-carries-the-degradation-counts
+PASS o27-refused-window-relocation-is-counted
+PASS o27-secret-run-is-dumpable
+PASS o27-no-dumpable-is-reported
+PASS o28-plain-refusal-names-the-flag-to-drop
+PASS o28-no-secret-close-on-exec-is-named
+PASS o28-help-says-when-the-flag-is-refused
+PASS o29-report-refused-before-args-from-fd
+PASS o29b-report-refused-on-a-plain-run
+PASS o29c-report-refused-on-a-daemon-job
+PASS o30-image-path-runs-from-a-memfd
+PASS o30b-image-stdin-runs-from-a-memfd
+PASS o30c-image-from-fd-runs-from-a-memfd
+PASS o30d-image-non-elf-refused
+PASS o30e-image-and-args-from-fd-refused
+PASS o31-rexec-named-temp-carrier
+PASS o31-rexec-temp-file-is-removed
+PASS o32-refused-image-is-reported (rc=126)
+PASS o32-explicit-disk-fallback-is-reported
+PASS o33-hugetlb-reports-its-backing (pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd)
+PASS o34-rexec-runs-from-a-noexec-mount (plain refused, rexec ran)
+PASS o35-argv0-is-the-same-on-the-disk-and-image-paths
+PASS o36-exec-once-reuses-one-image (1 inode in 100 execs)
+PASS o36-control-without-exec-once-runs-from-disk
+PASS o36-exec-once-keys-by-program (2 inodes for 2 programs)
+PASS o36-exec-once-temp-file-is-removed
+PASS o37-scope-name-ran
+PASS o38-empty-env-key-is-refused-by-name
+== VERDICT: FAIL=0 ==

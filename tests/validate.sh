@@ -271,13 +271,31 @@ do
     arg="$shape$marker"
     "$CASES" sleeper "$arg" >/dev/null 2>&1 &
     cp=$!
-    sleep 0.2
-    ctl=$(sightings "$marker")
+    # Wait for the control to be observable instead of sampling once: on a
+    # loaded host the fork/exec window outlives a fixed sleep, and a zero
+    # control makes the "wrapped=0" half vacuous.
+    ctl=0
+    ctl_i=0
+    while [ "$ctl_i" -lt 40 ]; do
+        ctl=$(sightings "$marker")
+        [ "$ctl" -ge 1 ] && break
+        sleep 0.05 2>/dev/null || sleep 1
+        ctl_i=$((ctl_i + 1))
+    done
     kill -9 "$cp" 2>/dev/null
     wait "$cp" 2>/dev/null
     "$TOOL" -q -l "$FAKE" "$CASES" sleeper "$arg" >/dev/null 2>&1 &
     wp=$!
-    sleep 0.4
+    # The masked run needs the same settle time before the sweep; sample
+    # until the label is visible, then take one more reading.
+    wp_i=0
+    # comm_count ends in `echo`, so its exit status is always 0: test the
+    # count itself, not the function's status.
+    while [ "$wp_i" -lt 40 ]; do
+        [ "$(comm_count "$FAKE15")" -gt 0 ] && break
+        sleep 0.05 2>/dev/null || sleep 1
+        wp_i=$((wp_i + 1))
+    done
     wrapped=$(sightings "$marker")
     kill -9 "$wp" 2>/dev/null
     kill_label "$FAKE15" 2>/dev/null

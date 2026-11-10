@@ -58,13 +58,27 @@ use std::time::Duration;
 
 static SESSION: Mutex<()> = Mutex::new(());
 
-/// The argument vector of this process, copied out of
-/// `/proc/self/cmdline` into owned memory.
+/// The argument vector of this process, in owned memory.
 ///
 /// A caller that reads its options from this copy can redact the
 /// kernel-served argv block immediately at startup, before parsing, which
 /// is the earliest point a supervisor can act on its own metadata.
+///
+/// The vector comes from the runtime's own copy (`std::env::args_os()`),
+/// not from `/proc/self/cmdline`.  The kernel's copy is what the block
+/// holds *now*, and a process that is itself running under an exact mask
+/// has already had that window moved onto the label; reading it would
+/// turn a nested `pmask read NAME` into `pmask <label>`, which finds no
+/// subcommand and prints the help text (issue 5).  `/proc/self/cmdline`
+/// stays as the fallback for the one case where the runtime vector is
+/// empty: a caller that cleared it, or an exec the library did not make.
+/// The block is zeroed afterwards exactly as before, so the self-mask
+/// property is unchanged.
 pub fn snapshot_argv() -> Vec<OsString> {
+    let from_runtime: Vec<OsString> = std::env::args_os().collect();
+    if !from_runtime.is_empty() {
+        return from_runtime;
+    }
     let raw = std::fs::read("/proc/self/cmdline").unwrap_or_default();
     split_cmdline(&raw)
 }
@@ -158,11 +172,20 @@ pub struct Mask {
     watch_rename: bool,
     no_new_privs: bool,
     unshare: bool,
+    /// The namespace set `--redact --isolate` asked the redaction child to
+    /// enter.  `None` is the plain redaction path.
+    namespaces: Option<crate::userns::ChildNs>,
     rexec: bool,
     rexec_image: Option<crate::rexec::Source>,
     rexec_exec_once: bool,
     rexec_hugetlb: bool,
     rexec_allow_disk: bool,
+    /// `--memfd-name NAME`: the memfd name for the image family.  `None`
+    /// keeps the sanitised label.
+    rexec_memfd_name: Option<String>,
+    /// `--secret-fd-name NAME`: the memfd name for a delivered secret.
+    /// `None` keeps [`crate::mem::DEFAULT_SECRET_FD_NAME`].
+    secret_fd_name: Option<String>,
     rexec_cache: crate::rexec::SharedCache,
     scope_name: Option<String>,
     run_as: Option<(u32, u32)>,
@@ -210,11 +233,14 @@ impl std::fmt::Debug for Mask {
             .field("watch_rename", &self.watch_rename)
             .field("no_new_privs", &self.no_new_privs)
             .field("unshare", &self.unshare)
+            .field("namespaces", &self.namespaces)
             .field("rexec", &self.rexec)
             .field("rexec_image", &self.rexec_image.is_some())
             .field("rexec_exec_once", &self.rexec_exec_once)
             .field("rexec_hugetlb", &self.rexec_hugetlb)
             .field("rexec_allow_disk", &self.rexec_allow_disk)
+            .field("rexec_memfd_name", &self.rexec_memfd_name)
+            .field("secret_fd_name", &self.secret_fd_name)
             .field("scope_name", &self.scope_name)
             .field("run_as", &self.run_as)
             .field(
@@ -245,7 +271,28 @@ pub fn validate_label(label: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_env_key(key: &OsStr) -> io::Result<()> {
+/// Check a `comm` name for the bytes that corrupt `ps` output or the
+/// parenthesised `comm` field of `/proc/<pid>/stat`: NUL, LF and CR.  The
+/// name is at most `COMM_MAX` bytes.  Same rule as [`validate_label`].
+pub fn validate_comm(comm: &str) -> io::Result<()> {
+    if comm.len() > crate::COMM_MAX {
+        return Err(invalid("comm must be at most 15 bytes"));
+    }
+    if comm.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
+        return Err(invalid("comm must not contain NUL, LF or CR bytes"));
+    }
+    Ok(())
+}
+
+/// Check an environment variable name for the bytes the kernel and the
+/// env-file parser accept: printable ASCII except space and `=`, and
+/// never empty.
+///
+/// The env-file parser (`daemon.rs`) applies the same range, so `--env`
+/// and `--env-file` accept exactly the same names.  A name reaches
+/// `/proc/<pid>/environ` and the daemon's line protocol, both of which a
+/// reader splits on whitespace or newlines.
+pub fn validate_env_key(key: &OsStr) -> io::Result<()> {
     let b = key.as_bytes();
     let shown = String::from_utf8_lossy(b);
     if b.is_empty() {
@@ -264,6 +311,13 @@ fn validate_env_key(key: &OsStr) -> io::Result<()> {
         return Err(invalid(&format!(
             "environment variable name {:?} must not contain NUL",
             shown
+        )));
+    }
+    if let Some(bad) = b.iter().find(|&&c| !(0x21..=0x7e).contains(&c)) {
+        return Err(invalid(&format!(
+            "environment variable name {:?} must be printable ASCII without spaces or \
+             control bytes (0x{:02x} is not)",
+            shown, bad
         )));
     }
     Ok(())
@@ -294,11 +348,14 @@ impl Mask {
             watch_rename: false,
             no_new_privs: false,
             unshare: false,
+            namespaces: None,
             rexec: false,
             rexec_image: None,
             rexec_exec_once: false,
             rexec_hugetlb: false,
             rexec_allow_disk: false,
+            rexec_memfd_name: None,
+            secret_fd_name: None,
             rexec_cache: crate::rexec::shared_cache(),
             scope_name: None,
             run_as: None,
@@ -354,6 +411,11 @@ impl Mask {
     /// Keep the named environment variables visible in
     /// `/proc/<pid>/environ`.  Every other variable stays redacted.
     /// Repeated calls add names.
+    ///
+    /// An explicit list wins over an earlier [`Mask::keep_environ_visible`]:
+    /// the caller asked twice, and the narrower request is the later one.
+    /// A later `keep_environ_visible` still wins over this call, because
+    /// the last request is the one the operator meant.
     pub fn keep_env_vars<I, S>(mut self, names: I) -> Mask
     where
         I: IntoIterator<Item = S>,
@@ -363,6 +425,11 @@ impl Mask {
             let n: String = n.into();
             self.keep_env_names.push(n.into_bytes());
         }
+        // The list is the narrower request: `--keep-env` followed by
+        // `--keep-env=NAME` must show NAME only, not the whole inherited
+        // environment (issue 16).  A later `--keep-env` still turns the
+        // redaction off again, because the last request wins.
+        self.redact_environ = true;
         self
     }
 
@@ -450,6 +517,20 @@ impl Mask {
         self
     }
 
+    /// Enter the requested namespaces in the redaction child, before its
+    /// exec: the `--redact --isolate` composition.  The tracer still owns
+    /// the tree; only the payload's view is namespaced.  A set the host
+    /// cannot grant is reported and the run continues with what it got,
+    /// the same contract as [`Mask::unshare`].
+    ///
+    /// A private `/proc` is only mounted when `ns.procfs` is set, and the
+    /// private `/tmp` only when `ns.private_tmp` is, so the payload gets
+    /// exactly the set the caller named.
+    pub fn namespaces(mut self, ns: crate::userns::ChildNs) -> Mask {
+        self.namespaces = Some(ns);
+        self
+    }
+
     /// Copy the program into a sealed memfd and exec from it, so
     /// `/proc/<pid>/exe` names the memfd and not the file.  When the copy
     /// fails, one line is printed and the run uses the normal exec.
@@ -515,6 +596,44 @@ impl Mask {
         self.rexec_allow_disk = true;
         self.rexec = true;
         self
+    }
+
+    /// Name the image memfd `name` instead of the label.
+    ///
+    /// This is `--memfd-name NAME`: `/proc/<pid>/exe` and the executable
+    /// `maps` entries then read `/memfd:<name> (deleted)` instead of
+    /// `/memfd:<label> (deleted)`.  The bytes and the sealing are
+    /// unchanged; only the string a reader sees changes.  The name is
+    /// checked by [`crate::mem::validate_memfd_name`] at `run`/`spawn`.
+    /// It does not imply [`Mask::rexec`]: a run that never prepares an
+    /// image names nothing, and says so once at the default verbosity
+    /// rather than looking applied.
+    pub fn memfd_name(mut self, name: impl Into<String>) -> Mask {
+        self.rexec_memfd_name = Some(name.into());
+        self
+    }
+
+    /// Name a delivered secret's memfd `name` instead of
+    /// [`crate::mem::DEFAULT_SECRET_FD_NAME`].
+    ///
+    /// This is `--secret-fd-name NAME`.  The descriptor's content and
+    /// seals are unchanged; only `/proc/<pid>/fd/N`'s `/memfd:` component
+    /// changes, so a sweep for the default literal finds nothing.  The
+    /// name is checked by [`crate::mem::validate_memfd_name`] at
+    /// `run`/`spawn` and again when the descriptor is created.
+    pub fn secret_fd_name(mut self, name: impl Into<String>) -> Mask {
+        self.secret_fd_name = Some(name.into());
+        self
+    }
+
+    /// The `--secret-fd-name` value, when one was chosen.
+    pub fn secret_fd_name_value(&self) -> Option<&str> {
+        self.secret_fd_name.as_deref()
+    }
+
+    /// The `--memfd-name` value, when one was chosen.
+    pub fn memfd_name_value(&self) -> Option<&str> {
+        self.rexec_memfd_name.as_deref()
     }
 
     /// True when `--image`, `--image-from-fd` or `--image -` supplied the
@@ -605,8 +724,8 @@ impl Mask {
 
     /// Run the program with an explicit environment instead of the
     /// inherited one (replaces it wholesale).  `run` and `spawn` return
-    /// an `InvalidInput` error for a name that is empty or contains `=`
-    /// or NUL.
+    /// an `InvalidInput` error for a name that is empty or contains `=`,
+    /// NUL, a space or a byte outside printable ASCII.
     pub fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
         mut self,
         vars: impl IntoIterator<Item = (K, V)>,
@@ -642,12 +761,10 @@ impl Mask {
             validate_label(l)?;
         }
         if let Some(c) = &self.comm {
-            if c.len() > crate::COMM_MAX {
-                return Err(invalid("comm must be at most 15 bytes"));
-            }
-            if c.bytes().any(|b| b == 0) {
-                return Err(invalid("comm must not contain NUL"));
-            }
+            // LF and CR break the parenthesised `comm` field of
+            // `/proc/<pid>/stat`, which readers split on newlines; NUL
+            // truncates the kernel's `comm` copy.  Same rule as the label.
+            validate_comm(c)?;
         }
         if let Some(a) = &self.argv0 {
             if a.as_bytes().contains(&0) {
@@ -666,6 +783,12 @@ impl Mask {
             if s.bytes().any(|b| b == 0) {
                 return Err(invalid("scope name must not contain NUL"));
             }
+        }
+        if let Some(n) = &self.rexec_memfd_name {
+            crate::mem::validate_memfd_name(n)?;
+        }
+        if let Some(n) = &self.secret_fd_name {
+            crate::mem::validate_memfd_name(n)?;
         }
         Ok(())
     }
@@ -731,9 +854,16 @@ impl Mask {
             audit: self.audit,
             rexec_cache: self.rexec_cache.clone(),
             rexec_hugetlb: self.rexec_hugetlb,
+            rexec_memfd_name: self.rexec_memfd_name.clone(),
             rexec_per_exec: self.rexec_exec_once
                 && self.rexec
                 && !self.unshare
+                // A mount namespace hides the supervisor's filesystem
+                // view: the cached image path is resolved in the
+                // supervisor's mount namespace, and the tracee cannot see
+                // it.  The same holds for the `--redact --isolate` set,
+                // which always creates a mount namespace.
+                && self.namespaces.is_none()
                 && self.run_as.is_none(),
             tree: TreeRegistry::default(),
         })
@@ -823,6 +953,21 @@ impl Mask {
             }
             unshare = false;
         }
+        // `--redact --isolate`: the child enters exactly the requested
+        // namespaces.  The user namespace is the only prerequisite; a
+        // requested namespace that the kernel then refuses is reported by
+        // `child_namespaces` in the session report, never swapped for a
+        // different set.
+        let mut namespaces = self.namespaces;
+        if namespaces.is_some() && !crate::userns::available() {
+            if !self.quiet {
+                eprintln!(
+                    "pmask: --isolate unavailable: user namespaces are not permitted here; \
+                     the tree is still redacted"
+                );
+            }
+            namespaces = None;
+        }
 
         if self.rexec_exec_once && !self.quiet {
             if unshare {
@@ -867,6 +1012,7 @@ impl Mask {
             if let Some(source) = source {
                 let opts = crate::rexec::Options {
                     hugetlb: self.rexec_hugetlb,
+                    memfd_name: self.rexec_memfd_name.clone(),
                 };
                 let prepared = match (&source, self.rexec_exec_once) {
                     (crate::rexec::Source::Path(p), true) => {
@@ -903,9 +1049,13 @@ impl Mask {
                         // the child cannot create a file between the fork
                         // and the exec without unsafe allocation.
                         let temp = if std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some() {
-                            crate::rexec::prepare_temp_named(&image, &label_text)
+                            crate::rexec::prepare_temp_named(
+                                &image,
+                                &label_text,
+                                &self.rexec_memfd_name,
+                            )
                         } else {
-                            crate::rexec::prepare_temp(&image, &label_text)
+                            crate::rexec::prepare_temp(&image, &label_text, &self.rexec_memfd_name)
                         };
                         match temp {
                             Ok(t) => rexec_temp = Some(std::sync::Arc::new(t)),
@@ -955,6 +1105,15 @@ impl Mask {
                 &self.rexec_image,
                 None | Some(crate::rexec::Source::Path(_))
             );
+        // A name that cannot be applied is a degradation, not a silent
+        // drop (invariant 13).  Either flag can be given without the mode
+        // that creates the object it names.
+        if self.rexec_memfd_name.is_some() && !self.rexec && !self.quiet {
+            eprintln!(
+                "pmask: --memfd-name has no effect: the run prepares no image, so add \
+                 --rexec, --image, --image-from-fd or --exec-once"
+            );
+        }
         if self.rexec_allow_disk && !rexec_allow_disk && !self.quiet {
             eprintln!(
                 "pmask: --rexec-allow-disk ignored: --image - and --image-from-fd have no \
@@ -976,6 +1135,7 @@ impl Mask {
                 "pmask: --watch-rename unavailable: seccomp filter not installed, errno ",
             ),
             msg_proc: c_text("pmask: --unshare unavailable: cannot mount private proc, errno "),
+            msg_tmp: c_text("pmask: --isolate: cannot mount the private /tmp, errno "),
             msg_rexec: c_text("pmask: --rexec: the sealed image could not be executed, errno "),
             msg_rexec_1: c_text("pmask: --rexec: execveat refused, trying /proc/self/fd; errno "),
             msg_rexec_2: c_text(
@@ -998,6 +1158,7 @@ impl Mask {
             fault_rexec_disk: std::env::var_os("PMASK_FAULT_REXEC_DISK").is_some(),
             fault_rexec_no_proc: std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some(),
             unshare,
+            namespaces,
             run_as: self.run_as,
             secret_fds: self.secret_fds.clone(),
         })
@@ -1038,8 +1199,15 @@ impl Mask {
         let (pid_tx, pid_rx) = mpsc::channel();
         let (st_tx, st_rx) = mpsc::channel();
         let cfg_thread = cfg.clone();
+        // A fixed name here names every supervised tree on the host: the
+        // task directory is not part of the label.  Naming the thread
+        // after the session label makes it read like the process it
+        // traces, and `cfg.label_comm` (the supervisor's own comm once the
+        // self-mask has run) is the fallback.  The live comm is not: the
+        // runner path calls this before the self-mask.
+        let thread_name = tracer_thread_name(&cfg.label, &cfg.label_comm);
         std::thread::Builder::new()
-            .name("pmask-tracer".into())
+            .name(thread_name)
             .spawn(move || {
                 let _g = session_lock();
                 let mut prepared = prepared;
@@ -1097,6 +1265,7 @@ pub struct Prepared {
     msg_nnp: CString,
     msg_seccomp: CString,
     msg_proc: CString,
+    msg_tmp: CString,
     msg_rexec: CString,
     msg_rexec_1: CString,
     msg_rexec_2: CString,
@@ -1132,6 +1301,9 @@ pub struct Prepared {
     /// `/proc/self/fd` works.  Read from `PMASK_FAULT_REXEC_NO_PROC`.
     fault_rexec_no_proc: bool,
     unshare: bool,
+    /// `--redact --isolate`: the namespaces the child enters before its
+    /// exec.  `None` for the plain redaction path.
+    namespaces: Option<crate::userns::ChildNs>,
     run_as: Option<(u32, u32)>,
     /// Descriptors to install at 3, 4, ... in the child.
     secret_fds: Vec<libc::c_int>,
@@ -1365,9 +1537,37 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
     let report_r = rep[0];
     let report_w = rep[1];
 
+    // `--unshare` asks for the historical user+pid+mount set with a
+    // private /proc.  `--redact --isolate` asks for exactly the namespaces
+    // in `p.namespaces`.  Both go through the same fork helper, so the
+    // id-map handshake and the report shape are shared.
+    //
+    // When both are given the requests compose: `--unshare` supplies the
+    // pid namespace and the private /proc, and every namespace the isolate
+    // list names is added to that set.  Taking one and dropping the other
+    // is the defect issue 19 removed from the CLI, and it would be just as
+    // silent here.
+    let unshare_ns = crate::userns::ChildNs {
+        pid: true,
+        net: false,
+        procfs: true,
+        private_tmp: false,
+    };
+    let ns: Option<crate::userns::ChildNs> = match (p.unshare, p.namespaces) {
+        (true, Some(iso)) => Some(crate::userns::ChildNs {
+            pid: true,
+            net: iso.net,
+            procfs: true,
+            private_tmp: iso.private_tmp,
+        }),
+        (true, None) => Some(unshare_ns),
+        (false, iso) => iso,
+    };
     let mut in_userns = false;
-    let pid: libc::pid_t = if p.unshare {
-        match crate::userns::fork_in_userns() {
+    // The set the child actually entered, for its post-fork setup.
+    let entered: Option<crate::userns::ChildNs> = ns;
+    let pid: libc::pid_t = match ns {
+        Some(ns) if ns.wanted() => match crate::userns::fork_in_userns_with(ns) {
             Ok(pid) => {
                 in_userns = true;
                 pid
@@ -1379,11 +1579,12 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
                 // SAFETY: plain fork; the child side is child_exec.
                 unsafe { libc::fork() }
             }
+        },
+        _ => {
+            // SAFETY: the child only calls async-signal-safe functions
+            // until execve/_exit; all buffers were built before the fork.
+            unsafe { libc::fork() }
         }
-    } else {
-        // SAFETY: the child only calls async-signal-safe functions until
-        // execve/_exit; all buffers were built before the fork.
-        unsafe { libc::fork() }
     };
     if pid < 0 {
         let e = io::Error::last_os_error();
@@ -1405,7 +1606,15 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
             // SAFETY: the child does not read its own report.
             unsafe { libc::close(report_r) };
         }
-        child_exec(p, in_userns && pid == 0, rdy_r, rdy_w, go_r, go_w, report_w);
+        child_exec(
+            p,
+            if in_userns { entered } else { None },
+            rdy_r,
+            rdy_w,
+            go_r,
+            go_w,
+            report_w,
+        );
     }
     // Parent side: keep `rdy_r` (the child's readiness byte), `go_w` (the
     // go signal) and `report_r`.  Close the others so the readiness pipe
@@ -1424,7 +1633,7 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
 /// Child side of `fork_prepared`.  Never returns.
 fn child_exec(
     p: &Prepared,
-    in_userns: bool,
+    entered: Option<crate::userns::ChildNs>,
     rdy_r: RawFd,
     rdy_w: RawFd,
     go_r: RawFd,
@@ -1463,6 +1672,13 @@ fn child_exec(
         // that can end the child (a refused setuid, a refused seccomp
         // filter) runs after this point, so a failure is reported from a
         // seized tracee instead of racing the tracer's `PTRACE_SEIZE`.
+        //
+        // The tracer stops this process with `PTRACE_INTERRUPT` before it
+        // writes the go byte.  The child must not stop itself: a
+        // `--unshare` child is pid 1 of its own pid namespace, and the
+        // kernel discards a job-control stop such a process sends to
+        // itself, which used to cost the whole session its redaction
+        // (issue 4).
         let mut byte = 0u8;
         loop {
             let n = libc::read(go_r, &mut byte as *mut u8 as *mut libc::c_void, 1);
@@ -1474,14 +1690,25 @@ fn child_exec(
             }
             libc::_exit(126);
         }
-        libc::raise(libc::SIGSTOP);
 
-        if in_userns {
-            if let Err(e) = crate::userns::child_setup_proc() {
-                if !quiet {
-                    child_note(&p.msg_proc, e.raw_os_error().unwrap_or(0));
+        if let Some(ns) = entered {
+            if ns.procfs {
+                if let Err(e) = crate::userns::child_setup_proc() {
+                    if !quiet {
+                        child_note(&p.msg_proc, e.raw_os_error().unwrap_or(0));
+                    }
                 }
             }
+            if ns.private_tmp {
+                if let Err(e) = crate::userns::child_private_tmp() {
+                    if !quiet {
+                        child_note(&p.msg_tmp, e.raw_os_error().unwrap_or(0));
+                    }
+                }
+            }
+            // Every mechanism of the isolation is independent; a namespace
+            // the caller asked for and the kernel refuses is reported by
+            // the tracer's own warning, not turned into a different set.
         }
 
         if p.no_new_privs && libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 && !quiet {
@@ -1767,6 +1994,81 @@ fn basename(s: &OsStr) -> String {
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
+/// Bytes of a thread name the kernel keeps: `TASK_COMM_LEN` is 16 with
+/// the terminating NUL.  A longer name is refused by
+/// `pthread_setname_np` (`ERANGE`) and the thread silently keeps the
+/// name it inherited.
+const TRACER_COMM_MAX: usize = 15;
+
+/// The fixed tracer thread name earlier releases used.  A thread that
+/// carries it is the exact fingerprint issue 38 removes, so the name
+/// chosen here never equals it, whatever the operator labels a session.
+const RETIRED_TRACER_COMM: &str = "pmask-tracer";
+
+/// `bytes` cut to the kernel's comm limit on a UTF-8 boundary.
+fn comm_prefix(bytes: &[u8]) -> String {
+    let cut = &bytes[..bytes.len().min(TRACER_COMM_MAX)];
+    let mut s = String::from_utf8_lossy(cut).into_owned();
+    if s.len() > TRACER_COMM_MAX {
+        // A lossy decode can widen one byte to three; cut at a character
+        // boundary so the name still fits the kernel's limit.
+        let mut end = TRACER_COMM_MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// True when `name` is a thread name the kernel takes whole and a
+/// line-oriented reader cannot mistake for two lines.
+fn usable_comm(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= TRACER_COMM_MAX
+        && !name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r'))
+        && name != RETIRED_TRACER_COMM
+}
+
+/// Choose the tracer thread's name: the session label, so that reading
+/// `/proc/<supervisor>/task/*/comm` names the session instead of the
+/// tool.  The label is cut to the kernel's 15-byte comm limit.
+///
+/// The fallback is `session_comm`, the supervisor's own `comm` as the
+/// session configures it: `--comm` when given, otherwise the label cut to
+/// the limit, and a single space when that is empty.  That is exactly the
+/// name a reader of `/proc/<supervisor>/comm` sees once the self-mask has
+/// run, so the thread and its process agree.
+///
+/// The *live* comm is deliberately not a candidate.  The runner path
+/// (`--secret`) calls `spawn` before it applies the self-mask, so at this
+/// point the process still carries the pre-mask binary name; falling back
+/// to it would name the thread `pmask` for a session labelled with a
+/// string the kernel cannot take.
+///
+/// The name order is the session's `comm` first and the label second.  The
+/// `comm` is what the supervisor and the payload actually show, so the
+/// thread must agree with it; `--comm` therefore wins over `--label` for
+/// the thread, exactly as it wins for every process's `comm`.
+///
+/// A label that is empty, that carries a NUL (the kernel would cut the
+/// name there), that carries LF or CR (a reader would see two lines), or
+/// that is the retired fixed name falls through to the next candidate, and
+/// then to a deterministic cut of the retired name.  The result is never
+/// empty, never contains NUL, LF or CR, and is never `pmask-tracer`.
+fn tracer_thread_name(label: &[u8], session_comm: &[u8]) -> String {
+    for candidate in [session_comm, label] {
+        let name = comm_prefix(candidate);
+        if usable_comm(&name) {
+            return name;
+        }
+    }
+    // Both candidates are unusable.  A session can label itself with the
+    // retired name and set `--comm` to it as well; dropping its last byte
+    // keeps the operator's own string and stays off the retired one.
+    RETIRED_TRACER_COMM[..RETIRED_TRACER_COMM.len() - 1].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1789,5 +2091,185 @@ mod tests {
             split_cmdline(b"a\0b"),
             vec![OsString::from("a"), OsString::from("b")]
         );
+    }
+
+    /// The kernel keeps 15 bytes and refuses a longer name whole.
+    fn cut(bytes: &[u8]) -> String {
+        comm_prefix(bytes)
+    }
+
+    #[test]
+    fn tracer_thread_name_is_the_session_comm() {
+        // The ordinary case: no `--comm`, so the session comm is the label
+        // cut to 15 bytes and the thread takes it.
+        assert_eq!(tracer_thread_name(b"proc-evid", b"proc-evid"), "proc-evid");
+        // The cut happens once, in `to_config`, but a hand-built Config can
+        // hand in a longer string; the helper cuts again rather than
+        // letting the kernel refuse the whole name.
+        assert_eq!(
+            tracer_thread_name(b"abcdefghijklmnopqrst", b"abcdefghijklmnopqrst"),
+            "abcdefghijklmno"
+        );
+        // A multi-byte character must not be split by the cut.
+        let name = tracer_thread_name("abcdefghijklmn\u{00e9}x".as_bytes(), b"");
+        assert!(name.len() <= TRACER_COMM_MAX);
+        assert!(!name.is_empty());
+        assert_eq!(name, "abcdefghijklmn");
+    }
+
+    #[test]
+    fn tracer_thread_name_prefers_the_comm_over_the_label() {
+        // `--comm` is what every process of the session shows, so the
+        // thread must agree with it rather than with the longer label.
+        assert_eq!(
+            tracer_thread_name(b"a-long-presentation-label", b"short"),
+            "short"
+        );
+        // A `--comm` that cannot be a thread name falls back to the label.
+        assert_eq!(tracer_thread_name(b"proc-evid", b""), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\0b"), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\nb"), "proc-evid");
+        assert_eq!(tracer_thread_name(b"proc-evid", b"a\rb"), "proc-evid");
+    }
+
+    #[test]
+    fn tracer_thread_name_falls_back_to_the_label_for_an_empty_comm() {
+        // `--label-empty` alone: `to_config` makes the comm a single space
+        // so the process presents as blank, and that is a legal name.
+        assert_eq!(tracer_thread_name(b"", b" "), " ");
+        // Nothing usable at all: the cut retired name, never the tool.
+        assert_eq!(tracer_thread_name(b"", b""), "pmask-trace");
+    }
+
+    #[test]
+    fn tracer_thread_name_never_is_the_retired_fixed_name() {
+        assert_eq!(
+            tracer_thread_name(b"pmask-tracer", b"pmask-tracer"),
+            "pmask-trace"
+        );
+        // A usable comm wins, whatever the label says.
+        assert_eq!(
+            tracer_thread_name(b"pmask-tracer", b"proc-evid"),
+            "proc-evid"
+        );
+        assert_eq!(
+            tracer_thread_name(b"proc-evid", b"pmask-tracer"),
+            "proc-evid"
+        );
+        assert_eq!(tracer_thread_name(b"pmask-tracer\0", b""), "pmask-trace");
+        // Every fallback order for a session labelled with the retired
+        // name is cut to the limit, non-empty and free of NUL.
+        for label in [
+            b"pmask-tracer".as_slice(),
+            b"\0".as_slice(),
+            b"".as_slice(),
+            b"\n".as_slice(),
+        ] {
+            for session in [b"".as_slice(), b"pmask-tracer".as_slice(), b" ".as_slice()] {
+                let name = tracer_thread_name(label, session);
+                assert_ne!(name, RETIRED_TRACER_COMM);
+                assert!(!name.is_empty());
+                assert!(name.len() <= TRACER_COMM_MAX);
+                assert!(!name.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')));
+            }
+        }
+    }
+
+    /// The runner path (`--secret`) calls `spawn` before the self-mask, so
+    /// the live process comm at that moment is the pre-mask binary name.
+    /// The name must never come from it: a session labelled with the
+    /// retired string would otherwise put `pmask` on the thread.
+    #[test]
+    fn tracer_thread_name_never_uses_the_live_pre_mask_comm() {
+        for label in [b"pmask-tracer".as_slice(), b"".as_slice(), b"\0".as_slice()] {
+            for session in [b"".as_slice(), b"pmask-tracer".as_slice(), b" ".as_slice()] {
+                let name = tracer_thread_name(label, session);
+                assert_ne!(name, "pmask", "label={:?} session={:?}", label, session);
+                assert_ne!(name, RETIRED_TRACER_COMM);
+            }
+        }
+    }
+
+    #[test]
+    fn comm_prefix_stays_within_the_kernel_limit() {
+        // Twelve ASCII bytes plus a four-byte character: the 15-byte window
+        // holds three bytes of it.  The lossy decode turns the split
+        // character into one replacement character, which is still 15
+        // bytes, and the name is a valid UTF-8 string the kernel accepts.
+        let mut bytes = b"abcdefghijkl".to_vec(); // 12
+        bytes.extend_from_slice("\u{1F600}".as_bytes()); // 4 bytes, 16 total
+        let name = cut(&bytes);
+        assert!(
+            name.len() <= TRACER_COMM_MAX,
+            "len={} name={:?}",
+            name.len(),
+            name
+        );
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok());
+        // Nothing is silently dropped beyond the cut: the ASCII prefix is
+        // intact and the split character became a single replacement byte.
+        assert!(name.starts_with("abcdefghijkl"));
+    }
+
+    #[test]
+    fn comm_prefix_keeps_a_whole_character_that_fits() {
+        // Eleven ASCII bytes plus a three-byte character is exactly 14, so
+        // the character survives whole.
+        let mut bytes = b"abcdefghijk".to_vec();
+        bytes.extend_from_slice("\u{4e16}".as_bytes()); // 3 bytes, 14 total
+        let name = cut(&bytes);
+        assert_eq!(name, "abcdefghijk\u{4e16}");
+        assert!(name.len() <= TRACER_COMM_MAX);
+    }
+
+    #[test]
+    fn tracer_thread_name_decodes_a_non_utf8_session_comm() {
+        let name = tracer_thread_name(b"", b"\xff\xfe");
+        assert!(name.len() <= TRACER_COMM_MAX);
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok());
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn keep_env_list_wins_over_an_earlier_keep_env() {
+        // issue 16: `--keep-env --keep-env=KEEPME` exposed the whole
+        // inherited environment, because only the boolean was set and the
+        // list was recorded next to it.
+        let m = Mask::new().keep_environ_visible().keep_env_vars(["KEEPME"]);
+        assert!(m.redact_environ, "the explicit list must narrow the mask");
+        assert_eq!(m.keep_env_names, vec![b"KEEPME".to_vec()]);
+
+        // The last request wins: a later `--keep-env` turns the redaction
+        // off again.
+        let m = Mask::new().keep_env_vars(["KEEPME"]).keep_environ_visible();
+        assert!(!m.redact_environ);
+        assert_eq!(m.keep_env_names, vec![b"KEEPME".to_vec()]);
+    }
+
+    #[test]
+    fn comm_rejects_nul_lf_and_cr() {
+        // issue 33: LF and CR broke the parenthesised `comm` field of
+        // /proc/<pid>/stat; NUL was already refused.
+        for bad in ["a\0b", "a\nb", "a\rb"] {
+            let e = Mask::new()
+                .label("x")
+                .comm(bad)
+                .validate()
+                .expect_err("comm must be refused");
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+            assert!(e.to_string().contains("NUL, LF or CR"), "message: {}", e);
+        }
+        // A tab and other control bytes are legal in `comm`, and a label
+        // is still accepted as before.
+        assert!(Mask::new().label("x").comm("a\tb").validate().is_ok());
+    }
+
+    #[test]
+    fn snapshot_argv_prefers_the_runtime_copy() {
+        // issue 5: the `/proc/self/cmdline` route is only a fallback.  The
+        // runtime vector of the test harness is the harness's own, which
+        // is what `main` parses; it must not be empty.
+        let argv = snapshot_argv();
+        assert!(!argv.is_empty(), "the runtime vector must not be empty");
     }
 }

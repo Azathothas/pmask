@@ -1,0 +1,54 @@
+== host ==
+Linux errand-pyztg9rss42g 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+uid=1000 kernel=6.12.113+deb13-amd64
+
+== 1. secret family: --secret TOK=literal:XYZZY123 ==
+supervisor=2846748 payload=2846777
+-- fd links --
+/proc/2846777/fd/0 -> /dev/null
+/proc/2846777/fd/1 -> /tmp/b45-s.out
+/proc/2846777/fd/2 -> /tmp/b45-s.err
+/proc/2846777/fd/3 -> /memfd:pmask-secret (deleted)
+-- count of links naming pmask-secret --
+pmask-secret-links=1
+-- environ PMASK_SECRET_ lines --
+(none readable)
+-- payload stdout --
+fd=3
+bytes=8
+path=/memfd:pmask-secret (deleted)
+write-errno=1
+
+== 2. image family: --rexec -l sshd ==
+supervisor=2867072 payload=2867085
+exe=/memfd:sshd (deleted)
+maps:
+563714d6a000-563714d85000 r--p 00000000 00:01 139371                     /memfd:sshd (deleted)
+563714d85000-563714e0a000 r-xp 0001a000 00:01 139371                     /memfd:sshd (deleted)
+563714e0a000-563714e0e000 r--p 0009e000 00:01 139371                     /memfd:sshd (deleted)
+stderr: 
+
+== 3. image family: --image PATH with no -l ==
+supervisor=2870212 payload=2870225
+exe=/memfd:testcases (deleted)
+
+== 4. --exec-once: the carrier while the session runs ==
+carriers under /dev/shm and /tmp:
+(none)
+payload stdout:
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+exe=/workspace/wt/bteam5/tests/testcases ino=8052834
+carriers after the session:
+(none)
+
+== 5. supervisor's own secret buffer: --audit residue rows ==
+pmask audit: pid=2887563 comm=testcases exe=/workspace/wt/bteam5/tests/testcases tracer=2887562 cmdline_bytes=10 nul_ratio=0.10 fds=0:/dev/null,1:pipe:[29371278],2:pipe:[29371278],3:/memfd:pmask-secret (deleted)
+path=/memfd:pmask-secret (deleted)
+pmask audit: residue: 1 (exe, fd, mem, pid)
+
+== 6. host-wide sweep for the literal name ==
+(sweep done)

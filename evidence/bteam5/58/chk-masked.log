@@ -1,0 +1,949 @@
+Running ps(1): ps -edf
+<<UID          PID    PPID  C STIME TTY          TIME CMD
+>>
+<<root           1       0  0 04:29 ?        00:00:01 /sbin/init
+>>
+ps sees: pid=1
+<<agent        122       0  0 04:29 ?        00:01:15 kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md
+>>
+ps sees: pid=122
+<<agent        128     122  0 04:29 ?        00:00:00 socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/mnt/errand-broker/broker.sock
+>>
+ps sees: pid=128
+<<root         154       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-journald
+>>
+ps sees: pid=154
+<<systemd+     162       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-resolved
+>>
+ps sees: pid=162
+<<root         176       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-udevd
+>>
+ps sees: pid=176
+<<systemd+     182       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-networkd
+>>
+ps sees: pid=182
+<<message+     188       1  0 04:29 ?        00:00:00 /usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+>>
+ps sees: pid=188
+<<root         192       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-logind
+>>
+ps sees: pid=192
+<<root         209       1  0 04:29 pts/0    00:00:00 /sbin/agetty -o -- \u --noreset --noclear --keep-baud 115200,57600,38400,9600 - vt220
+>>
+ps sees: pid=209
+<<root         229       1  0 04:29 ?        00:00:05 /usr/bin/containerd
+>>
+ps sees: pid=229
+<<root         338       1  0 04:31 ?        00:00:02 /usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+>>
+ps sees: pid=338
+<<root       65776       1  0 05:52 ?        00:00:00 lbl
+>>
+ps sees: pid=65776
+<<agent      69958       1  0 06:00 ?        00:00:00 podman
+>>
+ps sees: pid=69958
+<<agent     110007       1  0 06:25 ?        00:00:00 dbg47-109996
+>>
+ps sees: pid=110007
+<<agent     860992       1  0 06:41 ?        00:00:00 timeout 30 sh measurements/launch-window.sh
+>>
+ps sees: pid=860992
+<<agent     860994  860992  9 06:41 ?        00:04:21 sh measurements/launch-window.sh
+>>
+ps sees: pid=860994
+<<agent     936135       1  0 06:42 ?        00:00:00 timeout 40 sh -x measurements/launch-window.sh
+>>
+ps sees: pid=936135
+<<agent     936138  936135  9 06:42 ?        00:04:24 sh -x measurements/launch-window.sh
+>>
+ps sees: pid=936138
+<<agent    1396704     122  0 07:26 ?        00:00:00 bash -c cd /workspace/wt/scratch && PATH=$PATH:/usr/local/cargo/bin sh tests/run.sh > /workspace/meta/scratch-run1.log 2>&1; echo "RC:$?"; grep -E 'FINAL|VERDICT: FAIL=[1-9]|^FAIL' /workspace/meta/scratch-run1.log | head -20
+>>
+ps sees: pid=1396704
+<<agent    1396710 1396704  0 07:26 ?        00:00:00 sh tests/run.sh
+>>
+ps sees: pid=1396710
+<<agent    1738249 1396710  1 07:27 ?        00:00:00 sh options.sh
+>>
+ps sees: pid=1738249
+<<agent    1784741     122  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/bteam2 && python3 - <<'PY' p='tests/qa.d/38.sh' s=open(p).read() s = s.replace('''KC="b2q38kc-$SHORT"''','''KC=$(printf 'b2q38kc-%.4s' "$$")''') open(p,'w').write(s) print("ok") PY cd tests/qa.d && PATH=$PATH:/usr/local/cargo/bin timeout 400 sh 38.sh 2>&1 | grep -E "q38k|VERDICT|FAIL"
+>>
+ps sees: pid=1784741
+<<agent    1784808 1784741  0 07:27 ?        00:00:00 timeout 400 sh 38.sh
+>>
+ps sees: pid=1784808
+<<agent    1784809 1784741  0 07:27 ?        00:00:00 grep -E q38k|VERDICT|FAIL
+>>
+ps sees: pid=1784809
+<<agent    1784814 1784808  0 07:27 ?        00:00:00 sh 38.sh
+>>
+ps sees: pid=1784814
+<<agent    1800238 1784814  0 07:27 ?        00:00:00 [sh] <defunct>
+>>
+ps sees: pid=1800238
+<<agent    1800239 1784814  5 07:27 ?        00:00:00 sh 38.sh
+>>
+ps sees: pid=1800239
+<<agent    1812810     122  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/fix1 && git status --short && PATH=$PATH:/usr/local/cargo/bin cargo build --release --bins --features testbins 2>&1 | tail -3 && echo "== #17 repro ==" && rm -f /tmp/alive17 && timeout 20 ./target/release/pmask --audit -l x /bin/sh -c 'sleep 1; echo alive > /tmp/alive17' 2>/tmp/e17.err | head -1; echo "pipeline_rc=$?"; sleep 1.5; echo "alive_file=$(cat /tmp/alive17 2>/dev/null || echo MISSING)"; echo "stderr:"; head -3 /tmp/e17.err
+>>
+ps sees: pid=1812810
+<<agent    1812831 1812810  0 07:27 ?        00:00:00 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo build --release --bins --features testbins
+>>
+ps sees: pid=1812831
+<<agent    1812833 1812810  0 07:27 ?        00:00:00 tail -3
+>>
+ps sees: pid=1812833
+<<agent    1812996 1812831 99 07:27 ?        00:00:02 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pmask --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C panic=abort -C linker-plugin-lto -C codegen-units=1 --cfg feature="default" --cfg feature="testbins" --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values("default", "testbins")) -C metadata=f23581beb142d4d2 -C extra-filename=-1d045adaff8e69d5 --out-dir /workspace/wt/fix1/target/release/deps -C strip=symbols -L dependency=/workspace/wt/fix1/target/release/deps --extern argon2=/workspace/wt/fix1/target/release/deps/libargon2-ebf1a6cacf94e333.rmeta --extern chacha20poly1305=/workspace/wt/fix1/target/release/deps/libchacha20poly1305-8ac6fb2bcea0d592.rmeta --extern libc=/workspace/wt/fix1/target/release/deps/liblibc-d75b03a1b8e233b3.rmeta --extern zeroize=/workspace/wt/fix1/target/release/deps/libzer>>
+ps sees: pid=1812996
+<<agent    1817714     122  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/bteam5 && ./tests/pmask -q -l b58hid ./tests/testcases sleeper QAMARK58 >/dev/null 2>&1 & S=$!; sleep 1.0; P=$(pgrep -P $S | head -1); echo "sup=$S pay=$P"; cd /tmp/b58dl && sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p 'ps -e' >/tmp/b58dl/chk-masked.log 2>&1; grep -c "^PID " /tmp/b58dl/chk-masked.log; grep -E "PID $P:|PID $S:" /tmp/b58dl/chk-masked.log | head -5; echo '--- does it name the payload at all? ---'; grep -c "$P" /tmp/b58dl/chk-masked.log; tail -2 /tmp/b58dl/chk-masked.log; cd /workspace/wt/bteam5 && kill $S; wait $S 2>/dev/null
+>>
+ps sees: pid=1817714
+<<agent    1817724 1817714  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/bteam5 && ./tests/pmask -q -l b58hid ./tests/testcases sleeper QAMARK58 >/dev/null 2>&1 & S=$!; sleep 1.0; P=$(pgrep -P $S | head -1); echo "sup=$S pay=$P"; cd /tmp/b58dl && sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p 'ps -e' >/tmp/b58dl/chk-masked.log 2>&1; grep -c "^PID " /tmp/b58dl/chk-masked.log; grep -E "PID $P:|PID $S:" /tmp/b58dl/chk-masked.log | head -5; echo '--- does it name the payload at all? ---'; grep -c "$P" /tmp/b58dl/chk-masked.log; tail -2 /tmp/b58dl/chk-masked.log; cd /workspace/wt/bteam5 && kill $S; wait $S 2>/dev/null
+>>
+ps sees: pid=1817724
+<<agent    1817729 1817724  0 07:27 ?        00:00:00 b58hid
+>>
+ps sees: pid=1817729
+<<agent    1817741 1817729  0 07:27 ?        00:00:00 b58hid
+>>
+ps sees: pid=1817741
+<<agent    1820362 1738249  0 07:27 ?        00:00:00 mko-race
+>>
+ps sees: pid=1820362
+<<agent    1820370 1820362  0 07:27 ?        00:00:00 mko-race
+>>
+ps sees: pid=1820370
+<<root     1822335 1817714  0 07:27 ?        00:00:00 sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p ps -e
+>>
+ps sees: pid=1822335
+<<root     1822391 1822335  0 07:27 ?        00:00:00 ./root/usr/lib/chkrootkit/chkproc -v -v -p ps -e
+>>
+ps sees: pid=1822391
+<<root     1822399 1822391  0 07:27 ?        00:00:00 sh -c -- ps -edf
+>>
+ps sees: pid=1822399
+<<root     1822402 1822399  0 07:27 ?        00:00:00 ps -edf
+>>
+ps sees: pid=1822402
+<<agent    2842792       1  0 07:12 ?        00:00:00 timeout 5 ./target/release/pmask -l lab-d3 -q --unshare -- ./target/release/pmask-testcases sleeper ZZ
+>>
+ps sees: pid=2842792
+<<agent    2842799 2842792  0 07:12 ?        00:00:00 lab-d3
+>>
+ps sees: pid=2842799
+<<agent    2842808 2842799  0 07:12 ?        00:00:00 lab-d3
+>>
+ps sees: pid=2842808
+<<agent    3265064       1  0 07:14 ?        00:00:00 /workspace/wt/bteam2/tests/testcases holdargs /tmp/pmask-q50.3264495/plain.out Q50MK3264495-c35203a8
+>>
+ps sees: pid=3265064
+Done checking ps
+Reading directory: /proc
+Skipping non-pid: .
+Skipping non-pid: ..
+Skipping non-pid: fb
+Skipping non-pid: fs
+Skipping non-pid: bus
+Skipping non-pid: dma
+Skipping non-pid: irq
+Skipping non-pid: net
+Skipping non-pid: sys
+Skipping non-pid: tty
+Skipping non-pid: acpi
+Skipping non-pid: keys
+Skipping non-pid: kmsg
+Skipping non-pid: misc
+Skipping non-pid: mtrr
+Skipping non-pid: stat
+Skipping non-pid: iomem
+Skipping non-pid: kcore
+Skipping non-pid: locks
+Skipping non-pid: swaps
+Skipping non-pid: crypto
+Skipping non-pid: driver
+Skipping non-pid: mounts
+Skipping non-pid: uptime
+Skipping non-pid: vmstat
+Skipping non-pid: cgroups
+Skipping non-pid: cmdline
+Skipping non-pid: cpuinfo
+Skipping non-pid: devices
+Skipping non-pid: ioports
+Skipping non-pid: loadavg
+Skipping non-pid: meminfo
+Skipping non-pid: modules
+Skipping non-pid: sysvipc
+Skipping non-pid: version
+Skipping non-pid: consoles
+Skipping non-pid: kallsyms
+Skipping non-pid: pressure
+Skipping non-pid: slabinfo
+Skipping non-pid: softirqs
+Skipping non-pid: zoneinfo
+Skipping non-pid: buddyinfo
+Skipping non-pid: diskstats
+Skipping non-pid: key-users
+Skipping non-pid: schedstat
+Skipping non-pid: interrupts
+Skipping non-pid: kpagecount
+Skipping non-pid: kpageflags
+Skipping non-pid: partitions
+Skipping non-pid: timer_list
+Skipping non-pid: execdomains
+Skipping non-pid: filesystems
+Skipping non-pid: kpagecgroup
+Skipping non-pid: vmallocinfo
+Skipping non-pid: pagetypeinfo
+Skipping non-pid: dynamic_debug
+Skipping non-pid: sysrq-trigger
+Skipping non-pid: self
+Skipping non-pid: thread-self
+Entry exists for pid 1: /proc/1
+Entry exists for pid 122: /proc/122
+Entry exists for pid 128: /proc/128
+Entry exists for pid 154: /proc/154
+Entry exists for pid 162: /proc/162
+Entry exists for pid 176: /proc/176
+Entry exists for pid 182: /proc/182
+Entry exists for pid 188: /proc/188
+Entry exists for pid 192: /proc/192
+Entry exists for pid 209: /proc/209
+Entry exists for pid 229: /proc/229
+Entry exists for pid 338: /proc/338
+Entry exists for pid 65776: /proc/65776
+Entry exists for pid 69958: /proc/69958
+Entry exists for pid 110007: /proc/110007
+Entry exists for pid 860992: /proc/860992
+Entry exists for pid 860994: /proc/860994
+Entry exists for pid 936135: /proc/936135
+Entry exists for pid 936138: /proc/936138
+Entry exists for pid 1396704: /proc/1396704
+Entry exists for pid 1396710: /proc/1396710
+Entry exists for pid 1738249: /proc/1738249
+Entry exists for pid 1784741: /proc/1784741
+Entry exists for pid 1784808: /proc/1784808
+Entry exists for pid 1784809: /proc/1784809
+Entry exists for pid 1784814: /proc/1784814
+Entry exists for pid 1800238: /proc/1800238
+Entry exists for pid 1800239: /proc/1800239
+Entry exists for pid 1812810: /proc/1812810
+Entry exists for pid 1812831: /proc/1812831
+Entry exists for pid 1812833: /proc/1812833
+Entry exists for pid 1812996: /proc/1812996
+Entry exists for pid 1817714: /proc/1817714
+Entry exists for pid 1817724: /proc/1817724
+Entry exists for pid 1817729: /proc/1817729
+Entry exists for pid 1817741: /proc/1817741
+Entry exists for pid 1820362: /proc/1820362
+Entry exists for pid 1820370: /proc/1820370
+Entry exists for pid 1822335: /proc/1822335
+Entry exists for pid 1822391: /proc/1822391
+Entry exists for pid 1822454: /proc/1822454
+Entry exists for pid 1822455: /proc/1822455
+Entry exists for pid 1822456: /proc/1822456
+Entry exists for pid 1822457: /proc/1822457
+Entry exists for pid 1822458: /proc/1822458
+Entry exists for pid 1822459: /proc/1822459
+Entry exists for pid 1822460: /proc/1822460
+Entry exists for pid 1822461: /proc/1822461
+Entry exists for pid 1822462: /proc/1822462
+Entry exists for pid 2842792: /proc/2842792
+Entry exists for pid 2842799: /proc/2842799
+Entry exists for pid 2842808: /proc/2842808
+Entry exists for pid 3265064: /proc/3265064
+Looking at 1 (ps=1, dir=1): OK
+Looking at 122 (ps=1, dir=1): OK
+Looking at 128 (ps=1, dir=1): OK
+Looking at 143 (ps=0, dir=0): To recheck: 143
+Looking at 145 (ps=0, dir=0): To recheck: 145
+Looking at 146 (ps=0, dir=0): To recheck: 146
+Looking at 147 (ps=0, dir=0): To recheck: 147
+Looking at 154 (ps=1, dir=1): OK
+Looking at 162 (ps=1, dir=1): OK
+Looking at 176 (ps=1, dir=1): OK
+Looking at 182 (ps=1, dir=1): OK
+Looking at 188 (ps=1, dir=1): OK
+Looking at 192 (ps=1, dir=1): OK
+Looking at 209 (ps=1, dir=1): OK
+Looking at 229 (ps=1, dir=1): OK
+Looking at 271 (ps=0, dir=0): To recheck: 271
+Looking at 272 (ps=0, dir=0): To recheck: 272
+Looking at 273 (ps=0, dir=0): To recheck: 273
+Looking at 274 (ps=0, dir=0): To recheck: 274
+Looking at 275 (ps=0, dir=0): To recheck: 275
+Looking at 276 (ps=0, dir=0): To recheck: 276
+Looking at 277 (ps=0, dir=0): To recheck: 277
+Looking at 278 (ps=0, dir=0): To recheck: 278
+Looking at 279 (ps=0, dir=0): To recheck: 279
+Looking at 280 (ps=0, dir=0): To recheck: 280
+Looking at 281 (ps=0, dir=0): To recheck: 281
+Looking at 282 (ps=0, dir=0): To recheck: 282
+Looking at 283 (ps=0, dir=0): To recheck: 283
+Looking at 284 (ps=0, dir=0): To recheck: 284
+Looking at 338 (ps=1, dir=1): OK
+Looking at 341 (ps=0, dir=0): To recheck: 341
+Looking at 342 (ps=0, dir=0): To recheck: 342
+Looking at 343 (ps=0, dir=0): To recheck: 343
+Looking at 344 (ps=0, dir=0): To recheck: 344
+Looking at 345 (ps=0, dir=0): To recheck: 345
+Looking at 346 (ps=0, dir=0): To recheck: 346
+Looking at 347 (ps=0, dir=0): To recheck: 347
+Looking at 348 (ps=0, dir=0): To recheck: 348
+Looking at 349 (ps=0, dir=0): To recheck: 349
+Looking at 350 (ps=0, dir=0): To recheck: 350
+Looking at 351 (ps=0, dir=0): To recheck: 351
+Looking at 421 (ps=0, dir=0): To recheck: 421
+Looking at 53263 (ps=0, dir=0): To recheck: 53263
+Looking at 53271 (ps=0, dir=0): To recheck: 53271
+Looking at 65762 (ps=0, dir=0): To recheck: 65762
+Looking at 65764 (ps=0, dir=0): To recheck: 65764
+Looking at 65776 (ps=1, dir=1): OK
+Looking at 69958 (ps=1, dir=1): OK
+Checking for PIDS: 100000/4194304
+Looking at 110007 (ps=1, dir=1): OK
+Checking for PIDS: 200000/4194304
+Checking for PIDS: 300000/4194304
+Checking for PIDS: 400000/4194304
+Checking for PIDS: 500000/4194304
+Checking for PIDS: 600000/4194304
+Checking for PIDS: 700000/4194304
+Looking at 708226 (ps=0, dir=0): To recheck: 708226
+Checking for PIDS: 800000/4194304
+Looking at 860992 (ps=1, dir=1): OK
+Looking at 860994 (ps=1, dir=1): OK
+Checking for PIDS: 900000/4194304
+Looking at 936135 (ps=1, dir=1): OK
+Looking at 936138 (ps=1, dir=1): OK
+Checking for PIDS: 1000000/4194304
+Checking for PIDS: 1100000/4194304
+Checking for PIDS: 1200000/4194304
+Checking for PIDS: 1300000/4194304
+Looking at 1396703 (ps=0, dir=0): To recheck: 1396703
+Looking at 1396704 (ps=1, dir=1): OK
+Looking at 1396706 (ps=0, dir=0): To recheck: 1396706
+Looking at 1396707 (ps=0, dir=0): To recheck: 1396707
+Looking at 1396710 (ps=1, dir=1): OK
+Checking for PIDS: 1400000/4194304
+Checking for PIDS: 1500000/4194304
+Checking for PIDS: 1600000/4194304
+Checking for PIDS: 1700000/4194304
+Looking at 1738249 (ps=1, dir=1): OK
+Looking at 1784740 (ps=0, dir=0): To recheck: 1784740
+Looking at 1784741 (ps=1, dir=1): OK
+Looking at 1784742 (ps=0, dir=0): To recheck: 1784742
+Looking at 1784743 (ps=0, dir=0): To recheck: 1784743
+Looking at 1784808 (ps=1, dir=1): OK
+Looking at 1784809 (ps=1, dir=1): OK
+Looking at 1784814 (ps=1, dir=1): OK
+Checking for PIDS: 1800000/4194304
+Looking at 1800238 (ps=1, dir=1): OK
+Looking at 1800239 (ps=1, dir=1): OK
+Looking at 1812808 (ps=0, dir=0): To recheck: 1812808
+Looking at 1812810 (ps=1, dir=1): OK
+Looking at 1812811 (ps=0, dir=0): To recheck: 1812811
+Looking at 1812812 (ps=0, dir=0): To recheck: 1812812
+Looking at 1812831 (ps=1, dir=1): OK
+Looking at 1812833 (ps=1, dir=1): OK
+Looking at 1812947 (ps=0, dir=0): To recheck: 1812947
+Looking at 1812987 (ps=0, dir=0): To recheck: 1812987
+Looking at 1812990 (ps=0, dir=0): To recheck: 1812990
+Looking at 1812996 (ps=1, dir=1): OK
+Looking at 1813044 (ps=0, dir=0): To recheck: 1813044
+Looking at 1813049 (ps=0, dir=0): To recheck: 1813049
+Looking at 1817713 (ps=0, dir=0): To recheck: 1817713
+Looking at 1817714 (ps=1, dir=1): OK
+Looking at 1817715 (ps=0, dir=0): To recheck: 1817715
+Looking at 1817716 (ps=0, dir=0): To recheck: 1817716
+Looking at 1817724 (ps=1, dir=1): OK
+Looking at 1817729 (ps=1, dir=1): OK
+Looking at 1817737 (ps=0, dir=0): To recheck: 1817737
+Looking at 1817741 (ps=1, dir=1): OK
+Looking at 1822335 (ps=1, dir=1): OK
+Looking at 1822391 (ps=1, dir=1): OK
+Looking at 1822725 (ps=0, dir=0): To recheck: 1822725
+Looking at 1822726 (ps=0, dir=0): To recheck: 1822726
+Looking at 1823762 (ps=0, dir=0): To recheck: 1823762
+Looking at 1839501 (ps=0, dir=0): To recheck: 1839501
+Looking at 1839502 (ps=0, dir=0): To recheck: 1839502
+Looking at 1839503 (ps=0, dir=0): To recheck: 1839503
+Looking at 1839512 (ps=0, dir=0): To recheck: 1839512
+Looking at 1839513 (ps=0, dir=0): To recheck: 1839513
+Looking at 1840149 (ps=0, dir=0): To recheck: 1840149
+Looking at 1840242 (ps=0, dir=0): To recheck: 1840242
+Looking at 1840243 (ps=0, dir=0): To recheck: 1840243
+Looking at 1840244 (ps=0, dir=0): To recheck: 1840244
+Looking at 1840245 (ps=0, dir=0): To recheck: 1840245
+Looking at 1840246 (ps=0, dir=0): To recheck: 1840246
+Looking at 1840247 (ps=0, dir=0): To recheck: 1840247
+Checking for PIDS: 1900000/4194304
+Checking for PIDS: 2000000/4194304
+Checking for PIDS: 2100000/4194304
+Checking for PIDS: 2200000/4194304
+Checking for PIDS: 2300000/4194304
+Checking for PIDS: 2400000/4194304
+Checking for PIDS: 2500000/4194304
+Checking for PIDS: 2600000/4194304
+Checking for PIDS: 2700000/4194304
+Checking for PIDS: 2800000/4194304
+Looking at 2842792 (ps=1, dir=1): OK
+Looking at 2842799 (ps=1, dir=1): OK
+Looking at 2842807 (ps=0, dir=0): To recheck: 2842807
+Looking at 2842808 (ps=1, dir=1): OK
+Checking for PIDS: 2900000/4194304
+Checking for PIDS: 3000000/4194304
+Checking for PIDS: 3100000/4194304
+Checking for PIDS: 3200000/4194304
+Looking at 3248568 (ps=0, dir=0): To recheck: 3248568
+Looking at 3265064 (ps=1, dir=1): OK
+Checking for PIDS: 3300000/4194304
+Checking for PIDS: 3400000/4194304
+Checking for PIDS: 3500000/4194304
+Checking for PIDS: 3600000/4194304
+Checking for PIDS: 3700000/4194304
+Checking for PIDS: 3800000/4194304
+Checking for PIDS: 3900000/4194304
+Checking for PIDS: 4000000/4194304
+Checking for PIDS: 4100000/4194304
+Checked for PIDs up to: 4194304 (done: 70 to recheck)
+To recheck: 70 PID(s)
+Running ps(1): ps -edf
+<<UID          PID    PPID  C STIME TTY          TIME CMD
+>>
+<<root           1       0  0 04:29 ?        00:00:01 /sbin/init
+>>
+ps sees: pid=1
+<<agent        122       0  0 04:29 ?        00:01:15 kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md
+>>
+ps sees: pid=122
+<<agent        128     122  0 04:29 ?        00:00:00 socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/mnt/errand-broker/broker.sock
+>>
+ps sees: pid=128
+<<root         154       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-journald
+>>
+ps sees: pid=154
+<<systemd+     162       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-resolved
+>>
+ps sees: pid=162
+<<root         176       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-udevd
+>>
+ps sees: pid=176
+<<systemd+     182       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-networkd
+>>
+ps sees: pid=182
+<<message+     188       1  0 04:29 ?        00:00:00 /usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+>>
+ps sees: pid=188
+<<root         192       1  0 04:29 ?        00:00:00 /usr/lib/systemd/systemd-logind
+>>
+ps sees: pid=192
+<<root         209       1  0 04:29 pts/0    00:00:00 /sbin/agetty -o -- \u --noreset --noclear --keep-baud 115200,57600,38400,9600 - vt220
+>>
+ps sees: pid=209
+<<root         229       1  0 04:29 ?        00:00:05 /usr/bin/containerd
+>>
+ps sees: pid=229
+<<root         338       1  0 04:31 ?        00:00:02 /usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+>>
+ps sees: pid=338
+<<root       65776       1  0 05:52 ?        00:00:00 lbl
+>>
+ps sees: pid=65776
+<<agent      69958       1  0 06:00 ?        00:00:00 podman
+>>
+ps sees: pid=69958
+<<agent     110007       1  0 06:25 ?        00:00:00 dbg47-109996
+>>
+ps sees: pid=110007
+<<agent     860992       1  0 06:41 ?        00:00:00 timeout 30 sh measurements/launch-window.sh
+>>
+ps sees: pid=860992
+<<agent     860994  860992  9 06:41 ?        00:04:22 sh measurements/launch-window.sh
+>>
+ps sees: pid=860994
+<<agent     936135       1  0 06:42 ?        00:00:00 timeout 40 sh -x measurements/launch-window.sh
+>>
+ps sees: pid=936135
+<<agent     936138  936135  9 06:42 ?        00:04:25 sh -x measurements/launch-window.sh
+>>
+ps sees: pid=936138
+<<agent    1396704     122  0 07:26 ?        00:00:00 bash -c cd /workspace/wt/scratch && PATH=$PATH:/usr/local/cargo/bin sh tests/run.sh > /workspace/meta/scratch-run1.log 2>&1; echo "RC:$?"; grep -E 'FINAL|VERDICT: FAIL=[1-9]|^FAIL' /workspace/meta/scratch-run1.log | head -20
+>>
+ps sees: pid=1396704
+<<agent    1396710 1396704  0 07:26 ?        00:00:00 sh tests/run.sh
+>>
+ps sees: pid=1396710
+<<agent    1738249 1396710  1 07:27 ?        00:00:00 sh options.sh
+>>
+ps sees: pid=1738249
+<<agent    1812810     122  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/fix1 && git status --short && PATH=$PATH:/usr/local/cargo/bin cargo build --release --bins --features testbins 2>&1 | tail -3 && echo "== #17 repro ==" && rm -f /tmp/alive17 && timeout 20 ./target/release/pmask --audit -l x /bin/sh -c 'sleep 1; echo alive > /tmp/alive17' 2>/tmp/e17.err | head -1; echo "pipeline_rc=$?"; sleep 1.5; echo "alive_file=$(cat /tmp/alive17 2>/dev/null || echo MISSING)"; echo "stderr:"; head -3 /tmp/e17.err
+>>
+ps sees: pid=1812810
+<<agent    1812831 1812810  0 07:27 ?        00:00:00 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo build --release --bins --features testbins
+>>
+ps sees: pid=1812831
+<<agent    1812833 1812810  0 07:27 ?        00:00:00 tail -3
+>>
+ps sees: pid=1812833
+<<agent    1817714     122  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/bteam5 && ./tests/pmask -q -l b58hid ./tests/testcases sleeper QAMARK58 >/dev/null 2>&1 & S=$!; sleep 1.0; P=$(pgrep -P $S | head -1); echo "sup=$S pay=$P"; cd /tmp/b58dl && sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p 'ps -e' >/tmp/b58dl/chk-masked.log 2>&1; grep -c "^PID " /tmp/b58dl/chk-masked.log; grep -E "PID $P:|PID $S:" /tmp/b58dl/chk-masked.log | head -5; echo '--- does it name the payload at all? ---'; grep -c "$P" /tmp/b58dl/chk-masked.log; tail -2 /tmp/b58dl/chk-masked.log; cd /workspace/wt/bteam5 && kill $S; wait $S 2>/dev/null
+>>
+ps sees: pid=1817714
+<<agent    1817724 1817714  0 07:27 ?        00:00:00 bash -c cd /workspace/wt/bteam5 && ./tests/pmask -q -l b58hid ./tests/testcases sleeper QAMARK58 >/dev/null 2>&1 & S=$!; sleep 1.0; P=$(pgrep -P $S | head -1); echo "sup=$S pay=$P"; cd /tmp/b58dl && sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p 'ps -e' >/tmp/b58dl/chk-masked.log 2>&1; grep -c "^PID " /tmp/b58dl/chk-masked.log; grep -E "PID $P:|PID $S:" /tmp/b58dl/chk-masked.log | head -5; echo '--- does it name the payload at all? ---'; grep -c "$P" /tmp/b58dl/chk-masked.log; tail -2 /tmp/b58dl/chk-masked.log; cd /workspace/wt/bteam5 && kill $S; wait $S 2>/dev/null
+>>
+ps sees: pid=1817724
+<<agent    1817729 1817724  0 07:27 ?        00:00:00 b58hid
+>>
+ps sees: pid=1817729
+<<agent    1817741 1817729  0 07:27 ?        00:00:00 b58hid
+>>
+ps sees: pid=1817741
+<<root     1822335 1817714  0 07:27 ?        00:00:00 sudo -n ./root/usr/lib/chkrootkit/chkproc -v -v -p ps -e
+>>
+ps sees: pid=1822335
+<<root     1822391 1822335 99 07:27 ?        00:00:08 ./root/usr/lib/chkrootkit/chkproc -v -v -p ps -e
+>>
+ps sees: pid=1822391
+<<agent    1847880 1812831 99 07:28 ?        00:00:03 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pmask_testcases --edition=2021 src/bin/testcases.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg feature="default" --cfg feature="testbins" --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values("default", "testbins")) -C metadata=10ed82c2cece37ee -C extra-filename=-47c0622d35afc3a0 --out-dir /workspace/wt/fix1/target/release/deps -C strip=symbols -L dependency=/workspace/wt/fix1/target/release/deps --extern argon2=/workspace/wt/fix1/target/release/deps/libargon2-ebf1a6cacf94e333.rlib --extern chacha20poly1305=/workspace/wt/fix1/target/release/deps/libchacha20poly1305-8ac6fb2bcea0d592.rlib --extern libc=/workspace/wt/fix1/target/release/deps/liblibc-d75b03a1b8e233b3.rlib --extern pmask=/workspace/wt/fix1/target/release/deps/libpmask-1d045>>
+ps sees: pid=1847880
+<<agent    1847883 1812831 99 07:28 ?        00:00:03 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pmask_protocases --edition=2021 src/bin/protocases.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg feature="default" --cfg feature="testbins" --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values("default", "testbins")) -C metadata=9c4645499b938132 -C extra-filename=-cc84e72e5e050315 --out-dir /workspace/wt/fix1/target/release/deps -C strip=symbols -L dependency=/workspace/wt/fix1/target/release/deps --extern argon2=/workspace/wt/fix1/target/release/deps/libargon2-ebf1a6cacf94e333.rlib --extern chacha20poly1305=/workspace/wt/fix1/target/release/deps/libchacha20poly1305-8ac6fb2bcea0d592.rlib --extern libc=/workspace/wt/fix1/target/release/deps/liblibc-d75b03a1b8e233b3.rlib --extern pmask=/workspace/wt/fix1/target/release/deps/libpmask-1d0>>
+ps sees: pid=1847883
+<<agent    1847886 1812831 99 07:28 ?        00:00:03 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pmaskd --edition=2021 src/bin/pmaskd.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg feature="default" --cfg feature="testbins" --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values("default", "testbins")) -C metadata=13189c862f488d5a -C extra-filename=-802c21626fbf78b0 --out-dir /workspace/wt/fix1/target/release/deps -C strip=symbols -L dependency=/workspace/wt/fix1/target/release/deps --extern argon2=/workspace/wt/fix1/target/release/deps/libargon2-ebf1a6cacf94e333.rlib --extern chacha20poly1305=/workspace/wt/fix1/target/release/deps/libchacha20poly1305-8ac6fb2bcea0d592.rlib --extern libc=/workspace/wt/fix1/target/release/deps/liblibc-d75b03a1b8e233b3.rlib --extern pmask=/workspace/wt/fix1/target/release/deps/libpmask-1d045adaff8e69d5.>>
+ps sees: pid=1847886
+<<agent    1847902 1812831 99 07:28 ?        00:00:03 /usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pmask --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=3 -C panic=abort -C lto -C codegen-units=1 --cfg feature="default" --cfg feature="testbins" --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values("default", "testbins")) -C metadata=c5d2e57ab833de74 -C extra-filename=-9c8bbe60e4d44d38 --out-dir /workspace/wt/fix1/target/release/deps -C strip=symbols -L dependency=/workspace/wt/fix1/target/release/deps --extern argon2=/workspace/wt/fix1/target/release/deps/libargon2-ebf1a6cacf94e333.rlib --extern chacha20poly1305=/workspace/wt/fix1/target/release/deps/libchacha20poly1305-8ac6fb2bcea0d592.rlib --extern libc=/workspace/wt/fix1/target/release/deps/liblibc-d75b03a1b8e233b3.rlib --extern pmask=/workspace/wt/fix1/target/release/deps/libpmask-1d045adaff8e69d5.rlib -->>
+ps sees: pid=1847902
+<<agent    1848457     128  0 07:28 ?        00:00:00 socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/mnt/errand-broker/broker.sock
+>>
+ps sees: pid=1848457
+<<agent    1856392 1738249  0 07:28 ?        00:00:00 mko-keepctl
+>>
+ps sees: pid=1856392
+<<agent    1856400 1856392  0 07:28 ?        00:00:00 mko-keepctl
+>>
+ps sees: pid=1856400
+<<agent    1856995 1738249  0 07:28 ?        00:00:00 sleep 0.1
+>>
+ps sees: pid=1856995
+<<root     1857006 1822391  0 07:28 ?        00:00:00 sh -c -- ps -edf
+>>
+ps sees: pid=1857006
+<<root     1857008 1857006  0 07:28 ?        00:00:00 ps -edf
+>>
+ps sees: pid=1857008
+<<agent    2842792       1  0 07:12 ?        00:00:00 timeout 5 ./target/release/pmask -l lab-d3 -q --unshare -- ./target/release/pmask-testcases sleeper ZZ
+>>
+ps sees: pid=2842792
+<<agent    2842799 2842792  0 07:12 ?        00:00:00 lab-d3
+>>
+ps sees: pid=2842799
+<<agent    2842808 2842799  0 07:12 ?        00:00:00 lab-d3
+>>
+ps sees: pid=2842808
+<<agent    3265064       1  0 07:14 ?        00:00:00 /workspace/wt/bteam2/tests/testcases holdargs /tmp/pmask-q50.3264495/plain.out Q50MK3264495-c35203a8
+>>
+ps sees: pid=3265064
+Done checking ps
+Reading directory: /proc
+Skipping non-pid: .
+Skipping non-pid: ..
+Skipping non-pid: fb
+Skipping non-pid: fs
+Skipping non-pid: bus
+Skipping non-pid: dma
+Skipping non-pid: irq
+Skipping non-pid: net
+Skipping non-pid: sys
+Skipping non-pid: tty
+Skipping non-pid: acpi
+Skipping non-pid: keys
+Skipping non-pid: kmsg
+Skipping non-pid: misc
+Skipping non-pid: mtrr
+Skipping non-pid: stat
+Skipping non-pid: iomem
+Skipping non-pid: kcore
+Skipping non-pid: locks
+Skipping non-pid: swaps
+Skipping non-pid: crypto
+Skipping non-pid: driver
+Skipping non-pid: mounts
+Skipping non-pid: uptime
+Skipping non-pid: vmstat
+Skipping non-pid: cgroups
+Skipping non-pid: cmdline
+Skipping non-pid: cpuinfo
+Skipping non-pid: devices
+Skipping non-pid: ioports
+Skipping non-pid: loadavg
+Skipping non-pid: meminfo
+Skipping non-pid: modules
+Skipping non-pid: sysvipc
+Skipping non-pid: version
+Skipping non-pid: consoles
+Skipping non-pid: kallsyms
+Skipping non-pid: pressure
+Skipping non-pid: slabinfo
+Skipping non-pid: softirqs
+Skipping non-pid: zoneinfo
+Skipping non-pid: buddyinfo
+Skipping non-pid: diskstats
+Skipping non-pid: key-users
+Skipping non-pid: schedstat
+Skipping non-pid: interrupts
+Skipping non-pid: kpagecount
+Skipping non-pid: kpageflags
+Skipping non-pid: partitions
+Skipping non-pid: timer_list
+Skipping non-pid: execdomains
+Skipping non-pid: filesystems
+Skipping non-pid: kpagecgroup
+Skipping non-pid: vmallocinfo
+Skipping non-pid: pagetypeinfo
+Skipping non-pid: dynamic_debug
+Skipping non-pid: sysrq-trigger
+Skipping non-pid: self
+Skipping non-pid: thread-self
+Entry exists for pid 1: /proc/1
+Entry exists for pid 122: /proc/122
+Entry exists for pid 128: /proc/128
+Entry exists for pid 154: /proc/154
+Entry exists for pid 162: /proc/162
+Entry exists for pid 176: /proc/176
+Entry exists for pid 182: /proc/182
+Entry exists for pid 188: /proc/188
+Entry exists for pid 192: /proc/192
+Entry exists for pid 209: /proc/209
+Entry exists for pid 229: /proc/229
+Entry exists for pid 338: /proc/338
+Entry exists for pid 65776: /proc/65776
+Entry exists for pid 69958: /proc/69958
+Entry exists for pid 110007: /proc/110007
+Entry exists for pid 860992: /proc/860992
+Entry exists for pid 860994: /proc/860994
+Entry exists for pid 936135: /proc/936135
+Entry exists for pid 936138: /proc/936138
+Entry exists for pid 1396704: /proc/1396704
+Entry exists for pid 1396710: /proc/1396710
+Entry exists for pid 1738249: /proc/1738249
+Entry exists for pid 1812810: /proc/1812810
+Entry exists for pid 1812831: /proc/1812831
+Entry exists for pid 1812833: /proc/1812833
+Entry exists for pid 1817714: /proc/1817714
+Entry exists for pid 1817724: /proc/1817724
+Entry exists for pid 1817729: /proc/1817729
+Entry exists for pid 1817741: /proc/1817741
+Entry exists for pid 1822335: /proc/1822335
+Entry exists for pid 1822391: /proc/1822391
+Entry exists for pid 1847880: /proc/1847880
+Entry exists for pid 1847883: /proc/1847883
+Entry exists for pid 1847886: /proc/1847886
+Entry exists for pid 1847902: /proc/1847902
+Entry exists for pid 1848457: /proc/1848457
+Entry exists for pid 1856392: /proc/1856392
+Entry exists for pid 1856400: /proc/1856400
+Entry exists for pid 1856995: /proc/1856995
+Entry exists for pid 1857029: /proc/1857029
+Entry exists for pid 1857030: /proc/1857030
+Entry exists for pid 1857031: /proc/1857031
+Entry exists for pid 1857033: /proc/1857033
+Entry exists for pid 1857034: /proc/1857034
+Entry exists for pid 2842792: /proc/2842792
+Entry exists for pid 2842799: /proc/2842799
+Entry exists for pid 2842808: /proc/2842808
+Entry exists for pid 3265064: /proc/3265064
+PID 143: hidden from readdir(3) but /proc/143 exists
+PID 143: hidden from ps(1) output but /proc/143 exists
+PID 143: EXE: '/usr/local/bin/kage'
+PID 143: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 143: COMM: 'kage-reaper'
+PID 143: CGROUP: '0::/.lxc'
+PID 145: hidden from readdir(3) but /proc/145 exists
+PID 145: hidden from ps(1) output but /proc/145 exists
+PID 145: EXE: '/usr/local/bin/kage'
+PID 145: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 145: COMM: 'kage'
+PID 145: CGROUP: '0::/.lxc'
+PID 146: hidden from readdir(3) but /proc/146 exists
+PID 146: hidden from ps(1) output but /proc/146 exists
+PID 146: EXE: '/usr/local/bin/kage'
+PID 146: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 146: COMM: 'kage-host-prune'
+PID 146: CGROUP: '0::/.lxc'
+PID 147: hidden from readdir(3) but /proc/147 exists
+PID 147: hidden from ps(1) output but /proc/147 exists
+PID 147: EXE: '/usr/local/bin/kage'
+PID 147: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 147: COMM: 'kage'
+PID 147: CGROUP: '0::/.lxc'
+PID 271: hidden from readdir(3) but /proc/271 exists
+PID 271: hidden from ps(1) output but /proc/271 exists
+PID 271: EXE: '/usr/bin/containerd'
+PID 271: CMDLINE: '/usr/bin/containerd'
+PID 271: COMM: 'containerd'
+PID 271: CGROUP: '0::/system.slice/containerd.service'
+PID 272: hidden from readdir(3) but /proc/272 exists
+PID 272: hidden from ps(1) output but /proc/272 exists
+PID 272: EXE: '/usr/bin/containerd'
+PID 272: CMDLINE: '/usr/bin/containerd'
+PID 272: COMM: 'containerd'
+PID 272: CGROUP: '0::/system.slice/containerd.service'
+PID 273: hidden from readdir(3) but /proc/273 exists
+PID 273: hidden from ps(1) output but /proc/273 exists
+PID 273: EXE: '/usr/bin/containerd'
+PID 273: CMDLINE: '/usr/bin/containerd'
+PID 273: COMM: 'containerd'
+PID 273: CGROUP: '0::/system.slice/containerd.service'
+PID 274: hidden from readdir(3) but /proc/274 exists
+PID 274: hidden from ps(1) output but /proc/274 exists
+PID 274: EXE: '/usr/bin/containerd'
+PID 274: CMDLINE: '/usr/bin/containerd'
+PID 274: COMM: 'containerd'
+PID 274: CGROUP: '0::/system.slice/containerd.service'
+PID 275: hidden from readdir(3) but /proc/275 exists
+PID 275: hidden from ps(1) output but /proc/275 exists
+PID 275: EXE: '/usr/bin/containerd'
+PID 275: CMDLINE: '/usr/bin/containerd'
+PID 275: COMM: 'containerd'
+PID 275: CGROUP: '0::/system.slice/containerd.service'
+PID 276: hidden from readdir(3) but /proc/276 exists
+PID 276: hidden from ps(1) output but /proc/276 exists
+PID 276: EXE: '/usr/bin/containerd'
+PID 276: CMDLINE: '/usr/bin/containerd'
+PID 276: COMM: 'containerd'
+PID 276: CGROUP: '0::/system.slice/containerd.service'
+PID 277: hidden from readdir(3) but /proc/277 exists
+PID 277: hidden from ps(1) output but /proc/277 exists
+PID 277: EXE: '/usr/bin/containerd'
+PID 277: CMDLINE: '/usr/bin/containerd'
+PID 277: COMM: 'containerd'
+PID 277: CGROUP: '0::/system.slice/containerd.service'
+PID 278: hidden from readdir(3) but /proc/278 exists
+PID 278: hidden from ps(1) output but /proc/278 exists
+PID 278: EXE: '/usr/bin/containerd'
+PID 278: CMDLINE: '/usr/bin/containerd'
+PID 278: COMM: 'containerd'
+PID 278: CGROUP: '0::/system.slice/containerd.service'
+PID 279: hidden from readdir(3) but /proc/279 exists
+PID 279: hidden from ps(1) output but /proc/279 exists
+PID 279: EXE: '/usr/bin/containerd'
+PID 279: CMDLINE: '/usr/bin/containerd'
+PID 279: COMM: 'containerd'
+PID 279: CGROUP: '0::/system.slice/containerd.service'
+PID 280: hidden from readdir(3) but /proc/280 exists
+PID 280: hidden from ps(1) output but /proc/280 exists
+PID 280: EXE: '/usr/bin/containerd'
+PID 280: CMDLINE: '/usr/bin/containerd'
+PID 280: COMM: 'containerd'
+PID 280: CGROUP: '0::/system.slice/containerd.service'
+PID 281: hidden from readdir(3) but /proc/281 exists
+PID 281: hidden from ps(1) output but /proc/281 exists
+PID 281: EXE: '/usr/bin/containerd'
+PID 281: CMDLINE: '/usr/bin/containerd'
+PID 281: COMM: 'containerd'
+PID 281: CGROUP: '0::/system.slice/containerd.service'
+PID 282: hidden from readdir(3) but /proc/282 exists
+PID 282: hidden from ps(1) output but /proc/282 exists
+PID 282: EXE: '/usr/bin/containerd'
+PID 282: CMDLINE: '/usr/bin/containerd'
+PID 282: COMM: 'containerd'
+PID 282: CGROUP: '0::/system.slice/containerd.service'
+PID 283: hidden from readdir(3) but /proc/283 exists
+PID 283: hidden from ps(1) output but /proc/283 exists
+PID 283: EXE: '/usr/local/bin/kage'
+PID 283: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 283: COMM: 'kage'
+PID 283: CGROUP: '0::/.lxc'
+PID 284: hidden from readdir(3) but /proc/284 exists
+PID 284: hidden from ps(1) output but /proc/284 exists
+PID 284: EXE: '/usr/local/bin/kage'
+PID 284: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 284: COMM: 'kage'
+PID 284: CGROUP: '0::/.lxc'
+PID 341: hidden from readdir(3) but /proc/341 exists
+PID 341: hidden from ps(1) output but /proc/341 exists
+PID 341: EXE: '/usr/sbin/dockerd'
+PID 341: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 341: COMM: 'dockerd'
+PID 341: CGROUP: '0::/system.slice/docker.service'
+PID 342: hidden from readdir(3) but /proc/342 exists
+PID 342: hidden from ps(1) output but /proc/342 exists
+PID 342: EXE: '/usr/sbin/dockerd'
+PID 342: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 342: COMM: 'dockerd'
+PID 342: CGROUP: '0::/system.slice/docker.service'
+PID 343: hidden from readdir(3) but /proc/343 exists
+PID 343: hidden from ps(1) output but /proc/343 exists
+PID 343: EXE: '/usr/sbin/dockerd'
+PID 343: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 343: COMM: 'dockerd'
+PID 343: CGROUP: '0::/system.slice/docker.service'
+PID 344: hidden from readdir(3) but /proc/344 exists
+PID 344: hidden from ps(1) output but /proc/344 exists
+PID 344: EXE: '/usr/sbin/dockerd'
+PID 344: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 344: COMM: 'dockerd'
+PID 344: CGROUP: '0::/system.slice/docker.service'
+PID 345: hidden from readdir(3) but /proc/345 exists
+PID 345: hidden from ps(1) output but /proc/345 exists
+PID 345: EXE: '/usr/sbin/dockerd'
+PID 345: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 345: COMM: 'dockerd'
+PID 345: CGROUP: '0::/system.slice/docker.service'
+PID 346: hidden from readdir(3) but /proc/346 exists
+PID 346: hidden from ps(1) output but /proc/346 exists
+PID 346: EXE: '/usr/sbin/dockerd'
+PID 346: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 346: COMM: 'dockerd'
+PID 346: CGROUP: '0::/system.slice/docker.service'
+PID 347: hidden from readdir(3) but /proc/347 exists
+PID 347: hidden from ps(1) output but /proc/347 exists
+PID 347: EXE: '/usr/sbin/dockerd'
+PID 347: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 347: COMM: 'dockerd'
+PID 347: CGROUP: '0::/system.slice/docker.service'
+PID 348: hidden from readdir(3) but /proc/348 exists
+PID 348: hidden from ps(1) output but /proc/348 exists
+PID 348: EXE: '/usr/sbin/dockerd'
+PID 348: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 348: COMM: 'dockerd'
+PID 348: CGROUP: '0::/system.slice/docker.service'
+PID 349: hidden from readdir(3) but /proc/349 exists
+PID 349: hidden from ps(1) output but /proc/349 exists
+PID 349: EXE: '/usr/sbin/dockerd'
+PID 349: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 349: COMM: 'dockerd'
+PID 349: CGROUP: '0::/system.slice/docker.service'
+PID 350: hidden from readdir(3) but /proc/350 exists
+PID 350: hidden from ps(1) output but /proc/350 exists
+PID 350: EXE: '/usr/sbin/dockerd'
+PID 350: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 350: COMM: 'dockerd'
+PID 350: CGROUP: '0::/system.slice/docker.service'
+PID 351: hidden from readdir(3) but /proc/351 exists
+PID 351: hidden from ps(1) output but /proc/351 exists
+PID 351: EXE: '/usr/sbin/dockerd'
+PID 351: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 351: COMM: 'dockerd'
+PID 351: CGROUP: '0::/system.slice/docker.service'
+PID 421: hidden from readdir(3) but /proc/421 exists
+PID 421: hidden from ps(1) output but /proc/421 exists
+PID 421: EXE: '/usr/sbin/dockerd'
+PID 421: CMDLINE: '/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock'
+PID 421: COMM: 'dockerd'
+PID 421: CGROUP: '0::/system.slice/docker.service'
+PID 53263: hidden from readdir(3) but /proc/53263 exists
+PID 53263: hidden from ps(1) output but /proc/53263 exists
+PID 53263: EXE: '/usr/local/bin/kage'
+PID 53263: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 53263: COMM: 'kage'
+PID 53263: CGROUP: '0::/.lxc'
+PID 53271: hidden from readdir(3) but /proc/53271 exists
+PID 53271: hidden from ps(1) output but /proc/53271 exists
+PID 53271: EXE: '/usr/local/bin/kage'
+PID 53271: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 53271: COMM: 'kage'
+PID 53271: CGROUP: '0::/.lxc'
+PID 65762: hidden from readdir(3) but /proc/65762 exists
+PID 65762: hidden from ps(1) output but /proc/65762 exists
+PID 65762: EXE: '/usr/local/bin/kage'
+PID 65762: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 65762: COMM: 'kage'
+PID 65762: CGROUP: '0::/.lxc'
+PID 65764: hidden from readdir(3) but /proc/65764 exists
+PID 65764: hidden from ps(1) output but /proc/65764 exists
+PID 65764: EXE: '/usr/local/bin/kage'
+PID 65764: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 65764: COMM: 'kage'
+PID 65764: CGROUP: '0::/.lxc'
+PID 708226: hidden from readdir(3) but /proc/708226 exists
+PID 708226: hidden from ps(1) output but /proc/708226 exists
+PID 708226: EXE: '/usr/local/bin/kage'
+PID 708226: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 708226: COMM: 'kage'
+PID 708226: CGROUP: '0::/.lxc'
+PID 1396703: hidden from readdir(3) but /proc/1396703 exists
+PID 1396703: hidden from ps(1) output but /proc/1396703 exists
+PID 1396703: EXE: '/usr/local/bin/kage'
+PID 1396703: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1396703: COMM: 'kage'
+PID 1396703: CGROUP: '0::/.lxc'
+PID 1396706: hidden from readdir(3) but /proc/1396706 exists
+PID 1396706: hidden from ps(1) output but /proc/1396706 exists
+PID 1396706: EXE: '/usr/local/bin/kage'
+PID 1396706: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1396706: COMM: 'kage'
+PID 1396706: CGROUP: '0::/.lxc'
+PID 1396707: hidden from readdir(3) but /proc/1396707 exists
+PID 1396707: hidden from ps(1) output but /proc/1396707 exists
+PID 1396707: EXE: '/usr/local/bin/kage'
+PID 1396707: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1396707: COMM: 'kage'
+PID 1396707: CGROUP: '0::/.lxc'
+PID 1812808: hidden from readdir(3) but /proc/1812808 exists
+PID 1812808: hidden from ps(1) output but /proc/1812808 exists
+PID 1812808: EXE: '/usr/local/bin/kage'
+PID 1812808: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1812808: COMM: 'kage'
+PID 1812808: CGROUP: '0::/.lxc'
+PID 1812811: hidden from readdir(3) but /proc/1812811 exists
+PID 1812811: hidden from ps(1) output but /proc/1812811 exists
+PID 1812811: EXE: '/usr/local/bin/kage'
+PID 1812811: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1812811: COMM: 'kage'
+PID 1812811: CGROUP: '0::/.lxc'
+PID 1812812: hidden from readdir(3) but /proc/1812812 exists
+PID 1812812: hidden from ps(1) output but /proc/1812812 exists
+PID 1812812: EXE: '/usr/local/bin/kage'
+PID 1812812: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1812812: COMM: 'kage'
+PID 1812812: CGROUP: '0::/.lxc'
+PID 1812947: hidden from readdir(3) but /proc/1812947 exists
+PID 1812947: hidden from ps(1) output but /proc/1812947 exists
+PID 1812947: EXE: '/usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo'
+PID 1812947: CMDLINE: '/usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo build --release --bins --features testbins'
+PID 1812947: COMM: 'futures-timer'
+PID 1812947: CGROUP: '0::/.lxc'
+PID 1812987: hidden from readdir(3) but /proc/1812987 exists
+PID 1812987: hidden from ps(1) output but /proc/1812987 exists
+PID 1812987: EXE: '/usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo'
+PID 1812987: CMDLINE: '/usr/local/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo build --release --bins --features testbins'
+PID 1812987: COMM: 'cargo'
+PID 1812987: CGROUP: '0::/.lxc'
+PID 1817713: hidden from readdir(3) but /proc/1817713 exists
+PID 1817713: hidden from ps(1) output but /proc/1817713 exists
+PID 1817713: EXE: '/usr/local/bin/kage'
+PID 1817713: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1817713: COMM: 'kage'
+PID 1817713: CGROUP: '0::/.lxc'
+PID 1817715: hidden from readdir(3) but /proc/1817715 exists
+PID 1817715: hidden from ps(1) output but /proc/1817715 exists
+PID 1817715: EXE: '/usr/local/bin/kage'
+PID 1817715: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1817715: COMM: 'kage'
+PID 1817715: CGROUP: '0::/.lxc'
+PID 1817716: hidden from readdir(3) but /proc/1817716 exists
+PID 1817716: hidden from ps(1) output but /proc/1817716 exists
+PID 1817716: EXE: '/usr/local/bin/kage'
+PID 1817716: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 1817716: COMM: 'kage'
+PID 1817716: CGROUP: '0::/.lxc'
+PID 1817737: hidden from readdir(3) but /proc/1817737 exists
+PID 1817737: hidden from ps(1) output but /proc/1817737 exists
+PID 1817737: EXE: '/workspace/wt/bteam5/tests/pmask'
+PID 1817737: CMDLINE: 'b58hid'
+PID 1817737: COMM: 'pmask-tracer'
+PID 1817737: CGROUP: '0::/.lxc'
+PID 2842807: hidden from readdir(3) but /proc/2842807 exists
+PID 2842807: hidden from ps(1) output but /proc/2842807 exists
+PID 2842807: EXE: '/workspace/wt/fix1/target/release/pmask (deleted)'
+PID 2842807: CMDLINE: 'lab-d3'
+PID 2842807: COMM: 'pmask-tracer'
+PID 2842807: CGROUP: '0::/.lxc'
+PID 3248568: hidden from readdir(3) but /proc/3248568 exists
+PID 3248568: hidden from ps(1) output but /proc/3248568 exists
+PID 3248568: EXE: '/usr/local/bin/kage'
+PID 3248568: CMDLINE: 'kage rpc --yolo -m pg-kenari/deepseek-v4.1-flash --system You are kage, a coding agent. Use the provided tools when they help and ask only when blocked. --system-file /state/memory.md'
+PID 3248568: COMM: 'kage'
+PID 3248568: CGROUP: '0::/.lxc'
+
+You have 49 process(es) hidden from readdir(3)
+You have 49 process(es) hidden from ps(1)

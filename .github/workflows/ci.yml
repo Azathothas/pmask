@@ -36,6 +36,11 @@ jobs:
         run: sh scripts/check-rename.sh
       - name: third-party notices
         run: python3 scripts/notices.py --check
+      - name: completions
+        # The completions are static tables for a hand-written parser.
+        # This reads src/cli.rs and src/bin/pmaskd.rs and fails when a
+        # table has drifted; it needs no build and no host capability.
+        run: sh scripts/check-completions.sh
       - name: format
         run: cargo fmt --all -- --check
       - name: clippy
@@ -83,7 +88,7 @@ jobs:
           for f in Cargo.toml Cargo.lock README.md LICENSE build.rs src/lib.rs man/pmask.1; do
             grep -qx "$f" "$RUNNER_TEMP/pkg.txt"
           done
-          if grep -E '^(\.cargo|\.github|docs|tests|vm|vendor|scripts|TODO|measurements|contrib)/' "$RUNNER_TEMP/pkg.txt"; then
+          if grep -E '^(\.cargo|\.github|docs|tests|vm|vendor|scripts|TODO|measurements|contrib|evidence)/' "$RUNNER_TEMP/pkg.txt"; then
             echo "repository files in the package"; exit 1
           fi
           cargo publish --dry-run --locked
@@ -112,6 +117,120 @@ jobs:
           sh tests/lease.sh
           sh tests/secrets.sh
           sh tests/regressions.sh
+
+  # isolation.sh, compare.sh and conformance.sh used to run in no job at
+  # all: the micro-VM stages nine suites and the concurrency job names
+  # four, so three of the sixteen were never executed anywhere.  They are
+  # the suites that hold the same-uid refusal guarantees and the composed
+  # --redact --isolate spelling, so a regression there shipped green.
+  #
+  # The job runs on the runner uid, not root: the same-uid cases assert
+  # that a *peer of the same uid* is refused, which root with
+  # CAP_SYS_PTRACE defeats by design (issue #35).
+  native-suites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: python3 and a C compiler are present
+        # isolation.sh runs helpers/procprobe.py for i32-i36 and
+        # conformance.sh compiles helpers/compare-probe.c for six cases.
+        # Both are on the image; check them so a future image change
+        # cannot turn those cases into SKIPs unnoticed.  A check is used
+        # instead of `apt-get install`: the package lists on a hosted
+        # runner can stall, and these two are already installed.
+        run: |
+          python3 --version
+          cc --version | head -1
+      - name: allow native ptrace and unprivileged user namespaces
+        # The suites need ptrace (thousands of cases) and CLONE_NEWUSER
+        # (isolation.sh).  Both are allowed for the runner uid here, not by
+        # running the suites as root.
+        run: |
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          for key in kernel.apparmor_restrict_unprivileged_userns \
+                     kernel.unprivileged_userns_clone; do
+            if [ -e "/proc/sys/$(echo "$key" | tr . /)" ]; then
+              sudo sysctl -w "$key=0"
+            fi
+          done
+      - name: build
+        run: cargo build --locked --release --bins --features testbins
+      - name: copy the binaries the suites expect
+        run: |
+          for b in pmask pmaskd pmask-testcases pmask-protocases; do
+            dst=$(echo "$b" | sed 's/^pmask-testcases$/testcases/; s/^pmask-protocases$/protocases/')
+            cp "target/release/$b" "tests/$dst"
+          done
+      - name: isolation, compare and conformance
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/native.log"
+          rc=0
+          sh tests/native-suites.sh isolation compare conformance > "$log" 2>&1 || rc=$?
+          cat "$log"
+          # native-suites.sh fails an absent suite.  It cannot fail a suite
+          # that skipped its own availability gate, and a job whose one
+          # purpose is this coverage must not pass on zero coverage: name
+          # what is missing and fail.
+          if grep -q '^SKIP i0-isolation-available' "$log"; then
+            # The GitHub runner has no unprivileged user namespaces, so the
+            # isolate rows cannot be decided here.  The micro-VM job is the
+            # canonical gate for them; this job still runs the rows that do
+            # not need a user namespace, and the conformance/compare checks
+            # below still fail on zero coverage.
+            echo "::warning::isolation.sh skipped its availability gate: the runner uid has no user namespaces; the micro-VM job covers those rows"
+          fi
+          if ! grep -q '^CONFORMANCE: PASS pass=' "$log"; then
+            echo "::error::conformance.sh did not report CONFORMANCE: PASS"
+            exit 1
+          fi
+          cpass=$(sed -n 's/^CONFORMANCE: PASS pass=\([0-9][0-9]*\).*/\1/p' "$log" | tail -1)
+          if [ "${cpass:-0}" -lt 1 ]; then
+            echo "::error::conformance.sh passed zero cases"
+            exit 1
+          fi
+          if ! grep -qx 'COMPARE: OK' "$log"; then
+            echo "::error::compare.sh did not report COMPARE: OK"
+            exit 1
+          fi
+          # COMPARE: OK is also printed when both map_files targets were
+          # unmeasurable, so require at least one target to have been read.
+          mapfiles=$(sed -n 's/^MAP_FILES //p' "$log" | tail -1)
+          rexec_target=$(printf '%s\n' "$mapfiles" | sed -n 's/.* rexec_target=\([^ ]*\).*/\1/p')
+          plain_target=$(printf '%s\n' "$mapfiles" | sed -n 's/.* plain_target=\([^ ]*\).*/\1/p')
+          if [ -z "$rexec_target" ] && [ -z "$plain_target" ]; then
+            echo "::error::compare.sh measured no map_files target: ${mapfiles:-no MAP_FILES line}"
+            exit 1
+          fi
+          exit "$rc"
+      - name: per-issue QA fragments
+        run: |
+          set -eu
+          log="$RUNNER_TEMP/qa.log"
+          rc=0
+          sh tests/qa.sh > "$log" 2>&1 || rc=$?
+          cat "$log"
+          # The dispatcher's summary line carries the counts.  A batch that
+          # skipped every fragment (root, or a tree with no fragments) must
+          # not pass this job: zero coverage is not a pass.
+          line=$(grep '^################ QA: ' "$log" | tail -1)
+          case "$line" in
+            *"QA: PASS"*) : ;;
+            *) echo "::error::the QA fragments did not pass: ${line:-no summary line}"; exit 1 ;;
+          esac
+          cases=$(printf '%s\n' "$line" | sed -n 's/.* cases=\([0-9][0-9]*\).*/\1/p')
+          passed=$(printf '%s\n' "$line" | sed -n 's/.* passed=\([0-9][0-9]*\).*/\1/p')
+          if [ "${cases:-0}" -lt 1 ] || [ "${passed:-0}" -lt 1 ]; then
+            echo "::error::the QA run reported no coverage: $line"
+            exit 1
+          fi
+          exit "$rc"
 
   msrv:
     runs-on: ubuntu-24.04
@@ -150,6 +269,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 cpio
+      - name: fetch the locked dependencies
+        # vm/run.sh builds with --offline so the guest never needs the
+        # network; the host must have the crates first.
+        run: cargo fetch --locked --target x86_64-unknown-linux-musl --target i686-unknown-linux-musl
       - name: run the full suite in the micro-VM
         run: sh vm/run.sh
       - name: upload the VM log
@@ -195,7 +318,7 @@ jobs:
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [check, concurrency, msrv, suites-in-vm, deny, secrets]
+    needs: [check, concurrency, native-suites, msrv, suites-in-vm, deny, secrets]
     if: always()
     permissions:
       actions: read

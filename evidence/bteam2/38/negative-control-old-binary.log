@@ -1,0 +1,5 @@
+pmask=/tmp/pmask-prefix kernel=6.12.113+deb13-amd64 uid=1000
+payload=1808188 tracer_tid=1808185
+tracer comm=[pmask-tracer]
+retired_name_sightings=2
+NEGATIVE-CONTROL: PASS (the observer sees the old name)

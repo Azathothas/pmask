@@ -1,0 +1,17 @@
+###### --unshare /bin/sleep 6
+== -- /bin/sleep 6 (sup=68920)
+   pid=68923 comm=qa49e-68919 cmdline=[qa49e-68919|] envb=0 nspid=[68923] tracer=68922
+
+###### --unshare /bin/sh -c 'sleep 6'
+== -- /bin/sh -c sleep 6 (sup=68976)
+   pid=68979 comm=qa49e-68975 cmdline=[qa49e-68975|] envb=0 nspid=[68979] tracer=68978
+     pid=68980 comm=qa49e-68975 cmdline=[qa49e-68975|] envb=0 nspid=[68980] tracer=68978
+
+###### default /bin/sh -c 'sleep 6'
+== -- /bin/sh -c sleep 6 (sup=69064)
+   pid=69067 comm=qa49e-69063 cmdline=[qa49e-69063|] envb=0 nspid=[69067] tracer=69066
+     pid=69068 comm=qa49e-69063 cmdline=[qa49e-69063|] envb=0 nspid=[69068] tracer=69066
+
+###### --unshare ./tests/testcases32 sleeper
+== -- ./tests/testcases32 sleeper MK49E-32 6 (sup=69155)
+   pid=69158 comm=testcases32 cmdline=[./tests/testcases32|sleeper|MK49E-32|6|] envb=37 nspid=[69158] tracer=69157

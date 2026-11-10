@@ -1,0 +1,7 @@
+FAIL qa5-version (rc=255 stdout=[] stderr=11496 bytes)
+FAIL qa5-read (rc=255 got=[] want=[QA5-SECRET-VALUE-3468421])
+FAIL qa5-read-no-help (stderr=11496 bytes:  pmask 0.1.0-beta.1 (x86_64) - redact the /proc metadata of a whole process tree)
+PASS qa5-control-no-redact
+PASS qa5-control-fd-env
+PASS qa5-selfmask-still-on
+FAIL qa5-unshare-read (rc=255 got=[])

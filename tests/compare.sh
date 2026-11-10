@@ -86,6 +86,7 @@ cleanup() {
     kill_comm sleep KILL 2>/dev/null
     kill_comm testcases KILL 2>/dev/null
     rm -rf "$T"
+    :
 }
 trap cleanup EXIT INT TERM
 

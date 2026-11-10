@@ -1,0 +1,9 @@
+=== --unshare -- /bin/sleep 5 (0.6s, pgrep -x sleep) ===
+sup=66130 pay=65624
+cmdline=sleep|300|
+comm=sleep
+nspid=65624
+tracer=0
+environ_bytes=2455
+--- tree ---
+pid=66134 pp=66130 comm=m cmdline=m| nspid=66134	1

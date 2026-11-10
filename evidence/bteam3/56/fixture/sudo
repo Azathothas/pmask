@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fixture: pretend passwordless sudo is available and run the rest.
+shift   # drop -n
+exec "$@"

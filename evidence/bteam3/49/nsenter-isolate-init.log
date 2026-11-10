@@ -1,0 +1,22 @@
+# which process is pid 1 of the private pid namespace
+
+## --unshare
+$ sudo nsenter -t <leaf> -p -m sh -c "cat /proc/1/comm; tr \"\\0\" \"|\" < /proc/1/cmdline"
+# measured: comm=<label>, cmdline=<label>|  -- the leaf IS the namespace init
+
+## --isolate (four runs)
+run 1 intermediate=2479658 comm=iz-1-2479572 NSpid=[2479658]
+run 1 leaf=2479665 comm=sleep NSpid=[2479665	1]
+run 2 intermediate=2484762 comm=iz-2-2479572 NSpid=[2484762]
+run 2 leaf=2484767 comm=sleep NSpid=[2484767	1]
+run 3 intermediate=2490043 comm=iz-3-2479572 NSpid=[2490043]
+run 3 leaf=2490046 comm=sleep NSpid=[2490046	1]
+run 4 intermediate=2495182 comm=iz-4-2479572 NSpid=[2495182]
+run 4 leaf=2495188 comm=sleep NSpid=[2495188	1]
+
+# the namespace init is the leaf (the grandchild), so /proc/1 inside
+# reads the real argv, not the label that the intermediate carries.
+
+## --unshare, in-namespace view of pid 1
+leaf=2500327 NSpid=[2500327	1]
+in-ns /proc/1 comm=u1-2479572 cmdline=[u1-2479572|]

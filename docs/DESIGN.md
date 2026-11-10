@@ -59,8 +59,13 @@ out of scope by construction.
 ## Mechanism
 
 `pmask` is a `ptrace` supervisor: the parent of the supervised tree. It
-seizes the child with `PTRACE_SEIZE` and releases it by writing one byte
-to a pipe. The child raises `SIGSTOP` and execs.
+seizes the child with `PTRACE_SEIZE`, stops the seized master with
+`PTRACE_INTERRUPT`, takes the resulting `PTRACE_EVENT_STOP` as the
+handshake, and only then releases the child by writing one byte to a
+pipe. The child does not raise `SIGSTOP`: a process that is pid 1 of its
+own pid namespace cannot rely on a self-directed job-control stop
+arriving, because the kernel discards it, and the handshake went missing
+under `--unshare` (issue 4).
 
 ### Following the tree
 
@@ -162,18 +167,60 @@ only and returns the label in its place. The filter never matches
 that cannot be installed is a fatal error (exit 126 naming the failure),
 not a line and a run without the promise.
 
+The redirect points the trapped name argument at the label copy that
+already sits in the tracee's presentation block, so it needs no write
+into tracee memory. That matters with `--no-dumpable`: a non-dumpable
+tracee refuses both `process_vm_writev` and `PTRACE_POKEDATA` to a
+tracer that is not root, so the earlier write-based redirect silently
+lost the rename and `comm` became the payload's own name (issue 60).
+When the block address is unknown or no longer holds the label, the
+tracer falls back to a write below the stack pointer. If that write is
+refused too, it points the argument at an unmapped address: `PR_SET_NAME`
+fails with `EFAULT`, `comm` keeps the label, and the session counts the
+refusal. The payload's own pointer is never left in place.
+
+### The supervisor's own entry
+
+The supervisor lives as long as the tree, so it gives itself the same
+treatment before it forks. It snapshots the child's argv and environment,
+zeroes its own argv block, writes the label there, zeroes its own
+environment strings, moves its own `PR_SET_MM_MAP` window onto the label,
+sets its own `comm`, and makes itself non-dumpable. The fork happens
+after the snapshot, so the child still execs with the real values. The
+order is binding.
+
+A refused window relocation leaves the label in place and only keeps the
+slot-count extent; the run prints one note and the session does not count
+it as a degradation of the tree.
+
+The ptracer is a second thread of the supervisor (`src/mask.rs`), not a
+separate process. `TracerPid` in a payload's
+`/proc/<pid>/status` therefore names a thread whose `Tgid` is the
+supervisor's pid. The thread name is not part of the window relocation,
+so `/proc/<supervisor>/task/<tid>/comm` still publishes a name. That name
+is derived from the session: the `comm` first and the label second, cut
+to the kernel's 15-byte limit, and never the retired fixed string
+`pmask-tracer` (issue 38). An empty, NUL-carrying or newline-carrying
+candidate falls through to the next. The `Tgid != Pid` shape and the
+nonzero `TracerPid` remain, and only `--detach` removes them.
+
 ### Labels and modes that do not redact
 
 A label is a `/proc` presentation, so it exists only where `/proc` is
 redacted. `--isolate` runs the payload in fresh namespaces and does not
 apply the label to the payload's own `argv`, `environ` or `comm`. When a
 label is set in isolate mode, the supervisor masks its own `/proc` entry
-with it, and the run prints one note at the default verbosity: "the
+with it, as it does in every label mode (see above), and the run prints
+one note at the default verbosity: "the
 payload's label was not applied: isolate mode does not redact the
-payload's `/proc` metadata". `--redact --isolate` is the composed
-spelling of `--unshare`: the redaction path with a private pid namespace
-and procfs, so the label applies there. Plain mode applies the label
-nowhere. The combination is reported, not refused. `--daemon` is
+payload's `/proc` metadata". `--redact --isolate` composes the two: the
+tracer owns the tree and the child is forked into exactly the namespaces
+the list names, so the label applies and the requested set is what the
+payload gets. A set the host cannot grant is reported as a degradation,
+never replaced by a different set. `--no-redact --isolate` runs the
+isolate path, because isolation does not need ptrace. `--isolate=none`
+creates no namespace at all, sets no `no_new_privs` and applies no
+Landlock policy. Plain mode applies the label nowhere. `--daemon` is
 different: the client refuses `--isolate`, `--secret`, `--no-redact` and
 `--image` outright, because the daemon owns the masking policy and the
 job environment, and a flag it cannot honour would otherwise be dropped.
@@ -272,11 +319,15 @@ i32 exit_code  u32 has_signal  i32 signal  u32 msg_len  msg
 
 A PING replaces the job frame with the four bytes `PMKP` and nothing
 after them. The daemon answers with the same response frame, whose
-message is one `key=value` line per fact: protocol version, label, uid,
-`run_as_uid`, job slots, environment count, allowed uids, socket mode,
-I/O and job timeouts, the job-argv cap, the peer identity method and the
-peer uid. It never reports an environment value. A PING is answered
-after the same uid check a job gets.
+message is one `key=value` line per fact. The body depends on who asks.
+The daemon's own uid and root get the full set: protocol version, label,
+uid, `run_as_uid`, job slots, environment count, allowed uids, socket
+mode, I/O and job timeouts, the job-argv cap, the peer identity method
+and the peer uid. Another uid admitted by `--allow-uid` gets the
+protocol version, the label, the daemon uid and `run_as_uid`, and a
+`detail=reduced` line; the policy fields are omitted from the wire, not
+zeroed. It never reports an environment value. A PING is answered after
+the same uid check a job gets.
 
 Limits: `argc <= 4096`, one argument `<= 1 MiB`, request `<= 8 MiB`,
 label `<= 4096` bytes without NUL, LF or CR, and the sum of `len + 1`
@@ -382,6 +433,18 @@ The `pmask agent` subcommand runs a per-user service that holds the
 unlocked store and answers `GET <name>` over its own socket; it is the
 only source that keeps the plaintext out of the invoking process entirely.
 
+Both memfd families carry a name that `/proc` publishes. The descriptor
+behind every delivered secret defaults to `/memfd:pmask-secret
+(deleted)`; `--secret-fd-name NAME` replaces that string. The image memfd
+behind `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and
+`--hugetlb` defaults to the label, or to the program name for `--image`
+without a label; `--memfd-name NAME` replaces it, and also the tag of the
+`--exec-once` temporary-file carrier. One validator serves both: not
+empty, at most 200 bytes, no `/`, no control byte and no DEL, checked at parse time
+and again where the object is created. The options are cosmetic by
+design. They change the string a reader sees, not the fact that a memfd
+backs the descriptor or the image.
+
 ## Privilege ladder
 
 Higher privileges buy more privacy in defined steps.
@@ -390,9 +453,9 @@ Higher privileges buy more privacy in defined steps.
 |---|---|---|---|
 | 0 | none | entry swap, label, comm, per-variable environment policy | same-uid observers still read `exe`, `maps`, `fd/*`, `cwd` |
 | 0 + `--no-dumpable` | none | `PR_SET_DUMPABLE=0` makes those files refused for the same uid | core dumps and debugger attach stop |
-| 0 + `--rexec` | none | `/proc/<pid>/exe` names the memfd, not the file; a refused descriptor exec reports the step and continues on `/proc/self/fd/N` or a temporary file | `/proc/<pid>/map_files` still resolves; `vm.memfd_noexec` may refuse; the on-disk fallback needs `--rexec-allow-disk` |
+| 0 + `--rexec` | none | `/proc/<pid>/exe` names the memfd, not the file; a refused descriptor exec reports the step and continues on `/proc/self/fd/N` or a temporary file; `--memfd-name NAME` replaces the name | `/proc/<pid>/map_files` still resolves; `vm.memfd_noexec` may refuse; the on-disk fallback needs `--rexec-allow-disk` |
 | 0 + `--unshare` | kernel that allows unprivileged user namespaces | private PID namespace and private procfs; the payload sees only itself | unavailable on hosts that gate user namespaces; opportunistic by design |
-| 0 + `--watch-rename` | none | comm stays the label when a program renames itself | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
+| 0 + `--watch-rename` | none | comm stays the label when a program renames itself, including with `--no-dumpable`, because the redirect needs no tracee memory write | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
 | 0 + `--scope-name` | a user session manager | one consistent name in `/proc/<pid>/cgroup` and `systemctl` | the unit name is world-readable; system-level scopes need root or polkit |
 | 0 (default; `--no-exact` turns it off) | none | `prctl(PR_SET_MM, PR_SET_MM_MAP)` moves `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` onto a compact block, rewrites `AT_EXECFN` in `saved_auxv`, and moves `start_stack`: `/proc/<pid>/cmdline` is exactly the label, `environ` is empty, fields 48 to 51 agree with the cmdline length, and the label's page reads `[stack]` in `maps` | a kernel without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` leaves the in-place redaction: the window is the label plus one NUL per argument and `environ` is a NUL block, not empty |
 | 0 + `--detach` | none | `PTRACE_DETACH` after each settled exec, so `TracerPid` is 0 for the payload | the detached process and its descendants run unredacted at every later exec, and the session summary counts each detach |

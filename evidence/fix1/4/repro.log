@@ -1,0 +1,26 @@
+# issue 4: --unshare / --redact --isolate
+# host: 6.12.113+deb13-amd64, uid 1000, unshare -Urn true rc: 0
+
+## fixed, --unshare (host-side read of /proc)
+self cmdline=[lab-uns|]
+self environ bytes=0
+self comm=[lab-uns]
+rc=0
+
+## fixed, --redact --isolate
+self cmdline=[lab-iso|]
+self environ bytes=0
+self comm=[lab-iso]
+rc=0
+
+## baseline (fa46e62 binary) --unshare, same payload: it also redacts ON THIS HOST
+self cmdline=[lab-uns|]
+self environ bytes=0
+self comm=[lab-uns]
+rc=0
+
+## mechanism: the handshake stop the tracer actually took
+-- fixed --
+[pmask 1342662] master 1342670: handshake is the PTRACE_INTERRUPT stop
+-- baseline --
+(no handshake line: the old code never named one)

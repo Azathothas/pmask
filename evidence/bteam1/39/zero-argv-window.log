@@ -1,0 +1,18 @@
+# The zero-argv window: cmdline is N NUL bytes before the label lands
+# kernel 6.12.113+deb13-amd64 uid 1000
+# Each run samples from the instant fork returns, as fast as the shell can loop.
+
+run 1: all-NUL samples=0 of 60, final bytes=10
+run 2: all-NUL samples=0 of 60, final bytes=10
+run 3: all-NUL samples=1 of 60, final bytes=10
+run 4: all-NUL samples=2 of 60, final bytes=10
+run 5: all-NUL samples=1 of 60, final bytes=10
+run 6: all-NUL samples=0 of 60, final bytes=10
+run 7: all-NUL samples=0 of 60, final bytes=10
+run 8: all-NUL samples=0 of 60, final bytes=10
+run 9: all-NUL samples=1 of 60, final bytes=10
+run 10: all-NUL samples=0 of 60, final bytes=10
+run 11: all-NUL samples=0 of 60, final bytes=10
+run 12: all-NUL samples=1 of 60, final bytes=10
+
+runs with at least one all-NUL sample: 5 of 12 (720 samples total)

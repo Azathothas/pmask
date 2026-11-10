@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa33-lf-refused
+PASS qa33-cr-refused
+PASS qa33-lf-isolate
+PASS qa33-lf-no-redact
+PASS qa33-nul-covered-by-the-unit-test
+PASS qa33-tab-accepted
+PASS qa33-label-lf-refused-control

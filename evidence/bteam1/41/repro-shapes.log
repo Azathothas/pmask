@@ -1,0 +1,29 @@
+== default pay=56086
+bytes=0 nul=0
+0000000
+envspan=0
+== no-exact pay=56101
+bytes=3 nul=3
+0000000  \0  \0  \0
+0000003
+envspan=3
+== keep-env pay=56126
+bytes=61 nul=3
+0000000   P   A   T   H   =   /   u   s   r   /   b   i   n   :   /   b
+0000016   i   n  \0   V   E   R   Y   S   E   C   R   E   T   =   h   u
+0000032   n   t   e   r   2  \0   T   O   K   E   N   =   C   A   N   A
+0000048   R   Y   -   p   m   a   s   k   -   e   n   v  \0
+0000061
+envspan=61
+== keep-env-name pay=56140
+bytes=25 nul=3
+0000000  \0  \0   T   O   K   E   N   =   C   A   N   A   R   Y   -   p
+0000016   m   a   s   k   -   e   n   v  \0
+0000025
+envspan=25
+== keep-env-path pay=56166
+bytes=21 nul=3
+0000000   P   A   T   H   =   /   u   s   r   /   b   i   n   :   /   b
+0000016   i   n  \0  \0  \0
+0000021
+envspan=21

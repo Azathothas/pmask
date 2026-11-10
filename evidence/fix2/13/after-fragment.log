@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.03s
+PASS qa13-probe-with-denied-ptrace-exits-zero
+PASS qa13-exact-row-is-na [  exact cmdline window     n/a          prctl(PR_SET_MM_MAP) works here, but there is no redaction for it to make exact; the row is unused without a redaction mode]
+PASS qa13-exact-row-explains
+PASS qa13-exact-row-is-present
+PASS qa13-doctor-exact-degraded (exit 3)
+PASS qa13-doctor-exact-json (exit=3)
+PASS qa13-control-redaction-active-keeps-the-row [  exact cmdline window     active       ]
+PASS qa13-control-doctor-exact-ok (exit 0)
+== VERDICT: FAIL=0 ==

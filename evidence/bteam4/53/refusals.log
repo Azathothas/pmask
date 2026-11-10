@@ -1,0 +1,13 @@
+pmask: unknown option --badopt
+rc=255
+pmask: /bin/true: label must not contain NUL, LF or CR bytes
+rc=255
+pmask: comm must be at most 15 bytes
+rc=255
+pmaskd: --jobs needs a number of at least 1
+rc=255
+pmaskd: refusing to start: / is owned by uid 0, not by uid 1000
+rc=0
+pmask: warning: secret source X=literal: puts the value in pmask's own argv, where the shell history and any wrapper's argv keep a copy, and the kernel audit log would hold it too if this host's audit subsystem were enabled. pmask cannot reach the copies outside its own process: use file:PATH, agent:NAME or stdin for the value, and --args-from-fd N to keep the payload's own arguments out of pmask's argv
+pmask: secret 'X' uses literal:; isolate mode does not redact the payload's /proc, so a source that puts the value in plain sight is refused; use file:PATH or agent:NAME, or pass --allow-argv-secret
+rc=0

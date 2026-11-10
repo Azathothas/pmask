@@ -1,0 +1,5 @@
+PASS qa15-control-flags0-leaks
+FAIL qa15-payload-fds (1 secretmem descriptor(s) in the payload)
+FAIL qa15-grandchild-fds (1 secretmem descriptor(s) in the grandchild)
+PASS qa15-secret-still-works
+PASS qa15-probe-agrees

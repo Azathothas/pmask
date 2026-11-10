@@ -33,11 +33,11 @@ per-interface table in `docs/THREAT-MODEL.md` (the `L<n>` id).
 | interface | what it needs | what one process learns about another | what closes it | state | command | case or limit |
 |---|---|---|---|---|---|---|
 | `/proc` directory listing | nothing | that the pid exists, and its name in `readdir` | nothing in this tree | open | `ls /proc/<pid>` | threat-model L1 |
-| `/proc/<pid>/cmdline` | nothing | the label, and its byte length | the window relocation, `src/execimg.rs:779` to `786` | closed | `wc -c < /proc/<pid>/cmdline` | tests/isolation.sh i19-cmdline-is-the-label |
-| `/proc/<pid>/environ` | nothing on a dumpable target | every environment string | `--no-dumpable`, `src/execimg.rs:707` | partial | `wc -c < /proc/<pid>/environ` | tests/isolation.sh i21-environ-refused-with-no-dumpable |
-| `/proc/<pid>/comm` | nothing | the 15-byte comm, which the tree sets to the label | `PR_SET_NAME` at `src/execimg.rs:691` | closed | `cat /proc/<pid>/comm` | tests/isolation.sh i20-comm-is-the-label |
+| `/proc/<pid>/cmdline` | nothing | the label, and its byte length | the window relocation, `relocate_windows` at `src/execimg.rs:875` | closed | `wc -c < /proc/<pid>/cmdline` | tests/isolation.sh i19-cmdline-is-the-label |
+| `/proc/<pid>/environ` | nothing on a dumpable target | every environment string | `--no-dumpable`, `src/execimg.rs:833` to `853` | partial | `wc -c < /proc/<pid>/environ` | tests/isolation.sh i21-environ-refused-with-no-dumpable |
+| `/proc/<pid>/comm` | nothing | the 15-byte comm, which the tree sets to the label | `PR_SET_NAME` at `src/execimg.rs:817` | closed | `cat /proc/<pid>/comm` | tests/isolation.sh i20-comm-is-the-label |
 | `/proc/<pid>/stat` | nothing | the four window bounds, fields 48 to 51 | nothing in this tree | open | `sed 's/^.*) //' /proc/<pid>/stat` | threat-model L2 |
-| `/proc/<pid>/status` | nothing | `TracerPid`, `Seccomp`, the capability sets | `--detach` for `TracerPid`, `src/cli.rs:443` | open | `grep TracerPid /proc/<pid>/status` | threat-model L3 |
+| `/proc/<pid>/status` | nothing | `TracerPid`, `Seccomp`, the capability sets | `--detach` for `TracerPid`, `src/cli.rs:660` | open | `grep TracerPid /proc/<pid>/status` | threat-model L3 |
 | `/proc/<pid>/maps` | nothing on a dumpable target | every mapping, including the relocated block | `--no-dumpable` | partial | `wc -c < /proc/<pid>/maps` | tests/isolation.sh i22-maps-refused-with-no-dumpable |
 | `/proc/<pid>/smaps` | nothing on a dumpable target | the same, per mapping | `--no-dumpable` | partial | `wc -c < /proc/<pid>/smaps` | tests/isolation.sh i23-smaps-refused-with-no-dumpable |
 | `/proc/<pid>/fd` and `fdinfo` | nothing on a dumpable target | open descriptors, including a secret memfd | `--no-dumpable`, plus `--secret-close-on-exec` | partial | `ls /proc/<pid>/fd` | tests/isolation.sh i24-fd-and-fdinfo-refused-with-no-dumpable |
@@ -93,15 +93,19 @@ attempt would return `EFAULT` and prove nothing.
 Session supervisor, same run `[observed]`: `cmdline` 14 bytes, the label,
 `environ` readable but 0 bytes, `maps` 3185 bytes, `smaps` 28899 bytes,
 `auxv` 368 bytes, `exe` 921832 bytes, `TracerPid` set to the probe's own
-pid. The supervisor is not made non-dumpable: `mask_self_label` at
-`src/selfmask.rs:91` to `124` zeroes argv, writes the label, relocates
-the window and sets `comm`, and never calls `PR_SET_DUMPABLE`. Only the
-payload gets that, at `src/execimg.rs:707`.
+pid. The supervisor was dumpable in that run. The self-mask
+(`mask_self_label_with_window`, `src/selfmask.rs:109` to `158`) zeroes
+argv, writes the label, relocates the window and sets `comm`; the tree
+now also calls `PR_SET_DUMPABLE(0)` there, at `src/selfmask.rs:148`, so
+the supervisor reads above are the pre-change shape and need a
+re-measure. The payload's flag is injected in `redact_after_exec` at
+`src/execimg.rs:833` to `853`; in the measured run that was the only
+process that got it.
 
 The consequence, stated plainly: on a default run, without
 `--no-dumpable`, a same-uid peer reads the payload's `environ`, `maps`,
 `smaps`, `fd`, `auxv` and memory. `--no-dumpable` is off by default
-(`src/mask.rs:259`), and the reason is written at `src/mask.rs:44`: a
+(`src/mask.rs:347`), and the reason is written at `src/mask.rs:44`: a
 debugger and a core dump also stop working. The always-redacted surfaces
 are `cmdline` and `comm` `[observed]`.
 
@@ -157,13 +161,14 @@ beyond the TCG fallback.
 
 ### 3.2 The closest userland approximation, and its price
 
-`--unshare` in isolate mode gives the payload its own user, pid and mount
-namespaces and mounts a private procfs (`src/isolate.rs:1079` calls
-`userns::child_setup_proc`, which tries `hidepid=2`, then `subset=pid`,
-then a plain mount at `src/userns.rs:245` to `258`). That closes the *other* direction of the
-same limit: the payload cannot enumerate the host. It costs one
-`unshare` per session and needs unprivileged user namespaces, which this
-host has `[observed]`.
+`--unshare` gives the payload its own user, pid and mount namespaces and
+mounts a private procfs (`src/mask.rs:1696` calls
+`userns::child_setup_proc`; the isolate path calls it at
+`src/isolate.rs:1308`). The function tries `hidepid=2`, then
+`subset=pid`, then a plain mount at `src/userns.rs:343` to `355`. That
+closes the *other* direction of the same limit: the payload cannot
+enumerate the host. It costs one `unshare` per session and needs
+unprivileged user namespaces, which this host has `[observed]`.
 
 For a deployment where an observer seeing "a process exists" is
 unacceptable, the answer is the micro-VM, and the price is the table in

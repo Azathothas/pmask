@@ -1,0 +1,52 @@
+## before: pmask --redact --isolate=net -- sh -c ns check
+pid=pid:[4026532745]
+net=net:[4026532667]
+hostpid=pid:[4026532745]
+rc=0
+## before: pmask --no-redact --isolate -- true (report)
+{
+  "mode": "plain",
+  "mode_reason": "forced",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hardening": "heap",
+  "exit": {"code": 0, "signal": null},
+  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed": 0},
+  "secrets": [],
+  "notes": []
+}
+rc=0
+## before: pmask -q --no-redact --no-dumpable --report=json -- true (payload_dumpable)
+{
+  "mode": "plain",
+  "mode_reason": "forced",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hardening": "heap",
+  "exit": {"code": 0, "signal": null},
+  "execs": {"total": 0, "degraded": 0, "detached": 0, "sized": 0, "sized_skipped": 0, "secret_close_failed": 0},
+  "secrets": [],
+  "notes": [
+    "--no-dumpable was not applied: plain mode does not change the payload's dumpability"]
+}
+## before: pmask --isolate=none nnp/ns
+pmask: isolation: user,mount,pid=off,net=off,uts,ipc,cgroup,tmp=off,landlock:abi=6,no_new_privs,dev,proc=refused(EPERM)
+pmask: isolation degraded: the private procfs refused (EPERM); the payload sees the host's /proc
+NoNewPrivs:	1
+user:[4026532745]
+mnt:[4026532891]
+pmask: mode=isolate secrets=0 exit=0
+## before: pmask -q --isolate (isolation line present?)
+pmask: isolation: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+## before: pmask --env =VALUE plain vs redact
+pmask: mode=plain secrets=0 exit=0
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)
+plain rc=0
+pmask: /bin/true: environment variable name "" must not be empty
+redact rc=255
+## before: PMASK_PROBE_PTRACE=0 pmask -q --audit --secret S=file:... 
+rc=0
+## before: pmask --report=text
+pmask: mode=plain secrets=0 exit=0
+pmask: note: /proc metadata was not redacted here; secrets travelled over descriptors (a literal: or env: source still sat in pmask's own argv or environ)
+rc=0

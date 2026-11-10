@@ -1,0 +1,7 @@
+# --no-exact: NUL count vs argv slot count, ELF entry path, label L9abcdef (8 bytes)
+# kernel 6.12.113+deb13-amd64 uid 1000 pmask pmask 0.1.0-beta.1 (unknown)
+argv_entries=3 cmdline_bytes=11 cmdline_nuls=3 argspan=11 envspan=1
+argv_entries=4 cmdline_bytes=12 cmdline_nuls=4 argspan=12 envspan=1
+argv_entries=5 cmdline_bytes=13 cmdline_nuls=5 argspan=13 envspan=1
+argv_entries=6 cmdline_bytes=14 cmdline_nuls=6 argspan=14 envspan=1
+argv_entries=7 cmdline_bytes=15 cmdline_nuls=7 argspan=15 envspan=1

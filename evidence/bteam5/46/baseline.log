@@ -1,0 +1,35 @@
+== host ==
+6.12.113+deb13-amd64
+uid=1000
+
+== 1. --watch-rename -l proc-evid -- testcases renamer ==
+supervisor=3068335 payload=3068344
+with --watch-rename    Seccomp=2 Seccomp_filters=2 NoNewPrivs=1 Name=proc-evid TracerPid=3068343 Tgid=3068344 Pid=3068344
+renamer reported: 
+stderr: 
+
+== 2. control: the same payload without --watch-rename ==
+supervisor=3071384 payload=3071392
+without the flag       Seccomp=2 Seccomp_filters=1 NoNewPrivs=0 Name=other TracerPid=3071389 Tgid=3071392 Pid=3071392
+renamer reported: 
+
+== 3. plain /bin/sleep 5 ==
+plain sleep            Seccomp=2 Seccomp_filters=1 NoNewPrivs=0 Name=sleep TracerPid=0 Tgid=3074488 Pid=3074488
+
+== 4. supervisor row (the pmask process itself) ==
+supervisor             Seccomp=2 Seccomp_filters=1 NoNewPrivs=0 Name=proc-evid TracerPid=0 Tgid=3075553 Pid=3075553
+payload of that run    Seccomp=2 Seccomp_filters=2 NoNewPrivs=1 Name=proc-evid TracerPid=3075561 Tgid=3075563 Pid=3075563
+
+== 5. the flag-specific pair, repeated three times ==
+run 1: comm=proc-evid nnp=1 filters=2 
+run 2: comm=proc-evid nnp=1 filters=2 
+run 3: comm=proc-evid nnp=1 filters=2 
+
+== 6. --no-new-privs alone (one filter, NNP=1) ==
+--no-new-privs         Seccomp=2 Seccomp_filters=1 NoNewPrivs=1 Name=proc-evid TracerPid=3085828 Tgid=3085829 Pid=3085829
+
+== 7. --watch-rename --no-dumpable (defect #60) ==
+supervisor=3088192 payload=3088201
+watch+nodumpable       Seccomp=2 Seccomp_filters=2 NoNewPrivs=1 Name=other TracerPid=3088200 Tgid=3088201 Pid=3088201
+renamer reported: 
+stderr:

@@ -1,0 +1,9 @@
+=== control C: unshare -U --map-current-user (uid->same uid), dumpable=0 ===
+set dumpable=0 pid=78867
+pid=78867 nspid=78867
+  environ denied
+  maps ok
+  auxv denied
+  exe ok
+  fd denied
+  stat48_51=140733170226755 140733170226763 140733170226763 140733170229232

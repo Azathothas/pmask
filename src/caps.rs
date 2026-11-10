@@ -20,14 +20,20 @@
 use std::io;
 use std::sync::OnceLock;
 
-/// `memfd_secret(2)`; same number on x86-64 and aarch64.
-const SYS_MEMFD_SECRET: libc::c_long = 447;
 /// `landlock_create_ruleset(2)`; same number on x86-64 and aarch64.
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
 /// `pidfd_open(2)`.
 const SYS_PIDFD_OPEN: libc::c_long = 434;
 /// `LANDLOCK_CREATE_RULESET_VERSION`: turn the call into a query.
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
+/// `NETLINK_AUDIT`: the kernel audit netlink protocol.
+const NETLINK_AUDIT: libc::c_int = 9;
+/// `AUDIT_GET`: read the audit status.
+const AUDIT_GET: u16 = 1000;
+/// `NLM_F_REQUEST`: this datagram is a request.
+const NLM_F_REQUEST: u16 = 1;
+/// `NLMSG_ERROR`: the kernel's answer to a refused request.
+const NLMSG_ERROR: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -52,11 +58,16 @@ pub enum State {
     Degraded(String),
     /// The mechanism does not work here.
     Unavailable(String),
+    /// The mechanism works on this host but cannot take effect because
+    /// the mechanism it belongs to is unavailable.  `exact cmdline
+    /// window` is the case: `prctl(PR_SET_MM_MAP)` may be callable while
+    /// there is no redaction for it to make exact.
+    Inapplicable(String),
 }
 
 impl State {
     pub fn ok(&self) -> bool {
-        !matches!(self, State::Unavailable(_))
+        !matches!(self, State::Unavailable(_) | State::Inapplicable(_))
     }
 
     pub fn as_word(&self) -> &'static str {
@@ -64,6 +75,7 @@ impl State {
             State::Active => "active",
             State::Degraded(_) => "degraded",
             State::Unavailable(_) => "unavailable",
+            State::Inapplicable(_) => "n/a",
         }
     }
 
@@ -71,7 +83,7 @@ impl State {
     pub fn reason(&self) -> &str {
         match self {
             State::Active => "",
-            State::Degraded(r) | State::Unavailable(r) => r,
+            State::Degraded(r) | State::Unavailable(r) | State::Inapplicable(r) => r,
         }
     }
 
@@ -207,18 +219,11 @@ impl Caps {
 
         let memfd_secret = match overrides.memfd_secret {
             Some(v) => v,
-            None => {
-                // SAFETY: plain syscall; a failure is the answer.
-                let fd =
-                    unsafe { libc::syscall(SYS_MEMFD_SECRET, 0 as libc::c_long) } as libc::c_int;
-                if fd >= 0 {
-                    // SAFETY: fd is ours.
-                    unsafe { libc::close(fd) };
-                    true
-                } else {
-                    false
-                }
-            }
+            // The probe creates the descriptor through the same helper
+            // the real buffers use, so a probe that succeeds cannot
+            // disagree with the allocation about `MFD_CLOEXEC`, and
+            // there is only one creation site to audit (issue 15).
+            None => crate::mem::secret_memfd_available(),
         };
 
         let mlock = probe_in_child(|| {
@@ -428,7 +433,18 @@ impl Caps {
             ),
             (
                 "exact cmdline window",
-                if self.set_mm_map {
+                if !self.ptrace {
+                    // The row has to read as part of the redaction story:
+                    // the syscall may work, but with no redaction there is
+                    // no window for it to make exact, and a bare "active"
+                    // beside "metadata redaction unavailable" reads as a
+                    // guarantee that cannot be delivered.
+                    State::Inapplicable(
+                        "prctl(PR_SET_MM_MAP) works here, but there is no redaction for it to \
+                         make exact; the row is unused without a redaction mode"
+                            .into(),
+                    )
+                } else if self.set_mm_map {
                     State::Active
                 } else {
                     State::Unavailable(
@@ -631,6 +647,115 @@ impl Caps {
     }
 }
 
+/// True when the kernel audit subsystem answers a status query here.
+///
+/// A `literal:` or `env:` secret whose value is in the supervisor's own
+/// argv or environment is a transient `/proc` exposure.  On a host whose
+/// audit subsystem is live, the exec of the supervisor itself can also be
+/// written to the audit log, which turns the exposure into a durable
+/// record.  That difference is why `PMASK_NO_SELFMASK` refuses the
+/// combination there and only warns elsewhere.
+///
+/// The probe is a `NETLINK_AUDIT` `AUDIT_GET` query, not a guess from the
+/// release string: a container that blocks audit answers `ECONNREFUSED`
+/// and the caller warns.  `PMASK_PROBE_AUDIT` replaces the answer for the
+/// suites, like the other `PMASK_PROBE_<NAME>` hooks.
+pub fn kernel_audit_reachable() -> bool {
+    if let Some(v) = bool_probe("PMASK_PROBE_AUDIT") {
+        return v;
+    }
+    probe_audit()
+}
+
+/// One `sockaddr_nl`; libc does not export the type on every target.
+#[repr(C)]
+struct SockaddrNl {
+    nl_family: libc::sa_family_t,
+    nl_pad: u16,
+    nl_pid: u32,
+    nl_groups: u32,
+}
+
+/// Ask the audit subsystem for its status and treat any answer other
+/// than "there is no audit subsystem here" as reachable.
+fn probe_audit() -> bool {
+    // SAFETY: every call operates on storage owned by this function; the
+    // descriptor is closed on every path.
+    unsafe {
+        let fd = libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            NETLINK_AUDIT,
+        );
+        if fd < 0 {
+            return false;
+        }
+        let addr = SockaddrNl {
+            nl_family: libc::AF_NETLINK as libc::sa_family_t,
+            nl_pad: 0,
+            nl_pid: 0,
+            nl_groups: 0,
+        };
+        let addr_len = std::mem::size_of::<SockaddrNl>() as libc::socklen_t;
+        if libc::bind(
+            fd,
+            &addr as *const SockaddrNl as *const libc::sockaddr,
+            addr_len,
+        ) != 0
+        {
+            libc::close(fd);
+            return false;
+        }
+        // nlmsghdr plus a zeroed audit_status; AUDIT_GET only reads the
+        // header, and the kernel sizes the reply itself.
+        let mut msg = [0u8; 16 + 44];
+        let msg_len = msg.len() as u32;
+        msg[0..4].copy_from_slice(&msg_len.to_ne_bytes());
+        msg[4..6].copy_from_slice(&AUDIT_GET.to_ne_bytes());
+        msg[6..8].copy_from_slice(&NLM_F_REQUEST.to_ne_bytes());
+        let sent = libc::sendto(
+            fd,
+            msg.as_ptr() as *const libc::c_void,
+            msg.len(),
+            0,
+            &addr as *const SockaddrNl as *const libc::sockaddr,
+            addr_len,
+        );
+        if sent < 0 {
+            libc::close(fd);
+            return false;
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // A live subsystem answers at once; a blocked one answers with
+        // ECONNREFUSED.  A silent one is treated as absent.
+        if libc::poll(&mut pfd as *mut libc::pollfd, 1, 200) <= 0 {
+            libc::close(fd);
+            return false;
+        }
+        let mut buf = [0u8; 512];
+        let n = libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0);
+        libc::close(fd);
+        // One nlmsghdr plus an audit_status or an int errno.
+        if n < 20 {
+            return false;
+        }
+        let kind = u16::from_ne_bytes([buf[4], buf[5]]);
+        if kind == NLMSG_ERROR {
+            let errno = i32::from_ne_bytes([buf[16], buf[17], buf[18], buf[19]]);
+            // 0 is the ack of a live subsystem; a negative errno is a
+            // refusal.  EPERM and EACCES mean the subsystem is there and
+            // this caller may not read it, which is still a durable
+            // record the operator cannot see.
+            return errno == 0 || errno == -libc::EPERM || errno == -libc::EACCES;
+        }
+        kind == AUDIT_GET
+    }
+}
+
 /// Read a sysctl through `/proc/sys`, trimmed.
 fn sysctl(rel: &str) -> Option<String> {
     std::fs::read_to_string(format!("/proc/sys/{}", rel))
@@ -779,8 +904,47 @@ mod tests {
         let c = Caps::detect();
         for (name, st) in c.rows() {
             assert!(!name.is_empty());
-            assert!(["active", "degraded", "unavailable"].contains(&st.as_word()));
+            assert!(
+                ["active", "degraded", "unavailable", "n/a"].contains(&st.as_word()),
+                "{} has no state word",
+                name
+            );
         }
+    }
+
+    // issue 13: with no redaction the exact-window row must not read as a
+    // redaction guarantee.  It is reported `n/a`, its reason says why, and
+    // the row is still present (a reader must never have to infer it from
+    // an absence).
+    #[test]
+    fn exact_window_is_inapplicable_without_redaction() {
+        let c = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(false),
+            ..ProbeOverrides::default()
+        });
+        let row = c
+            .rows()
+            .into_iter()
+            .find(|(n, _)| *n == "exact cmdline window")
+            .expect("the exact row must exist");
+        assert_eq!(row.1.as_word(), "n/a", "{:?}", row.1);
+        assert!(
+            row.1.reason().contains("no redaction"),
+            "{:?}",
+            row.1.reason()
+        );
+        assert!(!row.1.ok(), "an inapplicable guarantee is not active");
+        // With redaction the row is the probe's answer.
+        let c = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(true),
+            ..ProbeOverrides::default()
+        });
+        let row = c
+            .rows()
+            .into_iter()
+            .find(|(n, _)| *n == "exact cmdline window")
+            .expect("the exact row must exist");
+        assert_ne!(row.1.as_word(), "n/a");
     }
 
     #[test]
@@ -839,5 +1003,24 @@ mod tests {
         assert_eq!(c.memlock_limit, 8388608);
         assert!(!c.proc_hidden);
         assert!(c.peerpidfd);
+    }
+
+    #[test]
+    fn audit_probe_override_decides_without_the_socket() {
+        // The probe is host state; the override is what the QA suite
+        // drives, so the two answers must be honoured exactly.
+        std::env::set_var("PMASK_PROBE_AUDIT", "1");
+        assert!(kernel_audit_reachable());
+        std::env::set_var("PMASK_PROBE_AUDIT", "0");
+        assert!(!kernel_audit_reachable());
+        std::env::remove_var("PMASK_PROBE_AUDIT");
+    }
+
+    #[test]
+    fn audit_probe_is_deterministic_without_an_override() {
+        // A host either answers or it does not; a flapping probe would
+        // make the refusal depend on timing.
+        std::env::remove_var("PMASK_PROBE_AUDIT");
+        assert_eq!(probe_audit(), probe_audit());
     }
 }

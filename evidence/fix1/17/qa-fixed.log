@@ -1,0 +1,6 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa17-head-payload-survives
+PASS qa17-head-not-sigabrt
+PASS qa17-first-row
+PASS qa17-full-audit-works
+PASS qa17-payload-exit-status

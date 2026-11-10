@@ -1,0 +1,672 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+################ unwrap-audit
+unwrap-audit: 3 accepted site(s), no unmarked site
+################ validate.sh
+== pmask validation run (suffix ViFvKkv, label [kworker/1:2-rcu_gp]) ==
+-- phase 1: negative control (no pmask; markers MUST be observable)
+PASS control-MKViFvKkv1A (detector works, 2 sightings)
+PASS control-MKViFvKkv1D (detector works, 2 sightings)
+-- phase 2: battery under pmask (expect zero sightings)
+PASS MKViFvKkvA: no sightings
+PASS MKViFvKkvB: no sightings
+PASS MKViFvKkvC: no sightings
+PASS MKViFvKkvD: no sightings
+PASS MKViFvKkvE: no sightings
+PASS MKViFvKkvF: no sightings
+PASS MKViFvKkvG: no sightings
+PASS MKViFvKkvH: no sightings
+-- phase 2b: liveness proof (processes really run under the mask)
+PASS liveness: 3 process(es) running with the label, marker unseen
+-- phase 3: functional sanity under pmask
+PASS functional: stdin/stdout/exit-code intact
+PASS functional: exit codes propagate
+-- phase 4: the program still sees its own argv/env
+PASS argv-fidelity: [arg0=[/workspace/wt/fix2/tests/testcases] arg1=[echoargs] arg2=[X1] arg3=[X2] env=[ok]]
+-- phase 5: real argv-secret shapes (cli-spy-style negative control)
+PASS cli-spy-1: control=1 wrapped=0
+PASS cli-spy-2: control=1 wrapped=0
+PASS cli-spy-3: control=1 wrapped=0
+PASS cli-spy-4: control=1 wrapped=0
+PASS cli-spy-5: control=1 wrapped=0
+PASS cli-spy-6: control=1 wrapped=0
+== VERDICT: ALL-PASS ==
+################ suite.sh
+== control (no pmask): markers MUST be visible ==
+PASS control-detects-leaks (1 sightings)
+== T1: single process ==
+PASS t1-cmdline: no 'MK-T1' visible
+== T2: shell children (sh, &, wait) ==
+PASS t2-script-children: no 'MK-T2a' visible
+PASS t2-script-children: no 'MK-T2b' visible
+PASS t2-liveness: 6 process(es) alive with the label
+== T3: spawns from secondary threads (posix_spawn + system) ==
+PASS t3-posix-thread: no 'MK-T3-THREAD' visible
+PASS t3-system-thread: no 'MK-T3-SYSTEM' visible
+PASS t3-liveness: 10 process(es) alive with the label
+== T4: daemon double-fork (reparented to init) ==
+PASS t4-daemon: no 'MK-T4-DAEMON' visible
+== T5: nested shell depth 3 ==
+PASS t5-depth3: no 'MK-T5-DEPTH' visible
+== T6: vfork + execv ==
+PASS t6-vfork: no 'MK-T6-VFORK' visible
+== T7: raw clone(2)+execve(2) from threads (Go-runtime path) ==
+PASS t7-raw-clone: no 'MK-T7-RAW' visible
+PASS t7-liveness: 27 process(es) alive with the label
+== T7b: real Go binary (raw runtime spawns) ==
+PASS t7b-go: no 'MK-T7B-GO' visible
+== T8: comm redacted (the Name column of top/htop) ==
+PASS t8-cmdline: no 'MK-T8' visible
+PASS t8-comm: comm '[kworker/1:2]' present (35)
+== T9: environ redacted, process still works ==
+PASS t9-control-environ-detectable (1 environ hit(s) without pmask)
+PASS t9-liveness: 13 testcases process(es) alive with the label
+PASS t9-liveness: 38 process(es) alive with the label
+PASS t9-environ: no MK-T9-ENV in any environ
+PASS t9-cmdline: no 'MK-T9-ARG' visible
+== T10: exit code passthrough ==
+PASS t10-exitcode
+== T11: stdout/stdin passthrough ==
+PASS t11-stdio
+== T12: program sees its own argv ==
+PASS t12-argv: [arg0=[/workspace/wt/fix2/tests/testcases] arg1=[echoargs] arg2=[A1] arg3=[A2] env=[ok]]
+== VERDICT: FAIL=0 ==
+################ stress.sh
+== S1: race-window probe: continuous spawns vs tight /proc observer ==
+pmask: observer sweeps=25 real-arg sightings=0 label-comm-alive=202
+PASS s1-race
+== S2: stress: 100 sequential execs, exit codes intact ==
+PASS s2-stress (100 ok)
+== S3: kill -9 the tracer -> no survivors (EXITKILL) ==
+PASS s3-exitkill (labelled before: 4, after: 0)
+== S4: SIGTERM passthrough ==
+PASS s4-sigterm
+== S5: stdin passthrough (multi-line) ==
+PASS s5-stdin
+== S6: overhead: 200 execs with/without pmask (wall clock) ==
+plain=0s masked=1s
+== VERDICT: FAIL=0 ==
+################ edge.sh
+PASS e1-missing-binary-exits-127
+PASS e1-not-executable-exits-126
+PASS e2-non-utf8-argv-forwarded
+PASS e3-tracee-cwd-elf (entry-swaps=2)
+PASS e4-long-label-runs
+PASS e4b-label-254-settles-whole
+PASS e4b-254-no-warning
+PASS e4b-label-255-settles-whole
+PASS e4b-255-warning-names-scratch
+PASS e4b-label-300-settles-whole
+PASS e4b-300-warning-names-scratch
+PASS e5-large-argv-forwarded
+PASS e6-control-cmdline-detectable
+PASS e6-supervisor-selfmask
+PASS e7-blank-label [-l-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label=-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [-l -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e8-missing-value-names-flag
+PASS e9-control-script-argv-detectable (1 sightings)
+PASS e9-script-zero-sightings
+PASS e9-script-liveness (2 labelled process(es))
+PASS e9-script-argv-fidelity
+PASS e9-script-fallback-log (lines=1)
+PASS e-control-argv-detectable (1 sightings)
+PASS e10-keep-env-visible (hits=1)
+PASS e10-default-environ-redacted (alive=1)
+PASS e11-no-follow-grandchild-visible (sightings=1)
+PASS e11-no-follow-direct-child-redacted (labelled=1)
+PASS e11-no-follow-grandchild-functional
+PASS e12-no-exit-kill-tree-survives (before=1 after=1)
+PASS e12-default-exit-kill-control (before=1 after=0)
+PASS e13-label-empty (blank comm, empty cmdline: 1 process(es))
+PASS e14-default-no-label (cmdline is the program name, args stripped)
+PASS e15-execveat-argv-fidelity
+PASS e15-execveat-redacted (alive=1)
+PASS e15-fexecve-argv-fidelity
+PASS e15-fexecve-redacted (alive=2)
+PASS e16-two-exec-output (rc=0)
+PASS e16-two-exec-completions (exec-done lines=2)
+PASS e17-no-arguments-prints-usage-and-exits-255
+PASS e17-empty-args-from-fd-is-refused
+PASS e17-empty-program-name-is-refused (rc=127)
+PASS e18-control-untraced-scores-none (TracerPid=0)
+PASS e18-default-traced-scores-high (TracerPid=3121327)
+PASS e18-detach-untraced-scores-none (TracerPid=0)
+PASS e18-secret-holder-label-scores-critical
+PASS e19-control-live-pid-present-in-every-view
+PASS e19-control-dead-pid-absent-in-every-view
+PASS e19-masked-present-in-every-view
+PASS e19-masked-start-time-stable (starttime=78421166)
+PASS e19-control-start-times-differ (tracee=78421166 shell=78419510)
+PASS e19-masked-comm-is-label
+PASS e19-masked-cmdline-hides-argument
+PASS e20-vfork-child-does-not-corrupt-the-parent
+PASS e21-control-all-channels-name-the-real-argv
+PASS e21-masked-dissent-is-the-in-process-execfn (cmd=[mk-e21] span=[7] auxv=[mk-e21] own=[/workspace/wt/fix2/tests/testcases])
+PASS e22-path-resolved-check-returns-the-planted-answer
+PASS e22-direct-proc-read-is-not-the-planted-answer
+== VERDICT: FAIL=0 ==
+################ daemon.sh
+PASS d1-control-secret-is-detectable
+PASS d2-job-received-secret (length 12)
+PASS d3-secret-in-no-proc-entry
+PASS d3b-control-environ-is-readable (2517 bytes)
+PASS d3b-daemon-job-environ-is-redacted
+PASS d3b-daemon-environ-is-refused
+PASS d4-daemon-selfmask
+PASS d5-stdio-and-exit-status
+PASS d6-failed-job-keeps-daemon
+SKIP d11-run-as-uid (needs root to start the daemon and switch to uid 1000)
+daemon.sh: 307: cannot open /proc/3141304/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142350/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142351/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142352/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142353/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142354/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142355/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142356/cmdline: No such file
+daemon.sh: 307: cannot open /proc/3142357/cmdline: No such file
+PASS d7-cli-secret-in-no-proc-entry
+PASS d7-cli-child-cmdline-is-label
+PASS d8-same-uid-can-read-fd3-documented-hazard
+PASS d7b-control-environ-is-readable (2517 bytes)
+PASS d7b-payload-environ-is-redacted
+PASS d7b-supervisor-environ-is-refused
+PASS d7-cli-descriptor-at-3
+PASS d7-cli-bytes-reach-child
+PASS d7-cli-memfd-backing
+PASS d7-cli-sealed-against-write
+PASS d7-cli-report-names-the-secret
+PASS d9-help-has-no-tmp-fallback
+PASS d10-clean-job-is-silent
+PASS d10-degraded-job-is-reported (pmask: 1 of 1 execs degraded (post-exec))
+PASS d10-quiet-daemon-stays-quiet
+== VERDICT: FAIL=0 ==
+################ daemon_neg.sh
+PASS n1-socket-mode-600 (600)
+PASS n2-bad-magic (response code=255 signal=none msg=pmaskd: bad request: bad magic (protocol mismatch?))
+PASS n2-daemon-survives
+PASS n3-bad-version (response code=255 signal=none msg=pmaskd: unsupported protocol version 9, the daemon speak)
+PASS n3-daemon-survives
+PASS n4-old-banner (response code=255 signal=none msg=pmaskd: protocol mismatch: the client speaks protocol 1,)
+PASS n4-daemon-survives
+PASS n5-argc-too-large (response code=255 signal=none msg=pmaskd: bad request: argc too large)
+PASS n5-daemon-survives
+PASS n6-argument-too-large (response code=255 signal=none msg=pmaskd: bad request: argument too large)
+PASS n6-daemon-survives
+PASS n7-request-too-large (response code=255 signal=none msg=pmaskd: job refused: job arguments are 1228802 bytes, th)
+PASS n7-daemon-survives
+PASS n8-label-too-large (response code=255 signal=none msg=pmaskd: bad request: label is 8388608 bytes, the limit i)
+PASS n8-daemon-survives
+PASS n9-label-nul (response code=255 signal=none msg=pmaskd: bad request: label must not contain NUL, LF or C)
+PASS n9-daemon-survives
+PASS n10-truncated-frame (response code=255 signal=none msg=pmaskd: bad request: failed to fill )
+PASS n10-daemon-survives
+PASS n11-connect-and-close (client rc=0; the daemon's survival is the assertion)
+PASS n11-daemon-survives
+PASS n12-zero-fds (response code=255 signal=none msg=pmaskd: expected exactly 3 file descriptors, got 0)
+PASS n12-daemon-survives
+PASS n13-five-fds (response code=255 signal=none msg=pmaskd: too many file descriptors (control data truncate)
+PASS n13-daemon-survives
+PASS n14-stalled-client-dropped (2s, rc=0, elapsed_ms=2019 first_read=1
+response code=255 signal=none msg=pmaskd: bad request: Resou)
+PASS n14-daemon-survives
+PASS n15-symlink-refused (pmaskd: refusing to start: /tmp/pmask-neg.3150561/symlink.sock is a symbolic link)
+PASS n16-plain-file-refused (pmaskd: refusing to start: /tmp/pmask-neg.3150561/plain.sock exists and is not a socket)
+PASS n17-live-socket-not-stolen (pmaskd: refusing to start: another daemon is already listening on /tmp/pmask-neg.3150561/live.sock)
+PASS n17-daemon-survives
+PASS n18-stale-socket-replaced
+PASS n19-double-fork-job-keeps-daemon (client rc=0)
+PASS n19-daemon-survives
+PASS n20-daemonizing-job-releases-client (0s, rc=0)
+PASS n21-env-file-reaches-job (NEG_ONLY=value-from-file)
+PASS n21-no-inherit-env (absent variable is unset)
+PASS n21-control-inherit-env (default inherits)
+PASS n22-label-less-client-gets-daemon-label (2 processes)
+PASS n23-newline-label-refused (response code=255 signal=none msg=pmaskd: bad request: label must not contain NU)
+PASS n23-daemon-survives
+Killed
+PASS n24-job-timeout (2s, rc=137)
+PASS n24-daemon-survives
+SKIP n25-unauthorised-uid (needs root to switch to uid 1000)
+PASS n26-sigterm-stops-with-a-stalled-worker (worker 3168421, exit 0)
+PASS n27-ping-answered (response code=0 signal=none msg=protocol=2 label=pmask-job uid=1000 run_as_uid=false jobs=)
+PASS n27-daemon-survives
+PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.3150561/visible is mode 0755; group or other can read and traverse i)
+== VERDICT: FAIL=0 ==
+################ options.sh
+PASS o1-help-names-selfmask-escape
+PASS o1-help-documents-dash-label
+PASS o2-argv0-override
+PASS o3-default-argv0-is-original-string
+PASS o4-comm-override
+PASS o4-comm-over-15-bytes-rejected
+PASS o5-nul-label-rejected-run-and-spawn
+PASS o6-newline-label-rejected
+PASS o7-dash-label-forms-agree
+PASS o8-debug-hides-env
+PASS o9-env-reaches-program
+PASS o9-env-file-reaches-program
+PASS o9-env-and-env-file-hidden-from-proc
+PASS o9-control-keep-env-secret-visible
+PASS o10-keep-env-name-visible-secret-hidden
+PASS o10-control-default-redacts-path
+PASS o11-args-from-fd-secret-absent
+PASS o11-args-from-fd-program-gets-arguments
+PASS o11-control-observer-sees-plain-argv
+options.sh: 334: cannot open /proc/3239405/environ: Permission denied
+PASS o12-supervisor-comm-is-label
+PASS o12-supervisor-cmdline-is-label
+PASS o12-supervisor-hides-argv-and-environ
+PASS o12-control-no-selfmask-leaves-argv
+PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
+INFO self-entry-window 495ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
+PASS o14-on-exit-detach-keeps-background-child
+PASS o14-on-exit-kill-terminates-background-child
+PASS o14-on-exit-wait-waits (detach=0s wait=3s)
+SKIP o15-no-dumpable (needs root to switch to uid 1000)
+PASS o16-no-new-privs-sets-flag
+PASS o16-watch-rename-implies-no-new-privs
+PASS o16-control-default-leaves-flag-clear
+PASS o17-watch-rename-keeps-label
+PASS o17-control-without-watch-rename-comm-changes
+PASS o17b-watch-rename-refusal-is-fatal
+PASS o17b-watch-rename-success-is-silent
+PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
+PASS o18-rexec-maps-has-no-disk-path
+PASS o18-control-exe-is-disk-path
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=60)
+PASS o20-daemon-with-mask-options-warns
+PASS o20-quiet-suppresses-daemon-warning
+PASS o20-control-label-only-has-no-warning
+PASS o21-env-file-no-separator-refused
+PASS o21-env-file-empty-key-refused
+PASS o21-env-file-nul-byte-refused
+PASS o21-control-good-key-accepted
+PASS o22-secret-keeps-path
+PASS o22-secret-keeps-home
+PASS o22-secret-fd-map-present
+PASS o22-plain-secret-keeps-path
+PASS o23-args-from-fd-oversize-refused
+PASS o24-daemon-refuses-secret
+PASS o24-daemon-refuses-isolate
+PASS o24-daemon-refuses-no-redact
+PASS o24-control-daemon-alone-connects
+PASS o25-doctor-help-names-landlock
+PASS o25-doctor-accepts-landlock
+PASS o26-secret-args-from-fd-runs-the-program
+PASS o27-report-carries-the-degradation-counts
+PASS o27-refused-window-relocation-is-counted
+PASS o27-secret-run-is-dumpable
+PASS o27-no-dumpable-is-reported
+PASS o28-plain-refusal-names-the-flag-to-drop
+PASS o28-no-secret-close-on-exec-is-named
+PASS o28-help-says-when-the-flag-is-refused
+PASS o29-report-refused-before-args-from-fd
+PASS o29b-report-refused-on-a-plain-run
+PASS o29c-report-refused-on-a-daemon-job
+PASS o30-image-path-runs-from-a-memfd
+PASS o30b-image-stdin-runs-from-a-memfd
+PASS o30c-image-from-fd-runs-from-a-memfd
+PASS o30d-image-non-elf-refused
+PASS o30e-image-and-args-from-fd-refused
+PASS o31-rexec-named-temp-carrier
+PASS o31-rexec-temp-file-is-removed
+PASS o32-refused-image-is-reported (rc=126)
+PASS o32-explicit-disk-fallback-is-reported
+PASS o33-hugetlb-reports-its-backing (pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd)
+PASS o34-rexec-runs-from-a-noexec-mount (plain refused, rexec ran)
+PASS o35-argv0-is-the-same-on-the-disk-and-image-paths
+PASS o36-exec-once-reuses-one-image (1 inode in 100 execs)
+PASS o36-control-without-exec-once-runs-from-disk
+PASS o36-exec-once-keys-by-program (2 inodes for 2 programs)
+PASS o36-exec-once-temp-file-is-removed
+PASS o37-scope-name-ran
+PASS o38-empty-env-key-is-refused-by-name
+== VERDICT: FAIL=0 ==
+################ core.sh
+PASS k1-thread-exec-keeps-argv
+PASS k2-control-sees-tail-5000 (1)
+PASS k2-fidelity-5000 (len=5015 byte-exact tail)
+PASS k2-no-tail-leak-5000
+PASS k2-control-sees-tail-100000 (1)
+PASS k2-fidelity-100000 (len=100017 byte-exact tail)
+PASS k2-no-tail-leak-100000
+PASS k3-argv-complete-10000
+PASS k3-no-sighting
+SKIP k4-32bit (tests/testcases32 absent: the i686 build is part of vm/run.sh)
+PASS k5-supervisor-exits (rc=0 in 0s)
+PASS k5-detach-keeps-background-job (1 alive with the label, 0 sightings)
+PASS k5-on-exit-kill-terminates-tree (0 alive after 1 polls)
+PASS k5-on-exit-wait-waits (2s)
+PASS k6-sigstop-holds (file frozen at 4 bytes)
+PASS k6-sigcont-resumes (size 4 -> 17)
+PASS k8-retry-keeps-entry-swap (swaps=2 rereads=0)
+PASS k9-failed-repoint-zeroes-and-warns (0 sightings)
+PASS k9-failed-repoint-resumes-cleanly (exit 0)
+PASS k10-summary-names-post-exec (pmask: 2 of 2 execs degraded (post-exec x2))
+PASS k10-script-is-not-called-unredacted
+PASS k10-quiet-prints-nothing
+PASS k10-clean-elf-run-is-silent
+PASS k10-clean-secret-run-is-silent
+PASS k10-clean-run-has-no-duplicate-line
+PASS k15-refused-window-is-reported (pmask: 1 of 1 execs kept the kernel's argv and environ windows (PR_SET_MM_MAP refused))
+PASS k15-quiet-prints-nothing
+PASS k15-accepted-window-is-silent
+PASS k15-window-kept (arg extent 16 = label + argc, environ 41 NUL bytes not empty)
+PASS k15b-real-prctl-refusal-is-reported (rc=0)
+PASS k15b-real-refusal-keeps-the-window (extent 13 = label + argc)
+PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
+INFO completion-stop 4986us reads=12 (4000-entry env, kernel 6.12.113+deb13-amd64, x86_64, accel bare metal)
+PASS k12-thread-comm-is-label (4 of 4 threads)
+PASS k12-setproctitle-rewrite-keeps-args
+PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
+PASS k13-at-execfn-is-the-real-path (execfn=/workspace/wt/fix2/tests/testcases)
+SKIP k13-setuid (needs root to create a set-uid file)
+PASS k13-execveat-argv-intact (entry swaps: 2)
+PASS k13-fexecve-argv-intact (entry swaps: 2)
+PASS k13b-at-execfn-diverges (payload=/workspace/wt/fix2/tests/testcases auxv=core-label-x)
+PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
+PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 3423922: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k17-empty-argv-element-is-forwarded
+PASS k14-thread-starts-settled (settled=4 slow=0)
+== VERDICT: FAIL=0 ==
+################ audit.sh
+SKIP audit (needs root)
+== VERDICT: FAIL=0 SKIP ==
+################ store.sh
+PASS s1-init-on-fresh-home
+PASS s1-store-is-0600
+PASS s1-store-dir-is-0700
+PASS s1-created-chain-is-0700
+PASS s1-set-and-get-on-fresh-home
+PASS s2-existing-directory-mode-untouched (still 755)
+PASS s3-planted-symlink-not-followed (sentinel intact, store written)
+PASS s4-stale-temp-not-reused (store 0600, both stale files untouched)
+PASS s4-no-temp-file-left-behind
+PASS s5-shared-directory-refused (rc=255, names the opt-in)
+PASS s5-shared-directory-accepted-with-optin (store 0600)
+PASS s6-concurrent-set-one-wins (round 1: one success, one lock refusal, store opens with [BETA,])
+PASS s6-concurrent-set-one-wins (round 2: one success, one lock refusal, store opens with [ALPHA,])
+PASS s6-concurrent-set-one-wins (round 3: one success, one lock refusal, store opens with [ALPHA,])
+PASS s7-crafted-m-cost-rejected (0s, m_cost 4294967295 KiB exceeds the ceiling 1048576 KiB)
+PASS s8-kdf-ceiling-overridable (default refused at [ceiling 1048576 KiB], raised run reached the tag check)
+PASS s8-malformed-ceiling-refused
+PASS s9-weak-store-refused (names PMASK_ALLOW_WEAK_KDF)
+PASS s9-weak-store-optin-reaches-decrypt (bounds passed, tag check is next)
+PASS s10-sequential-writes-both-land (ONE,TWO,)
+PASS s10-newer-entry-survives-a-later-write (NEWER,ONE,STALE,TWO,)
+PASS s11-readonly-directory-refuses-write (store unchanged, still opens, no temp file)
+PASS s12-passphrase-file-uses-the-first-line
+PASS s13-nul-passphrase-refused
+PASS s14-oversize-passphrase-refused
+== VERDICT: FAIL=0 ==
+################ isolation.sh
+PASS i0a-isolate-fs-refused-by-the-parser
+PASS i0a-help-does-not-advertise-isolate-fs
+PASS i0b-payload-unit-permits-ptrace
+PASS i17a-profile-ptrace-allowed (mode=redact reason=[] metadata_redaction=true)
+PASS i17b-profile-ptrace-banned (mode=plain reason=[seccomp] metadata_redaction=false)
+PASS i17c-profile-memfd-present (mode=redact reason=[] memfd_secret=true)
+PASS i17d-profile-memfd-absent (mode=redact reason=[] memfd_secret=false)
+PASS i17e-profile-userns-present (mode=isolate reason=[] isolation=true)
+PASS i17f-profile-userns-absent (mode=redact reason=[isolate_unavailable] isolation=false)
+PASS i17g-profile-landlock-abi-0 (mode=redact reason=[] landlock_abi=0)
+PASS i17h-profile-landlock-abi-1 (mode=redact reason=[] landlock_abi=1)
+PASS i17i-profile-landlock-abi-3 (mode=redact reason=[] landlock_abi=3)
+PASS i17j-profile-landlock-abi-6 (mode=redact reason=[] landlock_abi=6)
+PASS i17-control-ptrace-host-value-is-a-row-value (true)
+PASS i17-control-memfd-host-value-is-a-row-value (true)
+PASS i17-control-userns-host-value-is-a-row-value (true)
+PASS i17-control-landlock-host-value-is-a-number (6)
+PASS i17-control-a-wrong-mode-is-refused
+PASS i17-control-a-wrong-probe-is-refused
+PASS i1-effective-set-names-every-mechanism: user,mount,pid,net,uts,ipc,cgroup,tmp,landlock:abi=6,no_new_privs,dev,proc:hidepid2
+PASS i1-set-starts-with-the-unconditional-namespaces
+PASS i1-off-switches-are-named-not-omitted
+PASS i1-none-means-no-isolation (no report, NoNewPrivs=0)
+PASS i2-no-new-privs-set-in-the-payload
+PASS i2-control-flag-clear-without-isolation
+PASS i3-payload-sees-only-itself (inside=1 host=57)
+PASS i3-control-pid-off-sees-the-host (off=60 host~57 isolated=1)
+PASS i4-neutral-hostname-inside (host=errand-pyztg9rss42g inside=pmask)
+PASS i4-control-without-isolation-sees-the-host-name
+PASS i5-ipc-namespace-is-not-the-host's (ipc:[4026533314])
+PASS i6-cgroup-namespace-is-not-the-host's (cgroup:[4026533382])
+PASS i6-cgroup-path-is-the-namespace-root
+PASS i7-private-tmp-hides-the-host's-files
+PASS i7-control-tmp-off-sees-the-host's-files
+PASS i7b-payload-under-tmp-still-runs (rc=0 inside=1)
+PASS i7b-payload-under-tmp-reports-the-tmp-degradation
+PASS i8-dev-holds-only-the-expected-nodes (fd full null random stderr stdin stdout tty urandom zero )
+PASS i8-dev-has-the-basic-nodes
+PASS i8-host-dev-node-is-gone (/dev/kvm exists on the host, absent inside)
+PASS i8-bound-node-is-usable
+PASS i9-refused-mount-does-not-abort-the-run
+PASS i9-refused-mount-is-named-in-the-description
+PASS i9-refused-mount-carries-a-degraded-line
+PASS i10-landlock-abi-is-reported (abi=6)
+PASS i10-landlock-still-allows-the-system-directories
+PASS i10-landlock-denies-a-path-outside-the-allowlist (/workspace/wt/fix2/tests/../Cargo.toml)
+PASS i10-control-canary-is-readable-without-isolation
+PASS i11-stdout-and-exit-status-pass-through (rc=7)
+PASS i11-handled-signal-reaches-the-payload (rc=42)
+PASS i11-pid-namespace-init-drops-a-default-action-signal (isolated rc=0, unisolated rc=143)
+PASS i12-env-reaches-the-isolated-payload
+PASS i12-env-file-reaches-the-isolated-payload
+PASS i12-control-env-not-set-without-the-flag
+PASS i12-inherited-path-survives
+PASS i13-label-not-applied-is-visible
+PASS i13b-supervisor-cmdline-is-the-label
+PASS i13c-supervisor-cmdline-is-the-program-basename
+PASS i14-isolate-refuses-close-on-exec
+PASS i14-refusal-advice-names-isolate
+PASS i15-isolate-refuses-an-env-secret
+PASS i15-refused-env-secret-leaves-no-process
+PASS i15-isolate-refuses-a-literal-secret
+PASS i15b-isolate-delivers-a-file-secret
+isolation.sh: 843: cannot open /proc/3519293/environ: Permission denied
+PASS i15-supervisor-environ-is-masked
+PASS i15-control-payload-environ-keeps-the-value (2)
+PASS i15-value-is-gone-after-the-run
+PASS i16-no-secret-close-on-exec-is-named
+PASS i18-redact-isolate-composes-label-and-private-view (inside=2 outside=62)
+PASS i18-redact-and-no-redact-contradict
+PASS i19-matrix-sessions-are-live (masked=3524548 control=3525467)
+PASS i19-cmdline-is-the-label (bytes=12)
+PASS i20-comm-is-the-label (masked=mkisomatrix control=testcases)
+PASS i21-environ-refused-with-no-dumpable
+PASS i22-maps-refused-with-no-dumpable (control bytes=2757)
+PASS i23-smaps-refused-with-no-dumpable (control bytes=22901)
+PASS i24-fd-and-fdinfo-refused-with-no-dumpable (control fd=3 fdinfo=3)
+PASS i25-exe-refused-with-no-dumpable (control=/workspace/wt/fix2/tests/testcases)
+PASS i26-cwd-and-root-refused-with-no-dumpable (control cwd=/workspace/wt/fix2/tests root=/)
+PASS i27-ns-refused-with-no-dumpable (control=pid:[4026532664])
+PASS i28-auxv-refused-with-no-dumpable (control bytes=368)
+PASS i29-syscall-refused-with-no-dumpable (control bytes=57)
+PASS i30-io-refused-with-no-dumpable (control bytes=94)
+PASS i31-mem-refused-with-no-dumpable
+PASS i32-pidfd-getfd-refused-with-no-dumpable (masked=errno=EPERM control=ok)
+PASS i33-process-vm-readv-refused-with-no-dumpable (masked=errno=EPERM control=ok bytes=8)
+PASS i34-process-vm-writev-refused-with-no-dumpable (masked=read errno=EPERM control=ok bytes=8)
+PASS i35-ptrace-attach-and-seize-refused-with-no-dumpable (attach masked=errno=EPERM control=ok; seize masked=errno=EPERM control=ok)
+PASS i36-kcmp-refused-with-no-dumpable (masked=errno=EPERM control=ok result=0)
+== VERDICT: FAIL=0 ==
+################ lease.sh
+== A: leases ==
+PASS a1-startup-names-the-budget
+PASS a2-three-uses-released
+PASS a3-refused-after-budget (rc=1)
+PASS a3-refusal-names-the-reason
+PASS a3-refusal-says-zeroised
+PASS a3-refusal-names-the-lease-id
+PASS a4-refusal-is-sticky (rc=1)
+PASS a5-unspent-secret-unaffected
+PASS a7-refusal-printed-no-value
+PASS a6-ttl-expires (first=ok then rc=1)
+PASS a6-expiry-names-the-reason
+PASS a8-delivery-first-use (len=15)
+PASS a8-delivery-second-use (len=15)
+PASS a8-delivery-third-use-refused
+== B: revocation ==
+PASS b1-revoke-drops-the-plaintext (before=ok then rc=1)
+PASS b1-refusal-names-the-lock (REVOKE)
+PASS b1-agent-says-it-dropped-the-plaintext
+PASS b4-ping-reports-locked
+PASS b2-sigusr1-drops-the-plaintext (rc=1)
+PASS b2-refusal-names-sigusr1
+PASS b3-idle-lock-fires (first=ok then rc=1)
+PASS b3-idle-lock-names-the-reason
+== C: the use audit ==
+PASS c1-one-line-per-release (2 lines)
+PASS c1-line-starts-with-the-version
+PASS c1-line-carries-a-unix-time
+PASS c1-line-carries-the-secret-name
+PASS c1-line-carries-the-peer-exe (/workspace/wt/fix2/tests/pmask)
+PASS c1-line-carries-a-pid (3557009)
+PASS c1-line-has-eight-fields
+PASS c1-line-ends-with-a-64-hex-chain
+PASS c1-line-carries-a-lease-id (32 hex characters)
+PASS c2-audit-carries-no-value
+PASS c4-audit-command-counts-two
+PASS c4-audit-head-matches-the-file
+PASS c3-chain-verifies-independently (sha256sum, 2 lines)
+PASS c3-chain-detects-an-edit (line 2)
+== D: the socket and the peer ==
+PASS d1-directory-and-socket-modes (dir=700 sock=600)
+PASS d5-negative-control (a plain process of this uid is readable)
+PASS d5-agent-refuses-mem-maps-smaps-environ
+PASS d6-peer-identity (pidfd + identity inode)
+PASS d6-ping-names-the-limit
+PASS d6b-refused-option-prints-the-fallback-warning
+PASS d2-writable-directory-refused (pmask: agent: refusing to serve: /tmp/pmask-lease.3528157/bad/sec is mode 0777; group or other can reach it.  )
+PASS d2-no-socket-was-bound
+PASS d3-symlinked-socket-refused (pmask: agent: warning: no executable policy; every program of uid 1000 may ask for every secret)
+PASS d3-the-symlink-was-not-removed
+PASS d4-no-default-refused-and-names-flag (pmask: agent: refusing to serve: no socket path: XDG_RUNTIME_DIR is unset or not private, so pass --socket PAT)
+== E: optional per-secret policy ==
+PASS e1-matching-executable-admitted
+PASS e2-other-secret-denied (rc=1)
+PASS e2-denial-names-the-policy
+PASS e3-other-executable-denied-by-default
+PASS e4-listed-after-a-policy-refusal-at-the-connection
+== F: the peer is re-checked on every request ==
+PASS f1-post-exec-request-refused (ERR secret 'TOKEN' is not allowed for executable /usr/bin/dash by this agent's policy)
+PASS f1b-control-the-same-request-is-served-when-both-images-are-admitted
+== VERDICT: FAIL=0 ==
+################ secrets.sh
+PASS a1-colliding-names-refused
+PASS a2-punctuation-collision-refused
+PASS a3-empty-name-refused
+PASS a4-over-long-name-refused
+PASS a5-distinct-names-accepted
+PASS b1-read-is-repeatable
+PASS b2-newline-not-doubled
+PASS b3-newline-added-for-a-bare-value
+PASS b4-no-newline-is-byte-exact
+PASS b5-read-by-descriptor
+PASS c1-close-on-exec-withholds-it-from-a-grandchild
+PASS c1b-control-inherit-lets-the-grandchild-read
+PASS c1c-close-on-exec-withholds-it-at-the-fork
+PASS c1d-close-targets-are-the-installed-numbers
+PASS c1g-close-on-exec-withholds-it-from-a-thread-spawn
+PASS c1h-close-on-exec-withholds-it-from-a-vfork-spawn
+PASS c1i-clone-files-keeps-the-shared-descriptor
+PASS c1j-a-thread-fork-after-the-main-thread-exits-loses-the-descriptor
+PASS c1k-a-failed-close-is-re-attempted-in-the-child
+PASS c1l-rexec-with-a-secret-still-runs
+PASS c1m-a-failed-image-relocation-refuses-rexec
+PASS c1n-the-default-detach-policy-is-named
+PASS c1n-control-wait-policy-has-no-note
+PASS c1e-detach-conflict-is-reported
+PASS c1f-plain-mode-refuses-close-on-exec
+PASS c1f-control-plain-mode-runs-without-the-flag
+PASS c2-burn-mode-can-truncate (seals=13)
+PASS c3-default-seals-refuse-a-truncate
+PASS d1-plain-mode-refuses-a-literal
+PASS d2-allow-argv-secret-warns-and-runs
+PASS d3-file-source-works-without-redaction
+PASS e1-report-json-has-the-documented-keys
+PASS e2-squeezed-memlock-is-reported (heap)
+== VERDICT: PASS=33 FAIL=0 SKIP=0 ==
+################ compare.sh
+FIELDS variant pid comm exe tracer_pid cmdline_bytes stat_arg_span nul_count nul_maxrun canary_in_cmdline canary_in_environ environ_bytes auxv_execfn_contains_canary argstart_vma mem_canary_readable
+ROW control 3596549 sh /usr/bin/dash 0 34 34 4 1 1 1 2582 0 7ffcc0db9000-7ffcc0dda000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+ROW redacted 3599192 ci-runner /usr/bin/dash 3599191 10 10 1 1 0 0 0 0 7eff10ad3000-7eff10ad7000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+SUPERVISOR redacted maps_bytes=REFUSED payload_maps_bytes=2146
+ROW redacted-nodumpable 3601433 ci-runner SKIP 3601432 10 0 1 1 0 SKIP SKIP SKIP SKIP SKIP
+SUPERVISOR redacted-nodumpable maps_bytes=REFUSED payload_maps_bytes=REFUSED
+SUPERVISOR control maps_bytes=2146
+MAP_FILES rexec_range=561ce4a70000-561ce4a8b000 rexec_target=/memfd:ci-runner (deleted) plain_range=55d0749bc000-55d0749d7000 plain_target=/workspace/wt/fix2/tests/testcases
+SCRIPT-WINDOW window_us=493 method=completion-stop
+DETACH-TREE labelled=1 unlabelled=2 visible_grand=1 visible_child=1 detached=1
+AUDIT audit-report
+ROW redacted-detach 3655414 ci-runner /usr/bin/dash 0 10 10 1 1 0 0 0 0 7f6aa86c0000-7f6aa86c4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack] 1
+
+human table: one row per variant, the same values as the ROW lines
+variant          pid     comm           tracer cmd_bytes arg_span nuls  nul_run canary_cmd canary_env env_bytes auxv_canary mem_canary   scanned strings_bytes
+control          3596549 sh             0      34        34       4     1       1          1          2582      0           1            2736128 0         
+redacted         3599192 ci-runner      3599191 10        10       1     1       0          0          0         0           1            2744320 0         
+redacted-nodumpable 3601433 ci-runner      3601432 10        0        1     1       0          SKIP       SKIP      SKIP        SKIP         SKIP   SKIP      
+redacted-detach  3655414 ci-runner      0      10        10       1     1       0          0          0         0           1            2744320 0         
+
+detail: exe, the mapping that holds arg_start, and the mappings that
+detail: hold the canary in /proc/<pid>/mem, per variant
+control          exe=[/usr/bin/dash]
+                 argstart_vma=[7ffcc0db9000-7ffcc0dda000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+redacted         exe=[/usr/bin/dash]
+                 argstart_vma=[7eff10ad3000-7eff10ad7000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+redacted-nodumpable exe=[SKIP]
+                 argstart_vma=[SKIP]
+                 mem_canary_in=[-]
+redacted-detach  exe=[/usr/bin/dash]
+                 argstart_vma=[7f6aa86c0000-7f6aa86c4000|rw-p|00000000|00:00|0||||||||||||||||||||||||||[stack]]
+                 mem_canary_in=[[stack](rw-p) ]
+
+canary PMKCAN-BmKgPuy was an argv element of the job and PMK_COMPARE_CANARY held it
+in the environment.
+mem_canary comes from a page-by-page scan of every readable mapping in
+/proc/<pid>/mem.  strings(/proc/<pid>/mem) is not used because it seeks
+from offset 0, page 0 is unmapped, the read fails with EIO and it
+reports nothing at all, even for the control whose canary sits in its
+stack mapping.  The strings_bytes column is that figure, and it is why
+the column exists.
+COMPARE: OK
+################ conformance.sh
+PASS args-hidden cmdline=[cfm-conf|]
+PASS args-visible-control canary visible in pid 3659878 without supervision
+PASS environ-hidden
+PASS environ-keep-control environ=[||||||||||||||||||||||||||||||||||||||||PMK_CONF_KEEP=CFMCON]
+PASS comm-is-label
+PASS comm-control unsupervised comm is [sh]
+PASS ps-args-is-label
+PASS ps-args-control
+PASS supervisor-selfmask comm=[cfm-conf] cmdline=[cfm-conf|]
+PASS same-uid-exe-maps exe=[/usr/bin/dash]
+PASS same-uid-environ-read
+PASS holder-environ-refused
+PASS payload-session pid=3664658
+PASS secret-absent
+PASS core-limit-zero holder=[0 0] payload=[0 0]
+PASS core-limit-control payload soft=[0] hard=[18446744073709551615] without a secret
+PASS secret-fd-is-memfd fd=3 seals=15 write_errno=1 link=/memfd:pmask-secret (deleted)
+PASS secret-fd-control seals=[-1] for a plain file (the memfd set is 15)
+PASS dumpable-default
+PASS dumpable-nodumpable
+PASS nodumpable-refuses
+SKIP observer-other-uid: needs root to create a second uid; its cmdline and comm half is what args-hidden and comm-is-label measure
+SKIP observer-root: this suite runs as uid 1000, so root's view cannot be observed from here
+SKIP observer-kernel: a kernel-level attacker is outside the process's view, so no case can measure it
+CONFORMANCE: PASS pass=21 fail=0 skip=3
+################ regressions.sh
+PASS r1-control-execveat-refused-execve-allowed
+PASS r1-refused-execveat-reports-and-uses-the-next-carrier (rc=0)
+PASS r1b-refused-image-is-reported (rc=126)
+PASS r1-control-the-payload-runs-without-rexec
+PASS r2-forked-child-does-not-hold-the-descriptor
+PASS r2-control-without-the-flag-it-is-held
+== VERDICT: FAIL=0 ==
+################ FINAL: ALL-PASS

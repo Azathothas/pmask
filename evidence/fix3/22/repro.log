@@ -1,0 +1,10 @@
+### baseline: /tmp/basebin/pmaskd (qa-base, fa46e62), --jobs 1 --io-timeout 0
+  base: SIGTERM ignored, still alive after 12s (the defect)
+  base: socket STILL PRESENT
+
+### fixed: target/release/pmaskd --jobs 1 --io-timeout 0
+  fixed: exited after 0s, status 0
+  fixed: socket removed
+
+### fixed: target/release/pmaskd --jobs 2 --io-timeout 0
+  jobs=2: exited after 1s

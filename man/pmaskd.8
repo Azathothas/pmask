@@ -20,6 +20,24 @@ only to uids that may already do that.
 Use
 .B \-\-run\-as\-uid
 on a root daemon to run each job with the client's own uid and gid.
+.PP
+.B pmaskd
+does not own the encrypted store.
+The store is unlocked and served by
+.BR "pmask agent" ,
+and a job reaches it through a
+.B \-\-secret
+.B NAME=agent:NAME
+source.
+.B pmaskd
+accepts neither
+.B \-\-store
+nor
+.BR \-\-passphrase\-file :
+both are unknown options and exit 255.
+A job environment is loaded from
+.BR \-\-env\-file ,
+never from the store.
 .SH OPTIONS
 .TP
 .BR \-S ", " \-\-socket " \fIPATH\fR"
@@ -132,7 +150,22 @@ The daemon answers it after the same uid check a job gets, with the
 protocol version, the label, its uid, whether
 .B \-\-run\-as\-uid
 is in force, the job limits and the peer-identity method in use.
-It never reports an environment value.
+The body is one
+.B key=value
+line per field. Who asks decides how much of it is served: the daemon's
+own uid and root get every field, including the allowed uids, the socket
+mode, the timeouts, the job-argv cap and the peer-identity method.
+Another uid admitted by
+.B \-\-allow\-uid
+gets the protocol version, the label, the daemon uid and
+.B run_as_uid
+only, because those are what a client needs to frame a job; the policy
+fields are not on the wire at all.
+A
+.B detail=
+line says which body was served.
+A uid the daemon refuses gets the refusal line instead.
+The reply never reports an environment value.
 .PP
 Daemon to client:
 .PP
@@ -161,6 +194,62 @@ A directory the daemon creates must be exactly 0700.
 The directory is opened with O_NOFOLLOW, so a symbolic link is refused.
 It binds with umask 077, sets the socket mode, and verifies that the
 bound socket is the file it created.
+.SH EXIT STATUS AND REFUSALS
+.B pmaskd
+runs until SIGTERM or SIGINT.
+It then kills running jobs, overwrites the stored environment, removes
+the socket and exits 0.
+A startup failure exits 255 and prints one line beginning
+.BR "pmaskd: " .
+A client whose connection is refused prints the daemon's line and
+exits 255.
+The refusals are a contract:
+.TP
+.B "unknown option"
+An option
+.B pmaskd
+does not take, including
+.B \-\-store
+and
+.BR \-\-passphrase\-file .
+Exit 255.
+.TP
+.B "socket directory"
+The parent directory is not owned by the effective uid or is writable
+by group or other.
+The daemon names the path, its mode and the reason, and exits 255.
+.TP
+.B "socket path"
+The path is a symbolic link, exists and is not a socket, or has a live
+daemon behind it.
+Exit 255.
+.TP
+.B "protocol version"
+A request names a version other than 2.
+The daemon answers with its own version, keeps serving, and the client
+exits 255.
+.TP
+.B "uid is not allowed"
+The peer uid is neither the daemon's uid, root, nor an
+.B \-\-allow\-uid
+entry.
+The connection is refused and the client exits 255.
+.TP
+.B "\-\-jobs and \-\-max\-job\-bytes"
+A limit below 1 is a usage error.
+Exit 255.
+.TP
+.B "\-\-run\-as\-uid"
+A daemon that does not run as root refuses the flag.
+Exit 255.
+.TP
+.B "job timeout"
+A job tree that runs past
+.B \-\-job-timeout
+is killed and the client receives status 137.
+.PP
+The job's own exit status, including a signal death, passes through to
+the client untouched.
 .SH SEE ALSO
 .BR pmask (1)
 .SH LICENSE
