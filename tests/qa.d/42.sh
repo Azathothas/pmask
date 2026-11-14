@@ -47,8 +47,10 @@ D=$(mktemp -d "${TMPDIR:-/tmp}/pmask-qa42.XXXXXX") || {
     echo "FATAL: cannot create a temp dir"; exit 2
 }
 SUP=""
+PLAIN=""
 cleanup() {
     [ -n "$SUP" ] && kill "$SUP" 2>/dev/null
+    [ -n "$PLAIN" ] && kill -9 "$PLAIN" 2>/dev/null
     kill_label qa42-
     rm -rf "$D"
 }
@@ -80,6 +82,7 @@ cmd_first() { tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -n 1; }
 # ------------------------- C1: control, an ordinary process
 "$CASES" sleeper QAMARK >/dev/null 2>&1 &
 plain=$!
+PLAIN=$plain
 sleep 0.5
 if kill -0 "$plain" 2>/dev/null; then
     c=$(cat "/proc/$plain/comm" 2>/dev/null)
@@ -89,8 +92,9 @@ if kill -0 "$plain" 2>/dev/null; then
     else
         fail "c1-control-plain-process (comm=$c exe=$e)"
     fi
-    kill "$plain" 2>/dev/null
+    kill -9 "$plain" 2>/dev/null
     wait "$plain" 2>/dev/null
+    PLAIN=""
 else
     fail "c1-control-plain-process (no process)"
 fi

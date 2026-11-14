@@ -1,0 +1,37 @@
+HOST uname=Linux 6.12.113+deb13-amd64 x86_64 kernel=6.12.113+deb13-amd64 uid=1000 nproc=8 capeff=0000000000000000
+HOST rounds=2 n=40 pmask=/srv/work/pmask/target/release/pmask cc=cc
+SPAWN variant=plain mean_ms=1.9372 median_ms=1.9037 p95_ms=2.5245 n=40 rounds=2
+SPAWN-SPREAD variant=plain round_median_min_ms=1.8114 max_ms=1.9604 spread_pct=8.2 STABLE
+SPAWN variant=env-i mean_ms=2.8561 median_ms=2.6878 p95_ms=3.7591 n=40 rounds=2
+SPAWN-SPREAD variant=env-i round_median_min_ms=2.6676 max_ms=2.7277 spread_pct=2.3 STABLE
+SPAWN variant=masked mean_ms=5.1995 median_ms=5.0145 p95_ms=6.4647 n=40 rounds=2
+SPAWN-SPREAD variant=masked round_median_min_ms=5.0056 max_ms=5.0640 spread_pct=1.2 STABLE
+SPAWN-RATIO masked_over_plain=2.63 masked_over_env_i=1.87
+WINDOW-ATTEMPT variant=masked payload=script attempt=1 off_label_us=457.052
+WINDOW-ATTEMPT variant=masked payload=script attempt=2 off_label_us=953.866
+WINDOW-ATTEMPT variant=masked payload=script attempt=3 off_label_us=396.461
+WINDOW-SEEN the attempts that saw a comm change:
+WINDOW variant=masked payload=script pid=766385 found_ns=1681608 samples=102394 interval_us=3.456 off_label_total_us=457.052 longest_off_label_us=457.052 label_seen_at_ns=1697799 sequence=win-765369@1697799>payload.sh@2274914>win-765369@2731966
+WINDOW variant=masked payload=script pid=766395 found_ns=3218161 samples=100625 interval_us=3.538 off_label_total_us=953.866 longest_off_label_us=953.866 label_seen_at_ns=3241579 sequence=win-765369@3241579>payload.sh@3952174>win-765369@4906040
+WINDOW variant=masked payload=script pid=766405 found_ns=1527258 samples=103319 interval_us=3.418 off_label_total_us=396.461 longest_off_label_us=396.461 label_seen_at_ns=1543115 sequence=win-765369@1543115>payload.sh@1794523>win-765369@2190984
+WINDOW variant=masked payload=script attempts=3 caught=3 off_label_us_median=457.052 min=396.461 max=953.866
+WINDOW-ATTEMPT variant=masked payload=elf attempt=1 off_label_us=537.019
+WINDOW-ATTEMPT variant=masked payload=elf attempt=2 off_label_us=355.076
+WINDOW-ATTEMPT variant=masked payload=elf attempt=3 off_label_us=566.530
+WINDOW-SEEN the attempts that saw a comm change:
+WINDOW variant=masked payload=elf pid=766428 found_ns=2614004 samples=101936 interval_us=3.451 off_label_total_us=537.019 longest_off_label_us=537.019 label_seen_at_ns=2632492 sequence=win-765369@2632492>payload.elf@2884119>win-765369@3421138
+WINDOW variant=masked payload=elf pid=766437 found_ns=1542878 samples=103349 interval_us=3.399 off_label_total_us=355.076 longest_off_label_us=355.076 label_seen_at_ns=1561546 sequence=win-765369@1561546>payload.elf@1656754>win-765369@2011830
+WINDOW variant=masked payload=elf pid=766446 found_ns=2133988 samples=103463 interval_us=3.400 off_label_total_us=566.530 longest_off_label_us=566.530 label_seen_at_ns=2159608 sequence=win-765369@2159608>payload.elf@2462379>win-765369@3028909
+WINDOW variant=masked payload=elf attempts=3 caught=3 off_label_us_median=537.019 min=355.076 max=566.530
+WINDOW variant=plain payload=script pid=766464 found_ns=0 samples=104093 interval_us=3.387 off_label_total_us=745.137 longest_off_label_us=745.137 label_never_seen=1 sequence=env@49507>payload.sh@794644
+WINDOW variant=plain payload=elf pid=766468 found_ns=0 samples=101881 interval_us=3.450 off_label_total_us=576.864 longest_off_label_us=576.864 label_never_seen=1 sequence=env@55367>payload.elf@632231
+SYSCALL-STARTUP prctl(PR_SET_MM, PR_SET_MM_MAP, 0x7ffdedc6fc80, 0x68, 0) = 0
+SYSCALL-STARTUP prctl(PR_SET_NAME, "bench")             = 0
+SYSCALL-STARTUP prctl(PR_SET_DUMPABLE, SUID_DUMP_USER)  = 0
+SYSCALL-STARTUP clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f3665216990, parent_tid=0x7f3665216990, exit_signal=0, stack=0x7f3665016000, stack_size=0x1fff00, tls=0x7f36652166c0} => {parent_tid=[766475]}, 88) = 766475
+SYSCALL-STARTUP note=no PTRACE_SEIZE line (the tracer thread was not traced; see the sustained section)
+SYSCALL-SUSTAINED tracer_tid=766485 attach_secs=6 lines=77310 PTRACE_SEIZE=0 PTRACE_SYSCALL=12812 PTRACE_GET_SYSCALL_INFO=11897 PTRACE_GETREGSET=7322 PTRACE_SETREGSET=6405 PTRACE_CONT=3660 PTRACE_GETEVENTMSG=1831 process_vm_readv=7327 process_vm_writev=10065 PR_SET_NAME=0 PR_SET_MM=0
+SYSCALL-SUSTAINED-NOTE counts cover 6s of a payload that execs /bin/true in a loop; divide by 6 for a per-second rate
+FAILCHECK strace_f_breaks_a_session rc=255 ptrace(PTRACE_SEIZE, 768168, NULL, PTRACE_O_TRACESYSGOOD|PTRACE_O_TRACEFORK|PTRACE_O_TRACEVFORK|PTRACE_O_TRACECLONE|PTRACE_O_TRACEEXEC|PTRACE_O_TRACEEXIT|PTRACE_O_EXITKILL) = -1 EPERM (Operation not permitted)
+FAILCHECK stderr=pmask: cannot redact here: ptrace is banned by a seccomp filter here; command lines stay v
+DONE (issue 48 measurement)

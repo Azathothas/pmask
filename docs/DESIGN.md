@@ -233,14 +233,18 @@ keeps the tracee stopped and lets `SIGCONT` and the real parent's job
 control see it. `kill -STOP` holds a masked tree and `SIGCONT` resumes
 it.
 
-### Why no exec-shaped seccomp filter
+### The exec seccomp filter and who may carry it
 
-A per-process seccomp filter with `SECCOMP_RET_TRACE` on `execve` was
-tried in the C predecessor and is not used here. An unserviced
-`RET_TRACE` stop makes `execve` return `ENOSYS` in a descendant that is
-not being supervised. That is measured, and it is the reason the filter
-stays out: a process that inherits the filter without a tracer cannot
-exec at all.
+An unserviced `SECCOMP_RET_TRACE` stop makes `execve` return `ENOSYS` in a
+process that inherits the filter, so the exec-shaped filter is installed
+only where the tracer is guaranteed to outlive every process that carries
+it.  That is the `--exec-once` fast path: `--on-exit wait` or `--on-exit
+kill`, no `--detach`, tree following on, no `--unshare`, no namespace set
+and no `--run-as`, and `PTRACE_O_EXITKILL` on, so an unexpected tracer
+death kills the tree instead of leaving a survivor with a filter no tracer
+services.  Every other shape keeps pure `PTRACE_SYSCALL` supervision.  The
+filter is installed once per tracee at its first completion stop and
+inherited by its children.
 
 Pure `PTRACE_SYSCALL` supervision is identical on every kernel from 5.3
 on. The cost is two stops per syscall until a process's first exec
@@ -457,7 +461,7 @@ Higher privileges buy more privacy in defined steps.
 | 0 + `--unshare` | kernel that allows unprivileged user namespaces | private PID namespace and private procfs; the payload sees only itself | unavailable on hosts that gate user namespaces; opportunistic by design |
 | 0 + `--watch-rename` | none | comm stays the label when a program renames itself, including with `--no-dumpable`, because the redirect needs no tracee memory write | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
 | 0 + `--scope-name` | a user session manager | one consistent name in `/proc/<pid>/cgroup` and `systemctl` | the unit name is world-readable; system-level scopes need root or polkit |
-| 0 (default; `--no-exact` turns it off) | none | `prctl(PR_SET_MM, PR_SET_MM_MAP)` moves `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` onto a compact block, rewrites `AT_EXECFN` in `saved_auxv`, and moves `start_stack`: `/proc/<pid>/cmdline` is exactly the label, `environ` is empty, fields 48 to 51 agree with the cmdline length, and the label's page reads `[stack]` in `maps` | a kernel without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` leaves the in-place redaction: the window is the label plus one NUL per argument and `environ` is a NUL block, not empty |
+| 0 (default; `--no-exact` turns it off) | none | `prctl(PR_SET_MM, PR_SET_MM_MAP)` moves `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` onto a compact block, rewrites `AT_EXECFN` in `saved_auxv`, and moves `start_stack`: `/proc/<pid>/cmdline` is exactly the label, `environ` is empty, fields 48 to 51 agree with the cmdline length, and the label's page reads `[stack]` in `maps` | a kernel without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` leaves the in-place redaction: the window is the label padded with spaces and one final NUL, and `environ` is a decoy environment (or the `--keep-env` variables), not a NUL block |
 | 0 + `--detach` | none | `PTRACE_DETACH` after each settled exec, so `TracerPid` is 0 for the payload | the detached process and its descendants run unredacted at every later exec, and the session summary counts each detach |
 | 2 | `CAP_SYS_RESOURCE` | the bare `PR_SET_MM_ARG_START`/`_ARG_END` operations, which resize the window without rewriting the rest of the map | not used; the one-shot map at rung 0 reaches the same result |
 | 3 | root on the host | `hidepid=2,gid=` on the system `/proc` removes the tree from every other account | polkit and distribution defaults; Yama scope needs `CAP_SYS_PTRACE` and scope 3 is irreversible until reboot |

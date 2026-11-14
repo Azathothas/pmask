@@ -1,0 +1,8 @@
+t=123204.2793 pid=547150 ppid=547149 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=/srv/pmask-target/release/pmask
+t=123204.2803 pid=547150 ppid=547149 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=?
+t=123204.2803 pid=547152 ppid=547150 comm=r2-once seccomp=1 nnp=1 tracer=547151 exe=/srv/pmask-target/release/pmask
+t=123204.2813 pid=547152 ppid=547150 comm=r2-once seccomp=1 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2825 pid=547152 ppid=547150 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2836 pid=547153 ppid=547152 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2855 pid=547153 ppid=547152 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=?
+sampler.done observations=7

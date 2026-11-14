@@ -1,4 +1,4 @@
-.TH PMASK 1 "2026" "pmask 0.1.0-beta.3" "User Commands"
+.TH PMASK 1 "2026" "pmask 0.1.0-beta.5" "User Commands"
 .SH NAME
 pmask \- run a process tree with a redacted /proc entry
 .SH SYNOPSIS
@@ -117,6 +117,82 @@ is the spelling the parser also accepts and the shell completions offer.
 Set PR_SET_DUMPABLE=0 in every process of the tree.
 Same-uid observers then cannot read environ, maps, exe or fd.
 Core dumps and debugger attach stop working.
+On a host whose /proc uses
+.BR hidepid=invisible ,
+a non-dumpable process is also hidden from same-uid observers, so the
+hidden-pid sweepers can name it.
+.TP
+.B \-\-allow\-foreign
+Run a 32-bit (foreign-ABI) image unredacted.
+The default refuses the exec: a 32-bit image keeps its real command
+line, environment and
+.BR comm ,
+so it is not a masked payload.
+.TP
+.B \-\-stealth
+Compose the strongest shape:
+.BR \-\-rexec ,
+.BR \-\-watch\-rename ,
+and
+.B \-\-no\-dumpable
+unless the
+.B /proc
+mount uses
+.BR hidepid=invisible
+or
+.BR hidepid=ptraceable .
+On that mount a non-dumpable process is hidden from same-uid observers,
+so the hidden-pid sweepers can name it; the flag keeps the tree
+dumpable there and prints that the same-uid memory read stays open.
+The chosen trade is printed once.
+The network identity is not part of the mask; add
+.B \-\-isolate=net
+for a private network namespace.
+.TP
+.B \-\-hide\-pid
+Hide the tree's pids from same-uid readers of
+.BR /proc .
+Opt in, never the default.
+The kernel mechanism is
+.BR PR_SET_DUMPABLE=0
+plus a
+.B /proc
+mount with
+.B hidepid=invisible
+or
+.BR hidepid=ptraceable .
+The run is refused on a weaker mount, because the flag would otherwise
+claim a hide the kernel does not provide.
+A hidden pid is still present to
+.BR kill(0) ,
+to
+.BR pidfd_open ,
+and to root; the kernel's pid table is global.
+On a
+.B hidepid=ptraceable
+mount an already-instantiated inode answers
+.B EPERM
+rather than
+.BR ENOENT ,
+so the denial is distinguishable from a missing pid.
+.TP
+.B \-\-encrypt\-memory
+Seal the supervisor's at-rest argv and environment copies with
+XChaCha20-Poly1305 under a per-session key in
+.B memfd_secret
+memory when the kernel offers it.
+The payload's redaction block is anonymous and marked
+.BR MADV_DONTDUMP ;
+a
+.B memfd_secret
+block would leave a
+.B /secretmem
+VMA in the payload, which is a tool fingerprint.
+Opt in, never the default.
+The payload's own heap and stack are not encrypted.
+A host without
+.B memfd_secret
+keeps the key in mlock'ed heap and the run says so in its notes.
 .TP
 .B \-\-no\-new\-privs
 Set no_new_privs before exec.
@@ -124,13 +200,14 @@ Set-uid and file-capability programs gain nothing.
 .TP
 .B \-\-no\-exact
 Leave the kernel's argv window where it is instead of moving it: the
-label is written over the real arguments, one NUL is left for the label
-and one for each original argument slot, and
+label is written over the real arguments and padded with spaces, so the
+window reads as one command line with no NUL run.
 .BR /proc/\fIpid\fB/environ
-is a NUL block.
-The window's byte extent is therefore the label plus the slot count, not
-the original extent; a script payload, whose exec completes on the
-post-exec path, keeps the original extent.
+gets a plausible decoy environment, or the variables named by
+.BR \-\-keep\-env .
+The window's byte extent is therefore the original extent, not the
+label's; a script payload, whose exec completes on the post-exec path,
+keeps the original extent.
 By default the kernel's argv and environment windows are moved onto the
 label with
 .BR prctl(PR_SET_MM_MAP) ,
@@ -152,6 +229,14 @@ Implies
 .BR \-\-no\-new\-privs .
 If the filter cannot be installed, the run exits 126 naming the failure
 instead of running without the promise.
+The flag is refused with
+.B \-\-detach
+(exit 255): the filter cannot be removed, and a detached tracee would
+answer a later
+.BR prctl(PR_SET_NAME)
+with
+.B ENOSYS
+because no tracer services it.
 .PP
 With
 .B \-\-no\-dumpable
@@ -583,24 +668,22 @@ are refused with exit status 255: the human-readable form is the
 default
 .B "pmask: mode=..."
 summary on stderr.
-The report is produced by the secret-side runner, so it needs
-.BR \-\-secret ,
-.B \-\-isolate
-or
-.BR \-\-no\-redact .
-A plain mask run and a
+The report is produced by the local runner on every path, including
+plain redaction.
+Only a
 .B \-\-daemon
-job refuse the flag with exit status 255.
+job refuses it with exit status 255: the daemon owns the run and has no
+document to return.
 .TP
 .BI \-\-report\-file " PATH"
 Write the
 .B \-\-report
 document to PATH instead of stdout, so the payload keeps fd 1 to itself.
 It implies
-.BR \-\-report=json ,
-so it needs the same secret-side run that flag needs.
-The file is opened before the payload runs; a path that cannot be
-written is a usage error and the payload does not start.
+.BR \-\-report=json .
+The file is opened before the payload runs, so a path that cannot be
+opened is a usage error and the payload does not start; a write failure
+after the run exits 255.
 A symbolic link at PATH is refused, and the file is narrowed to mode
 0600 whether this run created it or not, so an existing report file
 does not hand the document to another account.
@@ -748,9 +831,12 @@ have no effect there and produce a warning, except the flags below,
 which are refused instead.
 .BR \-\-secret ,
 .BR \-\-isolate ,
-.B \-\-no\-redact
-and
+.BR \-\-no\-redact ,
+.BR \-\-hide\-pid ,
+.BR \-\-encrypt\-memory ,
 .B \-\-image
+and
+.B \-\-image\-from\-fd
 are refused with exit status 255, because the daemon cannot honour
 them.
 .B \-\-report
@@ -804,8 +890,9 @@ found a requested guarantee degraded (3) or unavailable (4).
 Usage errors, refusals and a wrong or missing passphrase.
 This includes an unknown option, a bad label or
 .BR comm ,
-a refused
-.BR --report ,
+a
+.B \-\-daemon
+job that asks for a report,
 a refused
 .BR --audit ,
 a refused flag in
@@ -813,6 +900,10 @@ a refused flag in
 mode, an unreadable store, and a
 .B doctor
 request that names no known guarantee.
+A payload can also return 255 by itself; the
+.B pmask:
+prefix on stderr and the absence of a report distinguish a refusal from
+a payload status.
 .PP
 Store and agent errors that are not a missing name use 255; a missing
 name uses 1.

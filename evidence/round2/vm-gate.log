@@ -1,0 +1,791 @@
+c[?7l[2J[0mSeaBIOS (version 1.16.3-debian-1.16.3-2)
+
+
+iPXE (https://ipxe.org) 00:03.0 CA00 PCI2.10 PnP PMM+1EFC6C30+1EF06C30 CA00
+Press Ctrl-B to configure iPXE (PCI 00:03.0)...                                                                               
+
+
+Booting from ROM...
+c[?7l[2J=== pmask VM: boot ok, kernel 6.12.115-0-virt, arch x86_64
+=== accel: kvm
+=== running full test suite inside the VM as root (uid 0)
+################ unwrap-audit
+SKIP unwrap-audit (no python3 or scripts/ staged)
+################ completions
+SKIP completions (the VM tree has no repository: src/ and completions/ are not staged; the native gate runs this)
+################ qa fragments
+SKIP qa fragments (tests/qa.sh is not staged in this VM tree)
+################ validate.sh
+== pmask validation run (suffix DRvOkw6, label [kworker/1:2-rcu_gp]) ==
+-- phase 1: negative control (no pmask; markers MUST be observable)
+PASS control-MKDRvOkw61A (detector works, 2 sightings)
+PASS control-MKDRvOkw61D (detector works, 2 sightings)
+-- phase 2: battery under pmask (expect zero sightings)
+PASS MKDRvOkw6A: no sightings
+PASS MKDRvOkw6B: no sightings
+PASS MKDRvOkw6C: no sightings
+PASS MKDRvOkw6D: no sightings
+PASS MKDRvOkw6E: no sightings
+PASS MKDRvOkw6F: no sightings
+PASS MKDRvOkw6G: no sightings
+PASS MKDRvOkw6H: no sightings
+-- phase 2b: liveness proof (processes really run under the mask)
+PASS liveness: 3 process(es) running with the label, marker unseen
+-- phase 3: functional sanity under pmask
+PASS functional: stdin/stdout/exit-code intact
+PASS functional: exit codes propagate
+-- phase 4: the program still sees its own argv/env
+PASS argv-fidelity: [arg0=[/app/tests/testcases] arg1=[echoargs] arg2=[X1] arg3=[X2] env=[ok]]
+-- phase 5: real argv-secret shapes (cli-spy-style negative control)
+PASS cli-spy-1: control=1 wrapped=0
+PASS cli-spy-2: control=1 wrapped=0
+PASS cli-spy-3: control=1 wrapped=0
+PASS cli-spy-4: control=1 wrapped=0
+PASS cli-spy-5: control=1 wrapped=0
+PASS cli-spy-6: control=1 wrapped=0
+== VERDICT: ALL-PASS ==
+################ suite.sh
+== control (no pmask): markers MUST be visible ==
+PASS control-detects-leaks (1 sightings)
+== T1: single process ==
+PASS t1-cmdline: no 'MK-T1' visible
+== T2: shell children (sh, &, wait) ==
+PASS t2-script-children: no 'MK-T2a' visible
+PASS t2-script-children: no 'MK-T2b' visible
+PASS t2-liveness: 6 process(es) alive with the label
+== T3: spawns from secondary threads (posix_spawn + system) ==
+PASS t3-posix-thread: no 'MK-T3-THREAD' visible
+PASS t3-system-thread: no 'MK-T3-SYSTEM' visible
+PASS t3-liveness: 10 process(es) alive with the label
+== T4: daemon double-fork (reparented to init) ==
+PASS t4-daemon: no 'MK-T4-DAEMON' visible
+== T5: nested shell depth 3 ==
+PASS t5-depth3: no 'MK-T5-DEPTH' visible
+== T6: vfork + execv ==
+PASS t6-vfork: no 'MK-T6-VFORK' visible
+== T7: raw clone(2)+execve(2) from threads (Go-runtime path) ==
+PASS t7-raw-clone: no 'MK-T7-RAW' visible
+PASS t7-liveness: 25 process(es) alive with the label
+== T7b: skipped (no Go toolchain; raw-clone path covered by T7) ==
+== T8: comm redacted (the Name column of top/htop) ==
+PASS t8-cmdline: no 'MK-T8' visible
+PASS t8-comm: comm '[kworker/1:2]' present (27)
+== T9: environ redacted, process still works ==
+PASS t9-control-environ-detectable (1 environ hit(s) without pmask)
+PASS t9-liveness: 9 testcases process(es) alive with the label
+PASS t9-liveness: 30 process(es) alive with the label
+PASS t9-environ: no MK-T9-ENV in any environ
+PASS t9-cmdline: no 'MK-T9-ARG' visible
+== T10: exit code passthrough ==
+PASS t10-exitcode
+== T11: stdout/stdin passthrough ==
+PASS t11-stdio
+== T12: program sees its own argv ==
+PASS t12-argv: [arg0=[/app/tests/testcases] arg1=[echoargs] arg2=[A1] arg3=[A2] env=[ok]]
+== VERDICT: FAIL=0 ==
+################ stress.sh
+== S1: race-window probe: continuous spawns vs tight /proc observer ==
+pmask: observer sweeps=71 real-arg sightings=0 label-comm-alive=202
+PASS s1-race
+== S2: stress: 100 sequential execs, exit codes intact ==
+PASS s2-stress (100 ok)
+== S3: kill -9 the tracer -> no survivors (EXITKILL) ==
+PASS s3-exitkill (labelled before: 4, after: 0)
+== S4: SIGTERM passthrough ==
+PASS s4-sigterm
+== S5: stdin passthrough (multi-line) ==
+PASS s5-stdin
+== S6: overhead: 200 execs with/without pmask (wall clock) ==
+plain=0s masked=1s
+== VERDICT: FAIL=0 ==
+################ edge.sh
+PASS e1-missing-binary-exits-127
+PASS e1-not-executable-exits-126
+PASS e2-non-utf8-argv-forwarded
+PASS e3-tracee-cwd-elf (entry-swaps=2)
+PASS e4-long-label-runs
+PASS e4b-label-254-settles-whole
+PASS e4b-254-no-warning
+PASS e4b-label-255-settles-whole
+PASS e4b-255-warning-names-scratch
+PASS e4b-label-300-settles-whole
+PASS e4b-300-warning-names-scratch
+PASS e5-large-argv-forwarded
+PASS e6-control-cmdline-detectable
+PASS e6-supervisor-selfmask
+PASS e7-blank-label [-l-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label=-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [-l -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e8-missing-value-names-flag
+PASS e9-control-script-argv-detectable (1 sightings)
+PASS e9-script-zero-sightings
+PASS e9-script-liveness (2 labelled process(es))
+PASS e9-script-argv-fidelity
+PASS e9-script-fallback-log (lines=1)
+PASS e-control-argv-detectable (1 sightings)
+PASS e10-keep-env-visible (hits=1)
+PASS e10-default-environ-redacted (alive=1)
+PASS e11-no-follow-grandchild-visible (sightings=1)
+PASS e11-no-follow-direct-child-redacted (labelled=1)
+PASS e11-no-follow-grandchild-functional
+PASS e12-no-exit-kill-tree-survives (before=1 after=1)
+PASS e12-default-exit-kill-control (before=1 after=0)
+PASS e13-label-empty (blank comm, empty cmdline: 1 process(es))
+PASS e14-default-no-label (cmdline is the program name, args stripped)
+PASS e15-execveat-argv-fidelity
+PASS e15-execveat-redacted (alive=1)
+PASS e15-fexecve-argv-fidelity
+PASS e15-fexecve-redacted (alive=1)
+PASS e16-two-exec-output (rc=0)
+PASS e16-two-exec-completions (exec-done lines=2)
+PASS e17-no-arguments-prints-usage-and-exits-255
+PASS e17-empty-args-from-fd-is-refused
+PASS e17-empty-program-name-is-refused (rc=127)
+PASS e18-control-untraced-scores-none (TracerPid=0)
+PASS e18-default-traced-scores-high (TracerPid=19403)
+PASS e18-detach-untraced-scores-none (TracerPid=0)
+PASS e18-secret-holder-label-scores-critical
+PASS e19-control-live-pid-present-in-every-view
+PASS e19-control-dead-pid-absent-in-every-view
+PASS e19-masked-present-in-every-view
+PASS e19-masked-start-time-stable (starttime=6045)
+PASS e19-control-start-times-differ (tracee=6045 shell=4797)
+PASS e19-masked-comm-is-label
+PASS e19-masked-cmdline-hides-argument
+SKIP e20-vfork-child (no gcc)
+PASS e21-control-all-channels-name-the-real-argv
+PASS e21-masked-dissent-is-the-in-process-execfn (cmd=[mk-e21] span=[7] auxv=[mk-e21] own=[/app/tests/testcases])
+PASS e22-path-resolved-check-returns-the-planted-answer
+PASS e22-direct-proc-read-is-not-the-planted-answer
+== VERDICT: FAIL=0 ==
+################ daemon.sh
+PASS d1-control-secret-is-detectable
+PASS d2-job-received-secret (length 12)
+PASS d3-secret-in-no-proc-entry
+PASS d3b-control-environ-is-readable (131 bytes)
+PASS d3b-daemon-job-environ-is-redacted
+SKIP d3b-daemon-environ-is-refused (root is not a same-uid peer)
+PASS d4-daemon-selfmask
+PASS d5-stdio-and-exit-status
+PASS d6-failed-job-keeps-daemon
+PASS d11-run-as-uid-runs-the-job-as-the-client (uid=1000 euid=1000)
+PASS d11-control-without-the-flag-runs-as-root (uid=0 euid=0)
+PASS d7-cli-secret-in-no-proc-entry
+PASS d7-cli-child-cmdline-is-label
+PASS d8-same-uid-can-read-fd3-documented-hazard
+PASS d7b-control-environ-is-readable (131 bytes)
+PASS d7b-payload-environ-is-redacted
+SKIP d7b-supervisor-environ-is-refused (root is not a same-uid peer)
+PASS d7-cli-descriptor-at-3
+PASS d7-cli-bytes-reach-child
+PASS d7-cli-memfd-backing
+PASS d7-cli-sealed-against-write
+PASS d7-cli-report-names-the-secret
+PASS d9-help-has-no-tmp-fallback
+PASS d10-clean-job-is-silent
+PASS d10-degraded-job-is-reported (pmask: 1 of 1 execs degraded (post-exec))
+PASS d10-quiet-daemon-stays-quiet
+== VERDICT: FAIL=0 ==
+################ daemon_neg.sh
+PASS n1-socket-mode-600 (600)
+PASS n2-bad-magic (response code=255 signal=none msg=pmaskd: bad request: bad magic (protocol mismatch?))
+PASS n2-daemon-survives
+PASS n3-bad-version (response code=255 signal=none msg=pmaskd: unsupported protocol version 9, the daemon speak)
+PASS n3-daemon-survives
+PASS n4-old-banner (response code=255 signal=none msg=pmaskd: protocol mismatch: the client speaks protocol 1,)
+PASS n4-daemon-survives
+PASS n5-argc-too-large (response code=255 signal=none msg=pmaskd: bad request: argc too large)
+PASS n5-daemon-survives
+PASS n6-argument-too-large (response code=255 signal=none msg=pmaskd: bad request: argument too large)
+PASS n6-daemon-survives
+PASS n7-request-too-large (response code=255 signal=none msg=pmaskd: job refused: job arguments are 1228802 bytes, th)
+PASS n7-daemon-survives
+PASS n8-label-too-large (response code=255 signal=none msg=pmaskd: bad request: label is 8388608 bytes, the limit i)
+PASS n8-daemon-survives
+PASS n9-label-nul (response code=255 signal=none msg=pmaskd: bad request: label must not contain NUL, LF or C)
+PASS n9-daemon-survives
+PASS n10-truncated-frame (response code=255 signal=none msg=pmaskd: bad request: failed to fill )
+PASS n10-daemon-survives
+PASS n11-connect-and-close (client rc=0; the daemon's survival is the assertion)
+PASS n11-daemon-survives
+PASS n12-zero-fds (response code=255 signal=none msg=pmaskd: expected exactly 3 file descriptors, got 0)
+PASS n12-daemon-survives
+PASS n13-five-fds (response code=255 signal=none msg=pmaskd: too many file descriptors (control data truncate)
+PASS n13-daemon-survives
+PASS n14-stalled-client-dropped (2s, rc=0, elapsed_ms=2001 first_read=1
+response code=255 signal=none msg=pmaskd: bad request: the c)
+PASS n14-daemon-survives
+PASS n15-symlink-refused (pmaskd: refusing to start: /tmp/pmask-neg.21863/symlink.sock is a symbolic link)
+PASS n16-plain-file-refused (pmaskd: refusing to start: /tmp/pmask-neg.21863/plain.sock exists and is not a socket)
+PASS n17-live-socket-not-stolen (pmaskd: refusing to start: another daemon is already listening on /tmp/pmask-neg.21863/live.sock)
+PASS n17-daemon-survives
+PASS n18-stale-socket-replaced
+PASS n19-double-fork-job-keeps-daemon (client rc=0)
+PASS n19-daemon-survives
+PASS n20-daemonizing-job-releases-client (1s, rc=0)
+PASS n21-env-file-reaches-job (NEG_ONLY=value-from-file)
+PASS n21-no-inherit-env (absent variable is unset)
+PASS n21-control-inherit-env (default inherits)
+PASS n22-label-less-client-gets-daemon-label (2 processes)
+PASS n23-newline-label-refused (response code=255 signal=none msg=pmaskd: bad request: label must not contain NU)
+PASS n23-daemon-survives
+Killed
+PASS n24-job-timeout (2s, rc=137)
+PASS n24-daemon-survives
+PASS n25-unauthorised-uid-refused (response code=255 signal=none msg=pmaskd: uid 1000 is not allowed)
+PASS n25-daemon-survives
+PASS n26-sigterm-stops-with-a-stalled-worker (worker 22361, exit 0)
+PASS n27-ping-answered (response code=0 signal=none msg=protocol=2 detail=full label=pmask-job uid=0 run_as_uid=fa)
+PASS n27-daemon-survives
+PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.21863/visible is mode 0755; group or other can read and traverse it,)
+== VERDICT: FAIL=0 ==
+################ options.sh
+PASS o1-help-names-selfmask-escape
+PASS o1-help-documents-dash-label
+PASS o2-argv0-override
+PASS o3-default-argv0-is-original-string
+PASS o4-comm-override
+PASS o4-comm-over-15-bytes-rejected
+PASS o5-nul-label-rejected-run-and-spawn
+PASS o6-newline-label-rejected
+PASS o7-dash-label-forms-agree
+PASS o8-debug-hides-env
+PASS o9-env-reaches-program
+PASS o9-env-file-reaches-program
+PASS o9-env-and-env-file-hidden-from-proc
+PASS o9-control-keep-env-secret-visible
+PASS o10-keep-env-name-visible-secret-hidden
+PASS o10-control-default-redacts-path
+PASS o11-args-from-fd-secret-absent
+PASS o11-args-from-fd-program-gets-arguments
+PASS o11-control-observer-sees-plain-argv
+PASS o12-supervisor-comm-is-label
+PASS o12-supervisor-cmdline-is-label
+PASS o12-supervisor-hides-argv-and-environ
+PASS o12-control-no-selfmask-leaves-argv
+PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
+INFO self-entry-window 0ms (kernel publishes the supervisor argv until it zeroes the block; not closable from inside the process)
+PASS o14-on-exit-detach-keeps-background-child
+PASS o14-on-exit-kill-terminates-background-child
+PASS o14-on-exit-wait-waits-for-the-tree
+PASS o15-control-same-uid-observer-reads-environ
+PASS o15-no-dumpable-blocks-observer (before: rc=0 readable, after: rc=1)
+PASS o16-no-new-privs-sets-flag
+PASS o16-watch-rename-implies-no-new-privs
+PASS o16-control-default-leaves-flag-clear
+PASS o17-watch-rename-keeps-label
+PASS o17-control-without-watch-rename-comm-changes
+PASS o17b-watch-rename-refusal-is-fatal
+PASS o17b-watch-rename-success-is-silent
+PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
+PASS o18-rexec-maps-has-no-disk-path
+PASS o18-control-exe-is-disk-path
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=65)
+PASS o20-daemon-with-mask-options-warns
+PASS o20-quiet-suppresses-daemon-warning
+PASS o20-control-label-only-has-no-warning
+PASS o21-env-file-no-separator-refused
+PASS o21-env-file-empty-key-refused
+PASS o21-env-file-nul-byte-refused
+PASS o21-control-good-key-accepted
+PASS o22-secret-keeps-path
+PASS o22-secret-keeps-home
+PASS o22-secret-fd-map-present
+PASS o22-plain-secret-keeps-path
+PASS o23-args-from-fd-oversize-refused
+PASS o24-daemon-refuses-secret
+PASS o24-daemon-refuses-isolate
+PASS o24-daemon-refuses-no-redact
+PASS o24-control-daemon-alone-connects
+PASS o25-doctor-help-names-landlock
+PASS o25-doctor-accepts-landlock
+PASS o26-secret-args-from-fd-runs-the-program
+PASS o27-report-carries-the-degradation-counts
+PASS o27-refused-window-relocation-is-counted
+PASS o27-secret-run-is-dumpable
+PASS o27-no-dumpable-is-reported
+PASS o28-plain-refusal-names-the-flag-to-drop
+PASS o28-no-secret-close-on-exec-is-named
+PASS o28-help-says-when-the-flag-is-refused
+PASS o29-report-composes-with-args-from-fd
+PASS o29b-report-on-a-plain-run
+PASS o29c-report-refused-on-a-daemon-job
+PASS o30-image-path-runs-from-a-memfd
+PASS o30b-image-stdin-runs-from-a-memfd
+PASS o30c-image-from-fd-runs-from-a-memfd
+PASS o30d-image-non-elf-refused
+PASS o30e-image-and-args-from-fd-refused
+PASS o31-rexec-named-temp-carrier
+PASS o31-rexec-temp-file-is-removed
+PASS o32-refused-image-is-reported (rc=126)
+PASS o32-explicit-disk-fallback-is-reported
+PASS o33-hugetlb-reports-its-backing (pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd)
+PASS o34-rexec-runs-from-a-noexec-mount (plain refused, rexec ran)
+PASS o35-argv0-is-the-same-on-the-disk-and-image-paths
+PASS o36-exec-once-reuses-one-image (1 inode in 100 execs)
+PASS o36-control-without-exec-once-runs-from-disk
+PASS o36-exec-once-keys-by-program (2 inodes for 2 programs)
+PASS o36-exec-once-temp-file-is-removed
+PASS o37-scope-name-ran
+PASS o38-empty-env-key-is-refused-by-name
+== VERDICT: FAIL=0 ==
+################ core.sh
+PASS k1-thread-exec-keeps-argv
+PASS k2-control-sees-tail-5000 (1)
+PASS k2-fidelity-5000 (len=5015 byte-exact tail)
+PASS k2-no-tail-leak-5000
+PASS k2-control-sees-tail-100000 (1)
+PASS k2-fidelity-100000 (len=100017 byte-exact tail)
+PASS k2-no-tail-leak-100000
+PASS k3-argv-complete-10000
+PASS k3-no-sighting
+Killed
+PASS k4-32bit-refused-by-default (rc=137)
+PASS k4-summary-names-foreign-refused
+PASS k4-32bit-allow-foreign-runs
+PASS k4-summary-names-foreign-arch
+PASS k5-supervisor-exits (rc=0 in 0s)
+PASS k5-detach-keeps-background-job (1 alive with the label, 0 sightings)
+PASS k5-on-exit-kill-terminates-tree (0 alive after 1 polls)
+PASS k5-on-exit-wait-waits (2s)
+PASS k6-sigstop-holds (file frozen at 2 bytes)
+PASS k6-sigcont-resumes (size 2 -> 14)
+PASS k8-retry-keeps-entry-swap (swaps=2 rereads=0)
+PASS k9-failed-repoint-zeroes-and-warns (0 sightings)
+PASS k9-failed-repoint-resumes-cleanly (exit 0)
+PASS k10-summary-names-post-exec (pmask: 1 of 2 execs degraded (post-exec))
+PASS k10-script-is-not-called-unredacted
+PASS k10-quiet-prints-nothing
+PASS k10-clean-elf-run-is-silent
+PASS k10-clean-secret-run-is-silent
+PASS k10-clean-run-has-no-duplicate-line
+PASS k15-refused-window-is-reported (pmask: 1 of 1 execs kept the kernel's argv and environ windows (PR_SET_MM_MAP refused))
+PASS k15-quiet-prints-nothing
+PASS k15-accepted-window-is-silent
+PASS k15-window-kept (arg extent 16 = cmdline length, one NUL, environ 10 bytes with a decoy)
+SKIP k15b-real-prctl-refusal (no C compiler for the seccomp wrapper)
+PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
+INFO completion-stop 5887us reads=12 (4000-entry env, kernel 6.12.115-0-virt, x86_64, accel kvm)
+PASS k12-thread-comm-is-label (4 of 4 threads)
+PASS k12-setproctitle-rewrite-keeps-args
+PASS k12-control-std-args-read-the-kernel-block
+PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
+PASS k13-at-execfn-is-the-real-path (execfn=/app/tests/testcases)
+PASS k13-control-setuid-works-unsupervised (uid=1000 euid=0)
+PASS k13-setuid-gains-nothing-under-supervision (uid=1000 euid=1000)
+PASS k13-execveat-argv-intact (entry swaps: 2)
+PASS k13-fexecve-argv-intact (entry swaps: 2)
+PASS k13b-at-execfn-diverges (payload=/app/tests/testcases auxv=core-label-x)
+PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
+PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 8950: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k17-empty-argv-element-is-forwarded
+PASS k14-thread-starts-settled (settled=4 slow=0)
+== VERDICT: FAIL=0 ==
+################ audit.sh
+INFO audit: 18 EXECVE record(s) carry argument text
+PASS a1-control-observer-sees-real-argv
+INFO a1 decoded PROCTITLE shows the control secret
+PASS a2-masked-elf-secret-absent
+PASS a2-masked-elf-label-in-execve
+PASS a3-masked-tree-secrets-absent
+PASS a3-masked-tree-labels-in-execve
+PASS a4-env-secret-absent-from-argv-log
+INFO a5 script exec: audit log SHOWS the script argument (expected: the kernel copies real argv for scripts)
+INFO a5 script exec: audit log shows the script path or interpreter line
+INFO a7 vfork child: audit log does not show the real argv
+PASS a6-watcher-clean-exit-rule-removed
+== VERDICT: FAIL=0  ==
+SKIP store (absent; this VM tree stages a subset)
+SKIP isolation (absent; this VM tree stages a subset)
+SKIP lease (absent; this VM tree stages a subset)
+SKIP secrets (absent; this VM tree stages a subset)
+SKIP compare (absent; this VM tree stages a subset)
+SKIP conformance (absent; this VM tree stages a subset)
+SKIP regressions (absent; this VM tree stages a subset)
+################ FINAL: ALL-PASS
+VM-HARNESS-RESULT:0
+=== running full test suite inside the VM as uid 1000
+################ unwrap-audit
+SKIP unwrap-audit (no python3 or scripts/ staged)
+################ completions
+SKIP completions (the VM tree has no repository: src/ and completions/ are not staged; the native gate runs this)
+################ qa fragments
+SKIP qa fragments (tests/qa.sh is not staged in this VM tree)
+################ validate.sh
+== pmask validation run (suffix Xifbegx, label [kworker/1:2-rcu_gp]) ==
+-- phase 1: negative control (no pmask; markers MUST be observable)
+PASS control-MKXifbegx1A (detector works, 2 sightings)
+PASS control-MKXifbegx1D (detector works, 2 sightings)
+-- phase 2: battery under pmask (expect zero sightings)
+PASS MKXifbegxA: no sightings
+PASS MKXifbegxB: no sightings
+PASS MKXifbegxC: no sightings
+PASS MKXifbegxD: no sightings
+PASS MKXifbegxE: no sightings
+PASS MKXifbegxF: no sightings
+PASS MKXifbegxG: no sightings
+PASS MKXifbegxH: no sightings
+-- phase 2b: liveness proof (processes really run under the mask)
+PASS liveness: 3 process(es) running with the label, marker unseen
+-- phase 3: functional sanity under pmask
+PASS functional: stdin/stdout/exit-code intact
+PASS functional: exit codes propagate
+-- phase 4: the program still sees its own argv/env
+PASS argv-fidelity: [arg0=[/app/tests/testcases] arg1=[echoargs] arg2=[X1] arg3=[X2] env=[ok]]
+-- phase 5: real argv-secret shapes (cli-spy-style negative control)
+PASS cli-spy-1: control=1 wrapped=0
+PASS cli-spy-2: control=1 wrapped=0
+PASS cli-spy-3: control=1 wrapped=0
+PASS cli-spy-4: control=1 wrapped=0
+PASS cli-spy-5: control=1 wrapped=0
+PASS cli-spy-6: control=1 wrapped=0
+== VERDICT: ALL-PASS ==
+################ suite.sh
+== control (no pmask): markers MUST be visible ==
+PASS control-detects-leaks (1 sightings)
+== T1: single process ==
+PASS t1-cmdline: no 'MK-T1' visible
+== T2: shell children (sh, &, wait) ==
+PASS t2-script-children: no 'MK-T2a' visible
+PASS t2-script-children: no 'MK-T2b' visible
+PASS t2-liveness: 6 process(es) alive with the label
+== T3: spawns from secondary threads (posix_spawn + system) ==
+PASS t3-posix-thread: no 'MK-T3-THREAD' visible
+PASS t3-system-thread: no 'MK-T3-SYSTEM' visible
+PASS t3-liveness: 10 process(es) alive with the label
+== T4: daemon double-fork (reparented to init) ==
+PASS t4-daemon: no 'MK-T4-DAEMON' visible
+== T5: nested shell depth 3 ==
+PASS t5-depth3: no 'MK-T5-DEPTH' visible
+== T6: vfork + execv ==
+PASS t6-vfork: no 'MK-T6-VFORK' visible
+== T7: raw clone(2)+execve(2) from threads (Go-runtime path) ==
+PASS t7-raw-clone: no 'MK-T7-RAW' visible
+PASS t7-liveness: 25 process(es) alive with the label
+== T7b: skipped (no Go toolchain; raw-clone path covered by T7) ==
+== T8: comm redacted (the Name column of top/htop) ==
+PASS t8-cmdline: no 'MK-T8' visible
+PASS t8-comm: comm '[kworker/1:2]' present (27)
+== T9: environ redacted, process still works ==
+PASS t9-control-environ-detectable (1 environ hit(s) without pmask)
+PASS t9-liveness: 9 testcases process(es) alive with the label
+PASS t9-liveness: 30 process(es) alive with the label
+PASS t9-environ: no MK-T9-ENV in any environ
+PASS t9-cmdline: no 'MK-T9-ARG' visible
+== T10: exit code passthrough ==
+PASS t10-exitcode
+== T11: stdout/stdin passthrough ==
+PASS t11-stdio
+== T12: program sees its own argv ==
+PASS t12-argv: [arg0=[/app/tests/testcases] arg1=[echoargs] arg2=[A1] arg3=[A2] env=[ok]]
+== VERDICT: FAIL=0 ==
+################ stress.sh
+== S1: race-window probe: continuous spawns vs tight /proc observer ==
+pmask: observer sweeps=68 real-arg sightings=0 label-comm-alive=202
+PASS s1-race
+== S2: stress: 100 sequential execs, exit codes intact ==
+PASS s2-stress (100 ok)
+== S3: kill -9 the tracer -> no survivors (EXITKILL) ==
+PASS s3-exitkill (labelled before: 4, after: 0)
+== S4: SIGTERM passthrough ==
+PASS s4-sigterm
+== S5: stdin passthrough (multi-line) ==
+PASS s5-stdin
+== S6: overhead: 200 execs with/without pmask (wall clock) ==
+plain=0s masked=1s
+== VERDICT: FAIL=0 ==
+################ edge.sh
+PASS e1-missing-binary-exits-127
+PASS e1-not-executable-exits-126
+PASS e2-non-utf8-argv-forwarded
+PASS e3-tracee-cwd-elf (entry-swaps=2)
+PASS e4-long-label-runs
+PASS e4b-label-254-settles-whole
+PASS e4b-254-no-warning
+PASS e4b-label-255-settles-whole
+PASS e4b-255-warning-names-scratch
+PASS e4b-label-300-settles-whole
+PASS e4b-300-warning-names-scratch
+PASS e5-large-argv-forwarded
+PASS e6-control-cmdline-detectable
+PASS e6-supervisor-selfmask
+PASS e7-blank-label [-l-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label=-] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [-l -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e7-blank-label [--label -] (supervisor comm blank, 1 tracee(s) blank)
+PASS e8-missing-value-names-flag
+PASS e9-control-script-argv-detectable (1 sightings)
+PASS e9-script-zero-sightings
+PASS e9-script-liveness (2 labelled process(es))
+PASS e9-script-argv-fidelity
+PASS e9-script-fallback-log (lines=1)
+PASS e-control-argv-detectable (1 sightings)
+PASS e10-keep-env-visible (hits=1)
+PASS e10-default-environ-redacted (alive=1)
+PASS e11-no-follow-grandchild-visible (sightings=1)
+PASS e11-no-follow-direct-child-redacted (labelled=1)
+PASS e11-no-follow-grandchild-functional
+PASS e12-no-exit-kill-tree-survives (before=1 after=1)
+PASS e12-default-exit-kill-control (before=1 after=0)
+PASS e13-label-empty (blank comm, empty cmdline: 1 process(es))
+PASS e14-default-no-label (cmdline is the program name, args stripped)
+PASS e15-execveat-argv-fidelity
+PASS e15-execveat-redacted (alive=2)
+PASS e15-fexecve-argv-fidelity
+PASS e15-fexecve-redacted (alive=2)
+PASS e16-two-exec-output (rc=0)
+PASS e16-two-exec-completions (exec-done lines=2)
+PASS e17-no-arguments-prints-usage-and-exits-255
+PASS e17-empty-args-from-fd-is-refused
+PASS e17-empty-program-name-is-refused (rc=127)
+PASS e18-control-untraced-scores-none (TracerPid=0)
+PASS e18-default-traced-scores-high (TracerPid=23550)
+PASS e18-detach-untraced-scores-none (TracerPid=0)
+PASS e18-secret-holder-label-scores-critical
+PASS e19-control-live-pid-present-in-every-view
+PASS e19-control-dead-pid-absent-in-every-view
+PASS e19-masked-present-in-every-view
+PASS e19-masked-start-time-stable (starttime=17517)
+PASS e19-control-start-times-differ (tracee=17517 shell=16236)
+PASS e19-masked-comm-is-label
+PASS e19-masked-cmdline-hides-argument
+SKIP e20-vfork-child (no gcc)
+PASS e21-control-all-channels-name-the-real-argv
+PASS e21-masked-dissent-is-the-in-process-execfn (cmd=[mk-e21] span=[7] auxv=[mk-e21] own=[/app/tests/testcases])
+PASS e22-path-resolved-check-returns-the-planted-answer
+PASS e22-direct-proc-read-is-not-the-planted-answer
+== VERDICT: FAIL=0 ==
+################ daemon.sh
+PASS d1-control-secret-is-detectable
+PASS d2-job-received-secret (length 12)
+PASS d3-secret-in-no-proc-entry
+PASS d3b-control-environ-is-readable (180 bytes)
+PASS d3b-daemon-job-environ-is-redacted
+PASS d3b-daemon-environ-is-refused
+PASS d4-daemon-selfmask
+PASS d5-stdio-and-exit-status
+PASS d6-failed-job-keeps-daemon
+SKIP d11-run-as-uid (needs root to start the daemon and switch to uid 1000)
+PASS d7-cli-secret-in-no-proc-entry
+PASS d7-cli-child-cmdline-is-label
+PASS d8-same-uid-can-read-fd3-documented-hazard
+PASS d7b-control-environ-is-readable (180 bytes)
+PASS d7b-payload-environ-is-redacted
+PASS d7b-supervisor-environ-is-refused
+PASS d7-cli-descriptor-at-3
+PASS d7-cli-bytes-reach-child
+PASS d7-cli-memfd-backing
+PASS d7-cli-sealed-against-write
+PASS d7-cli-report-names-the-secret
+PASS d9-help-has-no-tmp-fallback
+PASS d10-clean-job-is-silent
+PASS d10-degraded-job-is-reported (pmask: 1 of 1 execs degraded (post-exec))
+PASS d10-quiet-daemon-stays-quiet
+== VERDICT: FAIL=0 ==
+################ daemon_neg.sh
+PASS n1-socket-mode-600 (600)
+PASS n2-bad-magic (response code=255 signal=none msg=pmaskd: bad request: bad magic (protocol mismatch?))
+PASS n2-daemon-survives
+PASS n3-bad-version (response code=255 signal=none msg=pmaskd: unsupported protocol version 9, the daemon speak)
+PASS n3-daemon-survives
+PASS n4-old-banner (response code=255 signal=none msg=pmaskd: protocol mismatch: the client speaks protocol 1,)
+PASS n4-daemon-survives
+PASS n5-argc-too-large (response code=255 signal=none msg=pmaskd: bad request: argc too large)
+PASS n5-daemon-survives
+PASS n6-argument-too-large (response code=255 signal=none msg=pmaskd: bad request: argument too large)
+PASS n6-daemon-survives
+PASS n7-request-too-large (response code=255 signal=none msg=pmaskd: job refused: job arguments are 1228802 bytes, th)
+PASS n7-daemon-survives
+PASS n8-label-too-large (response code=255 signal=none msg=pmaskd: bad request: label is 8388608 bytes, the limit i)
+PASS n8-daemon-survives
+PASS n9-label-nul (response code=255 signal=none msg=pmaskd: bad request: label must not contain NUL, LF or C)
+PASS n9-daemon-survives
+PASS n10-truncated-frame (response code=255 signal=none msg=pmaskd: bad request: failed to fill )
+PASS n10-daemon-survives
+PASS n11-connect-and-close (client rc=0; the daemon's survival is the assertion)
+PASS n11-daemon-survives
+PASS n12-zero-fds (response code=255 signal=none msg=pmaskd: expected exactly 3 file descriptors, got 0)
+PASS n12-daemon-survives
+PASS n13-five-fds (response code=255 signal=none msg=pmaskd: too many file descriptors (control data truncate)
+PASS n13-daemon-survives
+PASS n14-stalled-client-dropped (2s, rc=0, elapsed_ms=2001 first_read=1
+response code=255 signal=none msg=pmaskd: bad request: the c)
+PASS n14-daemon-survives
+PASS n15-symlink-refused (pmaskd: refusing to start: /tmp/pmask-neg.26188/symlink.sock is a symbolic link)
+PASS n16-plain-file-refused (pmaskd: refusing to start: /tmp/pmask-neg.26188/plain.sock exists and is not a socket)
+PASS n17-live-socket-not-stolen (pmaskd: refusing to start: another daemon is already listening on /tmp/pmask-neg.26188/live.sock)
+PASS n17-daemon-survives
+PASS n18-stale-socket-replaced
+PASS n19-double-fork-job-keeps-daemon (client rc=0)
+PASS n19-daemon-survives
+PASS n20-daemonizing-job-releases-client (0s, rc=0)
+PASS n21-env-file-reaches-job (NEG_ONLY=value-from-file)
+PASS n21-no-inherit-env (absent variable is unset)
+PASS n21-control-inherit-env (default inherits)
+PASS n22-label-less-client-gets-daemon-label (2 processes)
+PASS n23-newline-label-refused (response code=255 signal=none msg=pmaskd: bad request: label must not contain NU)
+PASS n23-daemon-survives
+Killed
+PASS n24-job-timeout (2s, rc=137)
+PASS n24-daemon-survives
+SKIP n25-unauthorised-uid (needs root to switch to uid 1000)
+PASS n26-sigterm-stops-with-a-stalled-worker (worker 26679, exit 0)
+PASS n27-ping-answered (response code=0 signal=none msg=protocol=2 detail=full label=pmask-job uid=1000 run_as_uid)
+PASS n27-daemon-survives
+PASS n28-visible-socket-dir-warned (pmaskd: warning: /tmp/pmask-neg.26188/visible is mode 0755; group or other can read and traverse it,)
+== VERDICT: FAIL=0 ==
+################ options.sh
+PASS o1-help-names-selfmask-escape
+PASS o1-help-documents-dash-label
+PASS o2-argv0-override
+PASS o3-default-argv0-is-original-string
+PASS o4-comm-override
+PASS o4-comm-over-15-bytes-rejected
+PASS o5-nul-label-rejected-run-and-spawn
+PASS o6-newline-label-rejected
+PASS o7-dash-label-forms-agree
+PASS o8-debug-hides-env
+PASS o9-env-reaches-program
+PASS o9-env-file-reaches-program
+PASS o9-env-and-env-file-hidden-from-proc
+PASS o9-control-keep-env-secret-visible
+PASS o10-keep-env-name-visible-secret-hidden
+PASS o10-control-default-redacts-path
+PASS o11-args-from-fd-secret-absent
+PASS o11-args-from-fd-program-gets-arguments
+PASS o11-control-observer-sees-plain-argv
+PASS o12-supervisor-comm-is-label
+PASS o12-supervisor-cmdline-is-label
+PASS o12-supervisor-hides-argv-and-environ
+PASS o12-control-no-selfmask-leaves-argv
+PASS o13-secret-gone-before-fork (0 sightings in 50 samples while the child ran)
+PASS o14-on-exit-detach-keeps-background-child
+PASS o14-on-exit-kill-terminates-background-child
+PASS o14-on-exit-wait-waits-for-the-tree
+SKIP o15-no-dumpable (needs root to switch to uid 1000)
+PASS o16-no-new-privs-sets-flag
+PASS o16-watch-rename-implies-no-new-privs
+PASS o16-control-default-leaves-flag-clear
+PASS o17-watch-rename-keeps-label
+PASS o17-control-without-watch-rename-comm-changes
+PASS o17b-watch-rename-refusal-is-fatal
+PASS o17b-watch-rename-success-is-silent
+PASS o18-rexec-exe-is-memfd (/memfd:mko-rex (deleted))
+PASS o18-rexec-maps-has-no-disk-path
+PASS o18-control-exe-is-disk-path
+PASS o19-unshare-payload-sees-only-itself (inside=1 outside=65)
+PASS o20-daemon-with-mask-options-warns
+PASS o20-quiet-suppresses-daemon-warning
+PASS o20-control-label-only-has-no-warning
+PASS o21-env-file-no-separator-refused
+PASS o21-env-file-empty-key-refused
+PASS o21-env-file-nul-byte-refused
+PASS o21-control-good-key-accepted
+PASS o22-secret-keeps-path
+PASS o22-secret-keeps-home
+PASS o22-secret-fd-map-present
+PASS o22-plain-secret-keeps-path
+PASS o23-args-from-fd-oversize-refused
+PASS o24-daemon-refuses-secret
+PASS o24-daemon-refuses-isolate
+PASS o24-daemon-refuses-no-redact
+PASS o24-control-daemon-alone-connects
+PASS o25-doctor-help-names-landlock
+PASS o25-doctor-accepts-landlock
+PASS o26-secret-args-from-fd-runs-the-program
+PASS o27-report-carries-the-degradation-counts
+PASS o27-refused-window-relocation-is-counted
+PASS o27-secret-run-is-dumpable
+PASS o27-no-dumpable-is-reported
+PASS o28-plain-refusal-names-the-flag-to-drop
+PASS o28-no-secret-close-on-exec-is-named
+PASS o28-help-says-when-the-flag-is-refused
+PASS o29-report-composes-with-args-from-fd
+PASS o29b-report-on-a-plain-run
+PASS o29c-report-refused-on-a-daemon-job
+PASS o30-image-path-runs-from-a-memfd
+PASS o30b-image-stdin-runs-from-a-memfd
+PASS o30c-image-from-fd-runs-from-a-memfd
+PASS o30d-image-non-elf-refused
+PASS o30e-image-and-args-from-fd-refused
+PASS o31-rexec-named-temp-carrier
+PASS o31-rexec-temp-file-is-removed
+PASS o32-refused-image-is-reported (rc=126)
+PASS o32-explicit-disk-fallback-is-reported
+PASS o33-hugetlb-reports-its-backing (pmask: --rexec: --hugetlb unavailable: Invalid argument (os error 22); using an ordinary memfd)
+PASS o34-rexec-runs-from-a-noexec-mount (plain refused, rexec ran)
+PASS o35-argv0-is-the-same-on-the-disk-and-image-paths
+PASS o36-exec-once-reuses-one-image (1 inode in 100 execs)
+PASS o36-control-without-exec-once-runs-from-disk
+PASS o36-exec-once-keys-by-program (2 inodes for 2 programs)
+PASS o36-exec-once-temp-file-is-removed
+PASS o37-scope-name-ran
+PASS o38-empty-env-key-is-refused-by-name
+== VERDICT: FAIL=0 ==
+################ core.sh
+PASS k1-thread-exec-keeps-argv
+PASS k2-control-sees-tail-5000 (1)
+PASS k2-fidelity-5000 (len=5015 byte-exact tail)
+PASS k2-no-tail-leak-5000
+PASS k2-control-sees-tail-100000 (1)
+PASS k2-fidelity-100000 (len=100017 byte-exact tail)
+PASS k2-no-tail-leak-100000
+PASS k3-argv-complete-10000
+PASS k3-no-sighting
+Killed
+PASS k4-32bit-refused-by-default (rc=137)
+PASS k4-summary-names-foreign-refused
+PASS k4-32bit-allow-foreign-runs
+PASS k4-summary-names-foreign-arch
+PASS k5-supervisor-exits (rc=0 in 0s)
+PASS k5-detach-keeps-background-job (1 alive with the label, 0 sightings)
+PASS k5-on-exit-kill-terminates-tree (0 alive after 1 polls)
+PASS k5-on-exit-wait-waits (2s)
+PASS k6-sigstop-holds (file frozen at 2 bytes)
+PASS k6-sigcont-resumes (size 2 -> 14)
+PASS k8-retry-keeps-entry-swap (swaps=2 rereads=0)
+PASS k9-failed-repoint-zeroes-and-warns (0 sightings)
+PASS k9-failed-repoint-resumes-cleanly (exit 0)
+PASS k10-summary-names-post-exec (pmask: 1 of 2 execs degraded (post-exec))
+PASS k10-script-is-not-called-unredacted
+PASS k10-quiet-prints-nothing
+PASS k10-clean-elf-run-is-silent
+PASS k10-clean-secret-run-is-silent
+PASS k10-clean-run-has-no-duplicate-line
+PASS k15-refused-window-is-reported (pmask: 1 of 1 execs kept the kernel's argv and environ windows (PR_SET_MM_MAP refused))
+PASS k15-quiet-prints-nothing
+PASS k15-accepted-window-is-silent
+PASS k15-window-kept (arg extent 16 = cmdline length, one NUL, environ 13 bytes with a decoy)
+SKIP k15b-real-prctl-refusal (no C compiler for the seccomp wrapper)
+PASS k11-completion-reads-bounded (reads=12 for a 4000-entry environment)
+INFO completion-stop 6406us reads=12 (4000-entry env, kernel 6.12.115-0-virt, x86_64, accel kvm)
+PASS k12-thread-comm-is-label (4 of 4 threads)
+PASS k12-setproctitle-rewrite-keeps-args
+PASS k12-control-std-args-read-the-kernel-block
+PASS k12-no-vdso-elf-degradation-is-visible-and-counted (rc=0)
+PASS k13-at-execfn-is-the-real-path (execfn=/app/tests/testcases)
+SKIP k13-setuid (needs root to create a set-uid file)
+PASS k13-execveat-argv-intact (entry swaps: 2)
+PASS k13-fexecve-argv-intact (entry swaps: 2)
+PASS k13b-at-execfn-diverges (payload=/app/tests/testcases auxv=core-label-x)
+PASS k16-failed-repoint-zeroes-the-visible-spans (0 sightings)
+PASS k16b-failed-repoint-keeps-an-environ-the-caller-kept
+PASS k16c-failed-block-zeroes-the-visible-spans (pmask: warning: pid 10305: exec not redacted: redaction block failed: no syscall instruction for mmap)
+PASS k17-empty-argv-element-is-forwarded
+PASS k14-thread-starts-settled (settled=4 slow=0)
+== VERDICT: FAIL=0 ==
+################ audit.sh
+SKIP audit (needs root)
+== VERDICT: FAIL=0 SKIP ==
+SKIP store (absent; this VM tree stages a subset)
+SKIP isolation (absent; this VM tree stages a subset)
+SKIP lease (absent; this VM tree stages a subset)
+SKIP secrets (absent; this VM tree stages a subset)
+SKIP compare (absent; this VM tree stages a subset)
+SKIP conformance (absent; this VM tree stages a subset)
+SKIP regressions (absent; this VM tree stages a subset)
+################ FINAL: ALL-PASS
+VM-HARNESS-RESULT-NONROOT:0
+[  226.855567] reboot: Power down

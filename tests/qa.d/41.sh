@@ -99,21 +99,21 @@ else
     stop
 fi
 
-# ---------------------------- E2: --no-exact, NUL run, extent kept
+# ------------------- E2: --no-exact, decoy environment, extent kept
 if start --no-exact; then
     n=$(env_bytes "$PAY")
     z=$(env_nuls "$PAY")
     sp=$(env_span "$PAY")
-    # Three variables: PATH, HUSH, KEEPME.  The rule is one NUL per
-    # variable; the extent is non-zero because it is not relocated.
-    if [ "$n" = "$z" ] && [ "$z" -ge 2 ] && [ "$sp" != 0 ]; then
-        pass "e2-no-exact-nul-run (bytes=$n nuls=$z span=$sp)"
+    # The original extent is kept because the window is not relocated,
+    # but the content is a plausible decoy, not an all-NUL block.
+    if [ "$n" = "$sp" ] && [ "$n" -gt 0 ] && { [ "$n" -le 1 ] || [ "$z" -lt "$n" ]; }; then
+        pass "e2-no-exact-decoy-environ (bytes=$n nuls=$z span=$sp)"
     else
-        fail "e2-no-exact-nul-run (bytes=$n nuls=$z span=$sp, want bytes==nuls>=2 and span!=0)"
+        fail "e2-no-exact-decoy-environ (bytes=$n nuls=$z span=$sp, want bytes==span>0 and not all NUL)"
     fi
     stop
 else
-    fail "e2-no-exact-nul-run (no payload)"
+    fail "e2-no-exact-decoy-environ (no payload)"
     stop
 fi
 

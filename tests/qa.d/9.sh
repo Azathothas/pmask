@@ -190,6 +190,31 @@ else
     fail "qa9-report-fd-is-not-inherited (out=[$(cat "$D/fd.out")])"
 fi
 
+# ---- The default redaction path produces a report too.  The old
+# ---- refusal made --report-file a secret-side-only flag, so a caller
+# ---- that ran the plain mask path had no document at all.
+rm -f "$D/def.json"
+"$TOOL" -q --report-file "$D/def.json" -- sh -c "$PAYLOAD" >"$D/def.out" 2>"$D/def.err"
+rc=$?
+if [ "$rc" = 0 ] && grep -q '"mode": "redact"' "$D/def.json" \
+    && grep -q '"execs": {"total": 1' "$D/def.json" \
+    && parse_json "$D/def.json" && [ "$(cat "$D/def.out")" = "payload-line" ]; then
+    pass "qa9-default-redaction-report"
+else
+    fail "qa9-default-redaction-report (rc=$rc out=[$(cat "$D/def.out")] err=$(head -1 "$D/def.err"))"
+fi
+
+# ---- A --daemon job has no document to return; the refusal must name
+# ---- the daemon, not a mode the operator never selected.
+"$TOOL" -q --daemon /nonexistent.sock --report=json -- /bin/true \
+    >/dev/null 2>"$D/dm.err"
+rc=$?
+if [ "$rc" = 255 ] && grep -q -- '--daemon job does not produce a report' "$D/dm.err"; then
+    pass "qa9-daemon-report-refused"
+else
+    fail "qa9-daemon-report-refused (rc=$rc err=$(head -1 "$D/dm.err"))"
+fi
+
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ] || exit 1
 exit 0

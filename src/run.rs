@@ -40,8 +40,9 @@ use crate::secret::{self, Delivery, DeliveryMode, Secret, Source};
 use crate::ExitState;
 use std::ffi::{CString, OsString};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
+use zeroize::Zeroize;
 
 /// How the command is going to be run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,15 @@ pub struct Outcome {
     pub payload_dumpable: bool,
     /// The hardening tier of the buffers that held the values.
     pub hardening: Hardening,
+    /// `--hide-pid` was requested and the policy check passed.
+    pub hide_pid: bool,
+    /// `--encrypt-memory` was requested.
+    pub encrypt_memory: bool,
+    /// Reserved: at least one redaction block was mapped from
+    /// `memfd_secret`.  Always false in this build: the block is anonymous by design and
+    /// only the session key uses `memfd_secret`.  The field stays in the
+    /// document so a consumer can assert the property.
+    pub block_secretmem: bool,
     /// One entry per delivered secret.
     pub secrets: Vec<SecretReport>,
 }
@@ -111,17 +121,31 @@ pub struct Hardening {
     pub locked: bool,
     /// True when every value's pages lived in a `memfd_secret` mapping.
     pub secret_mem: bool,
+    /// True when `--encrypt-memory` sealed the supervisor's at-rest
+    /// copies under the session key.
+    pub encrypted: bool,
 }
 
 impl Hardening {
     /// The tier as one word: `locked+secret_mem`, `locked`, `secret_mem`
-    /// or `heap`.
+    /// or `heap`, with `+encrypted` appended when the at-rest copies were
+    /// sealed.
     pub fn as_str(&self) -> &'static str {
-        match (self.locked, self.secret_mem) {
+        let base = match (self.locked, self.secret_mem) {
             (true, true) => "locked+secret_mem",
             (true, false) => "locked",
             (false, true) => "secret_mem",
             (false, false) => "heap",
+        };
+        if self.encrypted {
+            match base {
+                "locked+secret_mem" => "locked+secret_mem+encrypted",
+                "locked" => "locked+encrypted",
+                "secret_mem" => "secret_mem+encrypted",
+                _ => "heap+encrypted",
+            }
+        } else {
+            base
         }
     }
 }
@@ -173,10 +197,14 @@ impl Outcome {
                 "  \"mode_reason\": \"{}\",\n",
                 "  \"ptrace\": {},\n",
                 "  \"payload_dumpable\": {},\n",
+                "  \"hide_pid\": {},\n",
+                "  \"encrypt_memory\": {},\n",
+                "  \"block_secretmem\": {},\n",
                 "  \"hardening\": \"{}\",\n",
                 "  \"exit\": {{\"code\": {}, \"signal\": {}}},\n",
                 "  \"execs\": {{\"total\": {}, \"degraded\": {}, \"detached\": {}, \"sized\": {}, \
-                 \"sized_skipped\": {}, \"secret_close_failed\": {}}},\n",
+                 \"sized_skipped\": {}, \"secret_close_failed\": {}, \"block_anonymous\": {}, \
+                 \"dontdump_failed\": {}, \"dumpable_failed\": {}}},\n",
                 "  \"secrets\": [{}],\n",
                 "  \"notes\": [{}]\n",
                 "}}\n"
@@ -185,6 +213,9 @@ impl Outcome {
             esc(&self.mode_reason),
             b(self.ptrace),
             b(self.payload_dumpable),
+            b(self.hide_pid),
+            b(self.encrypt_memory),
+            b(self.block_secretmem),
             self.hardening.as_str(),
             self.exit.code,
             self.exit
@@ -197,6 +228,9 @@ impl Outcome {
             self.exit.stats.sized,
             self.exit.stats.sized_skipped,
             self.exit.stats.secret_close_failed,
+            self.exit.stats.block_anonymous,
+            self.exit.stats.dontdump_failed,
+            self.exit.stats.dumpable_failed,
             secrets,
             notes
         )
@@ -265,10 +299,10 @@ pub enum AuditState {
 /// overrides in [`crate::caps`]; it changes no production behaviour beyond
 /// the adjective in one warning.
 pub fn audit_state() -> AuditState {
-    match std::env::var("PMASK_PROBE_AUDIT").as_deref() {
-        Ok("1") => return AuditState::Enabled,
-        Ok("0") => return AuditState::Disabled,
-        _ => {}
+    match crate::testhooks::bool_opt("PMASK_PROBE_AUDIT") {
+        Some(true) => return AuditState::Enabled,
+        Some(false) => return AuditState::Disabled,
+        None => {}
     }
     // SAFETY: a netlink socket owned by this call; it is closed below.
     let fd = unsafe {
@@ -506,6 +540,8 @@ pub struct Runner {
     close_on_exec: bool,
     allow_argv_secret: bool,
     no_dumpable: bool,
+    hide_pid: bool,
+    encrypt_memory: bool,
     /// Mask options the caller passed, for the modes that cannot apply
     /// them.  Every entry becomes one note, so a dropped option is never
     /// silent (AGENTS.md invariant 13).
@@ -518,6 +554,12 @@ pub struct Runner {
 impl Default for Runner {
     fn default() -> Self {
         Runner::new()
+    }
+}
+
+impl Drop for Runner {
+    fn drop(&mut self) {
+        self.scrub();
     }
 }
 
@@ -541,6 +583,8 @@ impl Runner {
             close_on_exec: false,
             allow_argv_secret: false,
             no_dumpable: false,
+            hide_pid: false,
+            encrypt_memory: false,
             requested: Vec::new(),
             requests_audit: false,
         }
@@ -663,12 +707,29 @@ impl Runner {
     }
 
     /// Record that the run asks for a non-dumpable payload
-    /// (`--no-dumpable`). The redaction mode makes the report field false;
-    /// isolate and plain mode leave the payload dumpable and say so.
-    /// The redaction mode applies it at each exec; the isolate and plain
-    /// modes do not change dumpability and say so in a note.
+    /// (`--no-dumpable`).  The payload injection itself is owned by the
+    /// [`Mask`]; this runner copy keeps the supervisor non-dumpable for
+    /// the session.  The report reads `Mask::payload_is_dumpable`, so a
+    /// caller must set the mask, not only this flag.
     pub fn no_dumpable(mut self, on: bool) -> Runner {
         self.no_dumpable = on;
+        self
+    }
+
+    /// `--hide-pid`: hide the tree from same-uid `/proc` readers.  The
+    /// redaction mode owns the tracer that injects `PR_SET_DUMPABLE`; the
+    /// isolate and plain modes refuse the flag.
+    pub fn hide_pid(mut self, on: bool) -> Runner {
+        self.hide_pid = on;
+        self
+    }
+
+    /// `--encrypt-memory`: encrypt the supervisor's at-rest copies and
+    /// keep the payload's block anonymous and `MADV_DONTDUMP`.  The
+    /// redaction mode owns the tracer; the isolate and plain modes refuse
+    /// the flag.
+    pub fn encrypt_memory(mut self, on: bool) -> Runner {
+        self.encrypt_memory = on;
         self
     }
 
@@ -691,10 +752,10 @@ impl Runner {
     /// `--argv0`, `--env`, `--no-dumpable`, `--rexec`, `--unshare`, the
     /// session-end policy, ...) then applies to a `--secret` run too.
     ///
-    /// The mask's `no_dumpable` flag is private, so a caller that sets it
-    /// with [`Mask::no_dumpable`] must also call [`Runner::no_dumpable`]
-    /// with `true`: the report's `payload_dumpable` is built from the
-    /// runner's copy.
+    /// The payload's dumpability and the report's `payload_dumpable`
+    /// both come from this mask (`Mask::payload_is_dumpable`).
+    /// [`Runner::no_dumpable`] affects only the supervisor's own
+    /// hardening.
     pub fn mask(mut self, mask: Mask) -> Runner {
         self.mask = Some(mask);
         self
@@ -934,13 +995,35 @@ impl Runner {
         pairs
     }
 
-    /// Run the command and wait for it.
-    pub fn run<P, A>(&self, program: P, args: &[A]) -> io::Result<Outcome>
+    /// Zero the command-line and environment values this runner still
+    /// holds after a run.  Call it once the child has its own copy.
+    pub fn scrub(&mut self) {
+        for (_, v) in &mut self.env_overrides {
+            scrub_os(v);
+        }
+        for (_, src) in &mut self.secrets {
+            src.scrub();
+        }
+    }
+
+    /// Run the command and wait for it.  The runner is `&mut` because
+    /// loading a secret consumes its source: the plaintext copy the
+    /// caller handed in is zeroed before the payload starts.
+    pub fn run<P, A>(&mut self, program: P, args: &[A]) -> io::Result<Outcome>
     where
         P: AsRef<std::ffi::OsStr>,
         A: AsRef<std::ffi::OsStr>,
     {
         let args: Vec<OsString> = args.iter().map(|a| a.as_ref().to_os_string()).collect();
+        self.run_owned(program, args)
+    }
+
+    /// Like [`Runner::run`], but takes ownership of the argument vector so
+    /// the supervisor can zero it as soon as the child has its copy.
+    pub fn run_owned<P>(&mut self, program: P, mut args: Vec<OsString>) -> io::Result<Outcome>
+    where
+        P: AsRef<std::ffi::OsStr>,
+    {
         let mut notes = Vec::new();
         let mode = self.mode();
         let ptrace = Caps::cached().ptrace;
@@ -972,6 +1055,28 @@ impl Runner {
                     "--audit needs the redaction mode: the selected mode is {}, which has no \
                      tracer to describe the tree, so the audit rows would be empty; run where \
                      ptrace is available, or drop --audit",
+                    mode.as_str()
+                ),
+            ));
+        }
+        if self.hide_pid && mode != Mode::Redact {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--hide-pid needs the redaction mode: the selected mode is {}, which has \
+                     no tracer to inject PR_SET_DUMPABLE into the tree; run where ptrace is \
+                     available, or drop --hide-pid",
+                    mode.as_str()
+                ),
+            ));
+        }
+        if self.encrypt_memory && mode != Mode::Redact {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--encrypt-memory needs the redaction mode: the selected mode is {}, \
+                     which has no redaction block to protect; run where ptrace is available, \
+                     or drop --encrypt-memory",
                     mode.as_str()
                 ),
             ));
@@ -1163,13 +1268,33 @@ impl Runner {
 
         // 1. Load secrets into protected memory.
         let mut secrets: Vec<Secret> = Vec::with_capacity(self.secrets.len());
-        for (name, src) in &self.secrets {
-            let s = secret::load(name, src, self.socket.as_ref())?;
-            secrets.push(s);
+        let socket = self.socket.clone();
+        for idx in 0..self.secrets.len() {
+            // `load` copies the value into a SecBuf.  The source string
+            // is not needed after that and must not stay in the
+            // supervisor's heap for the whole session; a `literal:` is
+            // exactly the copy an observer scans for.
+            let loaded = {
+                let (name, src) = &mut self.secrets[idx];
+                secret::load(name, src, socket.as_ref())
+            };
+            self.secrets[idx].1.scrub();
+            match loaded {
+                Ok(s) => secrets.push(s),
+                Err(e) => {
+                    // A caller that handles the error must not keep the
+                    // sources it did not reach.
+                    for (_, rest) in &mut self.secrets[idx + 1..] {
+                        rest.scrub();
+                    }
+                    return Err(e);
+                }
+            }
         }
         let hardening = Hardening {
             locked: !secrets.is_empty() && secrets.iter().all(|s| s.is_locked()),
             secret_mem: !secrets.is_empty() && secrets.iter().all(|s| s.is_secret_mem()),
+            encrypted: false,
         };
         let delivery_mode = if self.close_on_exec {
             DeliveryMode::CloseOnExec
@@ -1203,7 +1328,10 @@ impl Runner {
         // `install_fds` or `isolate::run`.
         let cloexec = !delivery.readable_by_descendants();
 
-        // 3. Dispatch.
+        // 3. Dispatch.  `payload_dumpable` describes the payload's own
+        // `PR_GET_DUMPABLE`, so it is read from the mask that actually
+        // ran, not from the runner's copy of the request.
+        let mut payload_dumpable = mode != Mode::Redact;
         let exit = match mode {
             Mode::Redact => {
                 let mut mask = match self.mask.clone() {
@@ -1228,6 +1356,12 @@ impl Runner {
                         }
                     }
                 };
+                if self.hide_pid {
+                    mask = mask.hide_pid(true);
+                }
+                if self.encrypt_memory {
+                    mask = mask.encrypt_memory(true);
+                }
                 mask = mask.inherit_fds_with(fds.clone(), cloexec);
                 // `Runner::audit` is the library-level spelling; the CLI
                 // also sets it on the mask it passes.  Applying it here
@@ -1269,6 +1403,12 @@ impl Runner {
                         }
                     }
                 }
+                // A supervisor that holds the plaintext until delivery
+                // stays non-dumpable; the default redaction path scrubs
+                // its copies and can be an ordinary process.
+                if !secrets.is_empty() {
+                    mask = mask.supervisor_non_dumpable(true);
+                }
                 // `Mask::env` adds each pair on top of the inherited
                 // environment.  `Mask::envs` would replace it wholesale,
                 // which dropped PATH and HOME from a `--secret` run.
@@ -1287,9 +1427,21 @@ impl Runner {
                 // the tree: its own cmdline is `pmask run --secret
                 // TOKEN=file:...`, which names the secret.
                 let child = mask.spawn(program.as_ref(), &args)?;
+                payload_dumpable = mask.payload_is_dumpable();
+                // The child has its own copy of the command line.  Drop
+                // the supervisor's copy now, before it waits.
+                for a in &mut args {
+                    scrub_os(a);
+                }
                 let comm = child.label_comm().to_vec();
                 let redact_env = child.redacts_environ();
-                let selfmask = crate::selfmask::mask_self_with_window(&comm, redact_env);
+                let non_dumpable =
+                    self.no_dumpable || self.hide_pid || self.encrypt_memory || !secrets.is_empty();
+                let selfmask = if non_dumpable {
+                    crate::selfmask::mask_self_with_window(&comm, redact_env)
+                } else {
+                    crate::selfmask::mask_self_with_window_opts(&comm, redact_env, false)
+                };
                 if let Some(e) = selfmask.window {
                     // A refused PR_SET_MM_MAP needs CAP_SYS_RESOURCE.  The
                     // argv block is zeroed and labelled either way; only
@@ -1311,6 +1463,11 @@ impl Runner {
                 child.wait()?
             }
             Mode::Isolate => {
+                notes.push(
+                    "--isolate is namespace-only: the payload keeps its real cmdline, \
+                     environ and comm; add --redact to compose isolation with redaction"
+                        .to_string(),
+                );
                 let iso = self.iso_set().unwrap_or_else(Isolate::all);
                 let prog = resolve_program(program.as_ref())?;
                 let mut argv_c: Vec<CString> = Vec::with_capacity(args.len() + 1);
@@ -1411,6 +1568,36 @@ impl Runner {
             }
         };
 
+        if exit.stats.seal_failures > 0 {
+            notes.push(format!(
+                "--encrypt-memory: {} at-rest cop{} could not be sealed and stayed plaintext \
+                 in the supervisor",
+                exit.stats.seal_failures,
+                if exit.stats.seal_failures == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            ));
+        }
+        if self.hide_pid && exit.stats.dumpable_failed > 0 {
+            // `hide_pid` reports the request; the count says the tree was
+            // not actually hidden, so the report must not read as success.
+            notes.push(format!(
+                "--hide-pid: PR_SET_DUMPABLE failed at {} exec completion(s); those \
+                 processes stayed dumpable and a same-uid /proc reader can see them \
+                 despite the request",
+                exit.stats.dumpable_failed
+            ));
+        }
+        if self.encrypt_memory && !crate::caps::Caps::cached().memfd_secret {
+            notes.push(
+                "--encrypt-memory: this host has no memfd_secret, so the session key stays \
+                 in heap (mlock'ed when the limit allows); the ciphertext copies and the \
+                 payload's anonymous MADV_DONTDUMP block are in ordinary memory"
+                    .to_string(),
+            );
+        }
         let secrets_report: Vec<SecretReport> = secrets
             .iter()
             .enumerate()
@@ -1421,6 +1608,13 @@ impl Runner {
                 fd: secret::FIRST_FD + i as libc::c_int,
             })
             .collect();
+
+        // The child has its own copy of the command line.  The
+        // supervisor does not need it after the run and must not keep it
+        // at rest.
+        for a in &mut args {
+            scrub_os(a);
+        }
 
         Ok(Outcome {
             mode,
@@ -1434,11 +1628,32 @@ impl Runner {
             // `--no-dumpable` at each exec, the isolate and plain modes
             // never change dumpability.  Reporting the request made the
             // document contradict the payload (issue 21).
-            payload_dumpable: mode != Mode::Redact || !self.no_dumpable,
-            hardening,
+            // A refused PR_SET_DUMPABLE leaves the payload dumpable, so
+            // the runtime failure count overrides the request.
+            payload_dumpable: payload_dumpable || exit.stats.dumpable_failed > 0,
+            hardening: Hardening {
+                // The seal happens at the exec entry stop, so a run that
+                // never sealed a copy did not produce encrypted memory,
+                // even when --encrypt-memory was requested.
+                encrypted: self.encrypt_memory
+                    && exit.stats.sealed > 0
+                    && exit.stats.seal_failures == 0,
+                ..hardening
+            },
+            hide_pid: self.hide_pid,
+            encrypt_memory: self.encrypt_memory,
+            block_secretmem: false,
             secrets: secrets_report,
         })
     }
+}
+
+/// Overwrite an `OsString`'s bytes in place, then replace it with an
+/// empty string.
+fn scrub_os(s: &mut OsString) {
+    let mut bytes = std::mem::take(s).into_vec();
+    bytes.zeroize();
+    *s = OsString::new();
 }
 
 /// The `--isolate` spelling for a set, for a note that has to quote what
@@ -1518,6 +1733,9 @@ mod tests {
             ptrace: true,
             payload_dumpable: dumpable,
             hardening: Hardening::default(),
+            hide_pid: false,
+            encrypt_memory: false,
+            block_secretmem: false,
             secrets: Vec::new(),
         }
     }

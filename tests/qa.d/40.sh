@@ -191,18 +191,13 @@ else
     stop
 fi
 
-# ------------------------- W10: --no-exact, the count rule
-# Measured on this build: the `--no-exact` path does NOT relocate its
-# window.  It re-reads the kernel's copied strings (the post-exec code
-# path) and places them in a hidden mapping; it then zeroes the kernel
-# argv/env spans (the same span the kernel just used to copy), so the
-# visible space becomes a sequence of empty slots with their NUL bytes.
-# The rule is: cmdline == label + one NUL per argument slot (argc+1 total).
-# A control run (no pmask) has more NULs because the kernel copied the
-# full strings.
-#
-# For the ELF entry path, pmask also builds a hidden block and rewrites
-# the visible spans to zeros except for the label+null at the start.
+# ------------------------- W10: --no-exact, the presentation rule
+# The `--no-exact` path does NOT relocate its window.  It re-reads the
+# kernel's copied strings, places them in a hidden mapping, and then
+# presents the original extent as one command line: the label, spaces,
+# and a single final NUL.  The environment gets a plausible decoy (or
+# the --keep-env variables), not an all-NUL block.  The old shape, one
+# NUL per argument slot, was a fingerprint.
 A1=$(printf 'a%.0s' $(seq 40))
 A2=$(printf 'b%.0s' $(seq 40))
 A3=$(printf 'c%.0s' $(seq 40))
@@ -220,16 +215,35 @@ while [ $i -lt 40 ]; do
 done
 if [ -n "$PAY" ]; then
     cb=$(cmd_bytes "$PAY"); cn=$(cmd_nuls "$PAY")
-    argc=5   # payload arguments: sleeper QAMARK A1 A2 A3
-    if [ "$cn" = "$((argc + 1))" ]; then
-        pass "w10-no-exact-one-nul-per-arg-slot (nuls=$cn argcount=$argc)"
+    eb=$(env_bytes "$PAY"); en=$(env_nuls "$PAY")
+    read -r asp esp <<EOT
+$(spans "$PAY")
+EOT
+    if [ "$cn" = 1 ]; then
+        pass "w10-no-exact-single-nul (nuls=$cn)"
     else
-        fail "w10-no-exact-one-nul-per-arg-slot (nuls=$cn, want $((argc + 1)))"
+        fail "w10-no-exact-single-nul (nuls=$cn, want 1)"
     fi
-    if [ "$cb" = "$(( ${#L9} + argc + 1 ))" ]; then
-        pass "w10-cmdline-bytes=label+NUL-count (bytes=$cb)"
+    if [ "$cb" = "$asp" ]; then
+        pass "w10-cmdline-bytes=argspan (bytes=$cb span=$asp)"
     else
-        fail "w10-cmdline-bytes=label+NUL-count (bytes=$cb, want $(( ${#L9} + argc + 1 )))"
+        fail "w10-cmdline-bytes=argspan (bytes=$cb span=$asp)"
+    fi
+    if [ "$(head -c "${#L9}" "/proc/$PAY/cmdline")" = "$L9" ]; then
+        pass "w10-cmdline-starts-with-the-label"
+    else
+        fail "w10-cmdline-starts-with-the-label"
+    fi
+    tail_bytes=$(tail -c "+$(( ${#L9} + 1 ))" "/proc/$PAY/cmdline" | tr -d ' ' | wc -c)
+    if [ "$tail_bytes" = 1 ]; then
+        pass "w10-cmdline-tail-is-spaces-then-one-nul"
+    else
+        fail "w10-cmdline-tail-is-spaces-then-one-nul (non-space bytes=$tail_bytes)"
+    fi
+    if [ "$eb" = "$esp" ] && { [ "$eb" -le 1 ] || [ "$en" -lt "$eb" ]; }; then
+        pass "w10-environ-is-not-an-all-nul-block (bytes=$eb nuls=$en span=$esp)"
+    else
+        fail "w10-environ-is-not-an-all-nul-block (bytes=$eb nuls=$en span=$esp)"
     fi
     stop
 else

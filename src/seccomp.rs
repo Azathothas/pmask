@@ -85,6 +85,35 @@ pub fn prctl_watch_filter() -> Vec<libc::sock_filter> {
     ]
 }
 
+/// Build the classic BPF program that traps only `execve` and `execveat`.
+///
+/// The tracer installs this on a settled tracee when `--exec-once` uses
+/// the seccomp fast path, so the tracee runs with `PTRACE_CONT` and stops
+/// only when it is about to exec.  The filter checks the architecture
+/// first, so a foreign-ABI call is allowed and handled by the normal
+/// entry path if the tracee is still syscall-supervised.
+///
+/// Layout (index: instruction):
+/// 0 load arch, 1 jump if arch matches, 2 load nr, 3 jump if execve,
+/// 4 return TRACE, 5 jump if execveat, 6 return TRACE, 7 return ALLOW.
+pub fn exec_watch_filter() -> Vec<libc::sock_filter> {
+    let execve = libc::SYS_execve as u32;
+    let execveat = libc::SYS_execveat as u32;
+    vec![
+        stmt(BPF_LD_W_ABS, OFFSET_ARCH),
+        // match: continue at 2. mismatch: skip 5 to index 7 (allow).
+        jump_eq(AUDIT_ARCH_CURRENT, 0, 5),
+        stmt(BPF_LD_W_ABS, OFFSET_NR),
+        // execve: continue at 4. otherwise: skip 1 to index 5.
+        jump_eq(execve, 0, 1),
+        stmt(BPF_RET_K, SECCOMP_RET_TRACE | TRACE_DATA),
+        // execveat: continue at 6. otherwise: skip 1 to index 7.
+        jump_eq(execveat, 0, 1),
+        stmt(BPF_RET_K, SECCOMP_RET_TRACE | TRACE_DATA),
+        stmt(BPF_RET_K, SECCOMP_RET_ALLOW),
+    ]
+}
+
 /// Install `filter` on the calling thread with `prctl(PR_SET_SECCOMP)`.
 ///
 /// The program lives on the stack. The function does not allocate, so it is
@@ -215,6 +244,36 @@ mod tests {
             let d = data(libc::SYS_prctl as u32, arch, 15);
             assert_eq!(run(&prog, &d), SECCOMP_RET_ALLOW, "arch {:#x}", arch);
         }
+    }
+
+    #[test]
+    fn execve_is_traced() {
+        let prog = exec_watch_filter();
+        let d = data(libc::SYS_execve as u32, AUDIT_ARCH_CURRENT, 0);
+        assert_eq!(run(&prog, &d), SECCOMP_RET_TRACE | TRACE_DATA);
+    }
+
+    #[test]
+    fn execveat_is_traced() {
+        let prog = exec_watch_filter();
+        let d = data(libc::SYS_execveat as u32, AUDIT_ARCH_CURRENT, 0);
+        assert_eq!(run(&prog, &d), SECCOMP_RET_TRACE | TRACE_DATA);
+    }
+
+    #[test]
+    fn exec_filter_allows_other_calls() {
+        let prog = exec_watch_filter();
+        for nr in [libc::SYS_write, libc::SYS_openat, libc::SYS_prctl] {
+            let d = data(nr as u32, AUDIT_ARCH_CURRENT, 0);
+            assert_eq!(run(&prog, &d), SECCOMP_RET_ALLOW, "nr {}", nr);
+        }
+    }
+
+    #[test]
+    fn exec_filter_allows_foreign_arch() {
+        let prog = exec_watch_filter();
+        let d = data(libc::SYS_execve as u32, 0x4000_0003, 0);
+        assert_eq!(run(&prog, &d), SECCOMP_RET_ALLOW);
     }
 
     #[test]

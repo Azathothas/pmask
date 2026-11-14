@@ -113,6 +113,7 @@ mod imp {
     pub const SYS_MMAP: u64 = 9;
     pub const SYS_BRK: u64 = 12;
     pub const SYS_CLOSE: u64 = 3;
+    pub const SYS_MADVISE: u64 = 28;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee
@@ -225,6 +226,7 @@ mod imp {
     pub const SYS_MMAP: u64 = 90;
     pub const SYS_BRK: u64 = 45;
     pub const SYS_CLOSE: u64 = 6;
+    pub const SYS_MADVISE: u64 = 219;
 
     /// `struct user_regs_struct` of i386, all fields 32 bits.
     #[repr(C)]
@@ -315,6 +317,7 @@ mod imp {
     pub const SYS_MMAP: u64 = 222;
     pub const SYS_BRK: u64 = 214;
     pub const SYS_CLOSE: u64 = 57;
+    pub const SYS_MADVISE: u64 = 233;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee

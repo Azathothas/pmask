@@ -30,10 +30,10 @@ fi
 
 echo "== rustc"; rustc --version
 echo "== build"
-cargo build --locked --release --bins --features testbins
+cargo build --locked --release --bins --features testbins,test-hooks
 
 echo "== library tests"
-cargo test --locked --lib
+cargo test --locked --lib --features test-hooks
 
 echo "== format"
 if cargo fmt --version >/dev/null 2>&1; then
@@ -44,7 +44,7 @@ fi
 
 echo "== clippy"
 if cargo clippy --version >/dev/null 2>&1; then
-    cargo clippy --locked --all-targets --features testbins -- -D warnings
+    cargo clippy --locked --all-targets --features testbins,test-hooks -- -D warnings
 else
     echo "SKIP clippy (clippy not installed)"
 fi

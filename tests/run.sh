@@ -3,7 +3,7 @@
 #
 # Binaries (see refresh_bins in lib.sh):
 #   TESTBIN_DIR=DIR   copy prebuilt binaries from DIR
-#   cargo present     always `cargo build --release --bins --features testbins`;
+#   cargo present     always `cargo build --release --bins --features testbins,test-hooks`;
 #                     cargo decides what is stale
 #   no cargo          use the binaries already in tests/ (the VM case)
 #

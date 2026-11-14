@@ -371,11 +371,33 @@ pub fn child_setup_proc() -> io::Result<ProcMode> {
 pub fn probe(ns: ChildNs) -> io::Result<()> {
     let pid = fork_in_userns_with(ns)?;
     if pid == 0 {
+        // The clone alone is not the guarantee: the private `/proc` and
+        // `/tmp` mounts are what the run actually needs.  Prove both in
+        // the throwaway child and report which one failed by exit code.
+        let mut code = 0;
+        if ns.procfs && child_setup_proc().is_err() {
+            code = 1;
+        }
+        if code == 0 && ns.private_tmp && child_private_tmp().is_err() {
+            code = 2;
+        }
         // SAFETY: the child only exits.
-        unsafe { libc::_exit(0) };
+        unsafe { libc::_exit(code) };
     }
     match wait_for(pid) {
         Ok(status) if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 => Ok(()),
+        Ok(status) if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 1 => {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the private /proc mount was refused in the user namespace",
+            ))
+        }
+        Ok(status) if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 2 => {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the private /tmp mount was refused in the user namespace",
+            ))
+        }
         _ => Err(io::Error::from_raw_os_error(libc::EPERM)),
     }
 }

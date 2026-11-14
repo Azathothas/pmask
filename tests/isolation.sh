@@ -558,8 +558,10 @@ if [ -x "$CASES" ]; then
             case "$utmp_rep" in
                 *tmp=refused*|*tmp=blocked*|*tmp=skipped*)
                     pass "i7b-payload-under-tmp-reports-the-tmp-degradation" ;;
-                *)
+                *tmp=*)
                     pass "i7b-payload-under-tmp-kept-a-private-tmp" ;;
+                *)
+                    fail "i7b-payload-under-tmp-has-no-report (an empty report is not evidence of a private tmp)" ;;
             esac
         fi
     fi

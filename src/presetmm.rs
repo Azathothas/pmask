@@ -291,7 +291,7 @@ const AT_EXECFN: u64 = 31;
 
 /// Replace the `AT_EXECFN` value in an auxiliary vector image read from
 /// `/proc/<pid>/auxv`.  Leaves an image without that entry untouched.
-fn patch_execfn(auxv: &mut [u8], addr: u64) {
+pub(crate) fn patch_execfn(auxv: &mut [u8], addr: u64) {
     let mut off = 0;
     while off + 16 <= auxv.len() {
         let key = u64::from_le_bytes(match auxv[off..off + 8].try_into() {

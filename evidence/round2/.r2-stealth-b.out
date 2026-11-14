@@ -1,0 +1,3 @@
+pmask: --stealth: /proc uses hidepid=off; --no-dumpable is applied, so a same-uid reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES refusals are themselves a signal.
+pmask: warning: pid 546705: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+renamer-comm=r2-stealth-b

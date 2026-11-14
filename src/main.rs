@@ -260,10 +260,10 @@ fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) 
 /// handed to the session as-is, so `--secret` composes with `--comm`,
 /// `--rexec`, `--unshare`, `--no-dumpable` and the rest.  Options the
 /// selected mode cannot apply are named in the run report.
-fn run_with_secrets(cli: cli::Cli) -> i32 {
+fn run_with_secrets(mut cli: cli::Cli) -> i32 {
     use pmask::run::{Mode, Runner};
     let mut r = Runner::new()
-        .mask(cli.mask)
+        .mask(cli.mask.clone())
         .requested_options(&cli.mask_opts);
     for (name, src) in &cli.secrets {
         r = r.secret(name.clone(), src.clone());
@@ -305,8 +305,14 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if cli.secret_close_on_exec {
         r = r.close_on_exec();
     }
-    if cli.no_dumpable {
+    if cli.no_dumpable || cli.hide_pid || cli.encrypt_memory {
         r = r.no_dumpable(true);
+    }
+    if cli.hide_pid {
+        r = r.hide_pid(true);
+    }
+    if cli.encrypt_memory {
+        r = r.encrypt_memory(true);
     }
     if cli.audit {
         r = r.audit();
@@ -326,7 +332,16 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     } else {
         None
     };
-    match r.run(&cli.program, &cli.args) {
+    // Move the argument vector into the runner so it can zero the
+    // supervisor's copy as soon as the child has its own.  The other
+    // copies (the re-exec vector, the secret sources, the mask's env)
+    // are dropped before the run starts.
+    let args = std::mem::take(&mut cli.args);
+    cli.scrub_values();
+    cli.mask.scrub_env_values();
+    let result = r.run_owned(&cli.program, args);
+    r.scrub();
+    match result {
         Ok(outcome) => {
             if let Some(sink) = sink {
                 sink.write(&outcome.report_json());
@@ -575,6 +590,16 @@ fn main() {
         if cli.no_redact {
             local_only.push("--no-redact");
         }
+        // The daemon owns the masking policy and has no report document to
+        // return.  These four change what the local runner does and cannot
+        // be honoured by a job sent to pmaskd; refusing is better than
+        // running the job locally while the operator asked for the daemon.
+        if cli.hide_pid {
+            local_only.push("--hide-pid");
+        }
+        if cli.encrypt_memory {
+            local_only.push("--encrypt-memory");
+        }
         if cli.mask.has_image() {
             // Both spellings of the image family are refused; name both
             // rather than the canonical one only.
@@ -623,47 +648,25 @@ fn main() {
         std::process::exit(255);
     }
 
-    // `--report=json` is produced by the secret-side runner.  The plain
-    // mask path and the `--daemon` client have no report to print, and a
-    // flag that is silently dropped is a degradation the operator cannot
-    // see (invariant 13), so name the mode and refuse.  This runs before
-    // the scope re-exec and `--args-from-fd`: neither can make the run
-    // produce a report, and the scope and the descriptor must not be
-    // consumed for a command that cannot work.
-    if cli.report_json && !cli.needs_runner() {
-        if cli.daemon.is_some() {
-            eprintln!(
-                "pmask: --report=json: a --daemon job does not produce a report; the \
-                 daemon owns the run, so drop --report"
-            );
+    // `--report=json` is produced by the local runner on every path,
+    // including plain redaction.  A `--daemon` job has no document to
+    // return: the daemon owns the run.  A flag that is silently dropped is
+    // a degradation the operator cannot see (invariant 13), so name it and
+    // refuse.  This runs before the scope re-exec and `--args-from-fd`:
+    // neither can make a daemon job produce a report.
+    if cli.report_json && cli.daemon.is_some() {
+        let which = if cli.report_file.is_some() {
+            "--report-file"
+        } else if cli.report_fd.is_some() {
+            "--report-fd"
         } else {
-            // Name the flag the operator wrote: `--report-file` and
-            // `--report-fd` imply the JSON report, so a message about
-            // `--report=json` alone reads as a flag they never passed.
-            let which = if cli.report_file.is_some() {
-                "--report-file"
-            } else if cli.report_fd.is_some() {
-                "--report-fd"
-            } else {
-                "--report=json"
-            };
-            eprintln!(
-                "pmask: {}: the plain mask path does not produce a report; the \
-                 report describes a secret-side run, so add --secret, --isolate or --no-redact, \
-                 or drop the report option",
-                which
-            );
-            // `--redact` changes nothing about the runner: it is the
-            // default mode spelled out.  Say so, because the old message
-            // told an operator to add a flag the line already carried
-            // (b-team finding against issue 19).
-            if cli.redact {
-                eprintln!(
-                    "pmask: note: --redact selects the same /proc treatment as the default \
-                     and does not produce a report; use --secret or --no-redact"
-                );
-            }
-        }
+            "--report=json"
+        };
+        eprintln!(
+            "pmask: {}: a --daemon job does not produce a report; the daemon owns the run, \
+             so drop the report option or run the job without --daemon",
+            which
+        );
         std::process::exit(255);
     }
 
@@ -687,6 +690,11 @@ fn main() {
     // itself.
     let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
     check_no_selfmask(&cli, no_selfmask);
+    if no_selfmask {
+        // The supervisor's own /proc entry stays real, so it must stay
+        // non-dumpable.
+        cli.mask = cli.mask.clone().supervisor_non_dumpable(true);
+    }
     warn_keep_env_secret(&cli);
 
     // Read the command before every path that needs it: the runner path
@@ -694,7 +702,21 @@ fn main() {
     // `--args-from-fd` runs the program the descriptor names.
     cli.load_args_fd();
 
-    if cli.needs_runner() {
+    // A report alone must not select the runner on a host that cannot
+    // redact: the runner would fall back to `mode=plain` and run the
+    // payload unredacted, while the same command without a report refuses
+    // it.  Refuse instead of weakening the run for a document.
+    if cli.report_json && !cli.needs_runner_without_report() && !pmask::caps::Caps::cached().ptrace
+    {
+        eprintln!(
+            "pmask: --report=json: the report needs the redaction mode, and this host \
+             refuses ptrace; the payload would run unredacted.  Run where ptrace is \
+             permitted, or drop the report option."
+        );
+        std::process::exit(255);
+    }
+
+    if cli.needs_runner() && cli.daemon.is_none() {
         std::process::exit(run_with_secrets(cli));
     }
 
@@ -745,9 +767,13 @@ fn main() {
             std::process::exit(255);
         }
     };
+    // The child's exec plan has its own copy.  Drop the supervisor's
+    // copies before the session starts.
+    cli.scrub_values();
+    cli.mask.scrub_env_values();
 
     if !no_selfmask {
-        if let Err(e) = prepared.mask_self() {
+        if let Err(e) = prepared.mask_self_opts(cli.mask.supervisor_is_non_dumpable()) {
             if !cli.quiet {
                 eprintln!(
                     "pmask: warning: the supervisor's own /proc entry could not be fully \

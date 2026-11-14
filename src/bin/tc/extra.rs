@@ -4,6 +4,8 @@
 //!   debug-mask KEY VALUE         print `{:?}` of a Mask that holds KEY=VALUE
 //!   as-uid UID CMD [ARGS...]     drop to UID (and gid UID), then exec CMD
 //!   show-nnp                     print the NoNewPrivs line of /proc/self/status
+//!   show-seccomp                 print the Seccomp_filters line of
+//!                                /proc/self/status
 //!   renamer                      rename itself with PR_SET_NAME, report comm
 //!   evilrename [SECONDS]         rename itself with PR_SET_NAME to the
 //!                                fixed name `evil-name`, print the
@@ -30,6 +32,7 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "debug-mask" => Some(debug_mask(rest)),
         "as-uid" => Some(as_uid(rest)),
         "show-nnp" => Some(show_nnp()),
+        "show-seccomp" => Some(show_seccomp()),
         "renamer" => Some(renamer()),
         "evilrename" => Some(evilrename(rest)),
         "count-proc" => Some(count_proc()),
@@ -40,8 +43,25 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "holdptrs" => Some(holdptrs(rest)),
         "holdscan" => Some(holdscan(rest)),
         "forkexec" => Some(forkexec(rest)),
+        "exec64" => Some(exec64()),
         _ => None,
     }
+}
+
+/// Sleep briefly, then exec a 64-bit program.  The 32-bit build of this
+/// binary is used by the 32-bit later-exec test: the first image is
+/// 32-bit and the second is native.
+fn exec64() -> i32 {
+    // SAFETY: a short sleep, then execv of a fixed path.
+    unsafe {
+        libc::usleep(200_000);
+        let path = c"/bin/sleep";
+        let arg0 = c"sleep";
+        let arg1 = c"2";
+        let argv = [arg0.as_ptr(), arg1.as_ptr(), std::ptr::null()];
+        libc::execv(path.as_ptr(), argv.as_ptr());
+    }
+    127
 }
 
 /// A label with a NUL byte must fail at run and at spawn with
@@ -142,20 +162,33 @@ fn as_uid(args: &[String]) -> i32 {
 }
 
 fn show_nnp() -> i32 {
+    print_status_field("NoNewPrivs:", "show-nnp", "no NoNewPrivs line")
+}
+
+fn show_seccomp() -> i32 {
+    print_status_field(
+        "Seccomp_filters:",
+        "show-seccomp",
+        "no Seccomp_filters line",
+    )
+}
+
+/// Print the `/proc/self/status` line that starts with `prefix`.
+fn print_status_field(prefix: &str, who: &str, absent: &str) -> i32 {
     let status = match std::fs::read_to_string("/proc/self/status") {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("show-nnp: {}", e);
+            eprintln!("{}: {}", who, e);
             return 1;
         }
     };
     for line in status.lines() {
-        if line.starts_with("NoNewPrivs:") {
+        if line.starts_with(prefix) {
             println!("{}", line);
             return 0;
         }
     }
-    eprintln!("show-nnp: no NoNewPrivs line");
+    eprintln!("{}: {}", who, absent);
     1
 }
 

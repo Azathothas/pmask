@@ -1,0 +1,125 @@
+
+===== MASKED RUN --watch-rename label=r2-rename =====
+started pgid=542565
+542565 1 r2-rename /srv/pmask-target/release/pmask 0
+542568 542565 r2-rename /srv/pmask-target/release/pmask-testcases 542567
+comm@0.2s=r2-rename
+comm@1.7s=r2-rename
+-- status of payload 542568 --
+TracerPid:	542567
+NoNewPrivs:	1
+Seccomp_filters:	2
+-- same-uid dump of payload 542568 --
+### procdump tag=payload-r2-rename pid=542568 uid=1000
+cmdline.len=10
+cmdline.hex=72322d72656e616d6500
+cmdline.text='r2-rename|'
+comm='r2-rename'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=139780650434560
+stat.49_arg_end=139780650434570
+stat.50_env_start=139780650434573
+stat.51_env_end=139780650434573
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f213804000d
+auxv.execfn_string='r2-rename'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps.open=OK
+status.TracerPid:	542567
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-rename.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-rename.out
+### end tag=payload-r2-rename pid=542568
+-- same-uid memory scan of payload 542568 for the canary --
+hit needle=CANARY_R2_RENAME_d4a1 region=5565469a9000-5565469ca000 off=e10
+hit needle=CANARY_R2_RENAME_d4a1 region=5565469a9000-5565469ca000 off=ee0
+hit needle=CANARY_R2_RENAME_d4a1 region=7f213803e000-7f2138042000 off=2054
+scanmem pid=542568 regions=28 scanned_bytes=3551252
+needle=CANARY_R2_RENAME_d4a1 hits=3
+-- captured payload output --
+renamer-comm=r2-rename
+STOP verified: 0 label processes remain
+
+===== MASKED RUN --watch-rename label=r2-rename-b =====
+started pgid=543153
+543153 1 r2-rename-b /srv/pmask-target/release/pmask 0
+543157 543153 r2-rename-b /srv/pmask-target/release/pmask-testcases 543156
+comm@0.2s=r2-rename-b
+comm@1.7s=r2-rename-b
+-- status of payload 543157 --
+TracerPid:	543156
+NoNewPrivs:	1
+Seccomp_filters:	2
+-- same-uid dump of payload 543157 --
+### procdump tag=payload-r2-rename-b pid=543157 uid=1000
+cmdline.len=12
+cmdline.hex=72322d72656e616d652d6200
+cmdline.text='r2-rename-b|'
+comm='r2-rename-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=139985349869568
+stat.49_arg_end=139985349869580
+stat.50_env_start=139985349869583
+stat.51_env_end=139985349869583
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f50e10d800f
+auxv.execfn_string='r2-rename-b'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps.open=OK
+status.TracerPid:	543156
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-rename-b.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-rename-b.out
+### end tag=payload-r2-rename-b pid=543157
+-- same-uid memory scan of payload 543157 for the canary --
+hit needle=CANARY_R2_RENAME_d4a1 region=5637c4b39000-5637c4b5a000 off=e10
+hit needle=CANARY_R2_RENAME_d4a1 region=5637c4b39000-5637c4b5a000 off=ee0
+hit needle=CANARY_R2_RENAME_d4a1 region=7f50e10d6000-7f50e10da000 off=2058
+scanmem pid=543157 regions=28 scanned_bytes=3551252
+needle=CANARY_R2_RENAME_d4a1 hits=3
+-- captured payload output --
+renamer-comm=r2-rename-b
+STOP verified: 0 label processes remain
+
+===== CONTROL RUN 1 (no pmask): renamer changes comm to other =====
+comm@0.2s=pmask-testcases
+comm@1.7s=other
+-- status of the plain process --
+NoNewPrivs:	0
+Seccomp_filters:	1
+-- payload output --
+renamer-comm=other
+
+===== CONTROL RUN 2 (no pmask): renamer changes comm to other =====
+comm@0.2s=pmask-testcases
+comm@1.7s=other
+-- status of the plain process --
+NoNewPrivs:	0
+Seccomp_filters:	1
+-- payload output --
+renamer-comm=other
+
+===== RESIDUE CHECK =====
+none

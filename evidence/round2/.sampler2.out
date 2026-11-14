@@ -1,0 +1,6 @@
+t=123205.3038 pid=547163 ppid=547162 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=/srv/pmask-target/release/pmask
+t=123205.3048 pid=547163 ppid=547162 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=?
+t=123205.3057 pid=547165 ppid=547163 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/memfd:r2-once (deleted)
+t=123205.3067 pid=547166 ppid=547165 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/memfd:r2-once (deleted)
+t=123205.3077 pid=547166 ppid=547165 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/dev/shm/.pmask-rexec-r2-once-547163-3bf13e50-0
+sampler.done observations=5

@@ -38,8 +38,14 @@ const MFD_ALLOW_SEALING: u32 = 0x0002;
 /// did to the delivered descriptor.  One creation site is what makes the
 /// flag impossible to forget (issue 15).
 pub(crate) fn secret_memfd() -> io::Result<libc::c_int> {
+    // `memfd_secret(2)` masks flags with `SECRETMEM_FLAGS_MASK |
+    // O_CLOEXEC`, not with `MFD_*`: 0x1 (MFD_CLOEXEC) is rejected with
+    // EINVAL on every kernel that implements it, and O_CLOEXEC is
+    // honoured.  The separate `memfd_create(2)` call below does use
+    // MFD_CLOEXEC.
     // SAFETY: plain syscall with constant arguments.
-    let fd = unsafe { libc::syscall(SYS_MEMFD_SECRET, MFD_CLOEXEC as libc::c_long) as libc::c_int };
+    let fd =
+        unsafe { libc::syscall(SYS_MEMFD_SECRET, libc::O_CLOEXEC as libc::c_long) as libc::c_int };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -178,7 +184,7 @@ impl SecBuf {
         // an open handle on the plaintext, so a descendant that keeps it
         // can `mmap` the secret no matter what `--secret-close-on-exec`
         // did to the delivered descriptor.  `secret_memfd` creates it
-        // `MFD_CLOEXEC`, so the kernel closes it at the first exec of
+        // close-on-exec, so the kernel closes it at the first exec of
         // anything that does not belong to the supervisor (issue 15).
         let fd = match secret_memfd() {
             Ok(fd) => fd,
@@ -655,7 +661,7 @@ mod tests {
     fn every_secret_memfd_is_close_on_exec() {
         // issue 15: the supervisor's `memfd_secret` survived `exec`, so a
         // grandchild of a `--secret-close-on-exec` run could mmap the
-        // plaintext.  The single creation site must set `MFD_CLOEXEC`.
+        // plaintext.  The single creation site must set O_CLOEXEC.
         let fd = match secret_memfd() {
             Ok(fd) => fd,
             // No memfd_secret on this host: the property is vacuous here,
@@ -670,7 +676,7 @@ mod tests {
         assert_eq!(
             flags & libc::FD_CLOEXEC,
             libc::FD_CLOEXEC,
-            "memfd_secret must be created MFD_CLOEXEC"
+            "memfd_secret must be created O_CLOEXEC"
         );
     }
 }

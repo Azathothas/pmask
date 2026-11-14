@@ -30,6 +30,33 @@ use crate::tracer::{State, Tracer};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::time::Instant;
+use zeroize::Zeroize;
+
+/// A saved argv/envp vector that zeroes its strings when it goes out of
+/// scope.  The supervisor must not keep the payload's real strings after
+/// the redaction block has been written.
+struct ScrubStrings(Vec<Vec<u8>>);
+
+impl Drop for ScrubStrings {
+    fn drop(&mut self) {
+        for s in &mut self.0 {
+            s.zeroize();
+        }
+    }
+}
+
+impl std::ops::Deref for ScrubStrings {
+    type Target = Vec<Vec<u8>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ScrubStrings {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// syscall flavor of the exec currently in flight
 #[derive(Clone, Copy, PartialEq)]
@@ -80,6 +107,11 @@ struct RedactionBlock {
     /// Address of the second label copy, which is what `AT_EXECFN` is
     /// repointed at.
     execfn: u64,
+    /// The compact kept-only environment span, when `--keep-env` names
+    /// variables.  The kernel's environment window points here, so
+    /// `/proc/<pid>/environ` reads the kept variables with no NUL
+    /// padding from the original extent.
+    env_window: Option<(u64, u64)>,
 }
 
 /// Why a completion stop could not fully redact an exec.
@@ -114,13 +146,19 @@ struct ExecFlags {
     /// `label + 1` bytes and the environment window is empty.
     sized: bool,
     /// `PR_SET_MM_MAP` was refused: the kernel's own windows stay, so
-    /// `cmdline` is the label followed by `argc` NUL bytes and
-    /// `/proc/<pid>/environ` reads back as a NUL block instead of empty.
-    /// The program's real argv is never in the kernel's window: the entry
-    /// swap sees to that.
+    /// `cmdline` is the label padded with spaces and one final NUL, and
+    /// `/proc/<pid>/environ` reads back as a decoy (or the kept
+    /// variables) instead of empty.  The program's real argv is never in
+    /// the kernel's window: the entry swap sees to that.
     sized_skipped: bool,
     /// The tracee was left detached: no supervisor remains for this pid.
     detached: bool,
+    /// `--no-dumpable`/`--hide-pid`: the `PR_SET_DUMPABLE` injection
+    /// was attempted on this completion.
+    dumpable_done: bool,
+    /// The injection failed or the completion returned before it ran, so
+    /// this tracee stayed readable to its own uid.
+    dumpable_failed: bool,
 }
 
 impl Tracer {
@@ -160,6 +198,14 @@ impl Tracer {
         // completion redacts the new image.
         if self.table.get(&pid).map(|t| t.vfork_child).unwrap_or(false) {
             vlog!(self, "pid {}: vfork child, post-exec mode", pid);
+            if self.cfg.rexec_per_exec {
+                self.stats.vfork_cache_skipped += 1;
+                vlog!(
+                    self,
+                    "pid {}: vfork child takes the post-exec path; --exec-once cache tag not applied",
+                    pid
+                );
+            }
             self.set_state(pid, State::Script);
             self.resume_exec_entry(pid);
             return;
@@ -184,18 +230,65 @@ impl Tracer {
         let avarr = avarr.map(|(v, _)| v);
         let evarr = evarr.map(|(v, _)| v);
 
+        let mut seal_errors: Vec<String> = Vec::new();
         {
+            let key = self.cfg.session_key.clone();
             let Some(t) = self.table.get_mut(&pid) else {
                 return;
             };
             if let Some(arr) = &avarr {
-                t.argv = dup_strings(pid, arr, &mut overflow);
+                let mut v = dup_strings(pid, arr, &mut overflow);
                 t.av_save = Some(arr.clone());
+                if let (Some(key), Some(strings)) = (&key, &v) {
+                    match crate::crypto::EncryptedStrings::seal(key, strings) {
+                        Ok(sealed) => {
+                            t.sealed_argv = Some(sealed);
+                            crate::tracer::zeroize_strings(&mut v);
+                        }
+                        Err(e) => seal_errors.push(format!("pid {}: argv seal failed: {}", pid, e)),
+                    }
+                }
+                t.argv = v;
             }
             if let Some(arr) = &evarr {
-                t.envp = dup_strings(pid, arr, &mut overflow);
+                let mut v = dup_strings(pid, arr, &mut overflow);
                 t.ev_save = Some(arr.clone());
+                if let (Some(key), Some(strings)) = (&key, &v) {
+                    match crate::crypto::EncryptedStrings::seal(key, strings) {
+                        Ok(sealed) => {
+                            t.sealed_envp = Some(sealed);
+                            crate::tracer::zeroize_strings(&mut v);
+                        }
+                        Err(e) => seal_errors.push(format!("pid {}: env seal failed: {}", pid, e)),
+                    }
+                }
+                t.envp = v;
             }
+        }
+        if !seal_errors.is_empty() {
+            // The note says "at-rest copies", so count each copy: an exec
+            // whose argv and envp both failed to seal leaves two.
+            self.stats.seal_failures += seal_errors.len() as u32;
+            for msg in seal_errors {
+                self.warn(format_args!("{}", msg));
+            }
+        }
+        // Count the copies that are sealed now.  `clear_exec_state`
+        // cleared both fields before this entry stop, so a `Some` here
+        // is a seal this exec produced, not one inherited from before.
+        let sealed_now = self
+            .table
+            .get(&pid)
+            .map(|t| t.sealed_argv.is_some() as u32 + t.sealed_envp.is_some() as u32)
+            .unwrap_or(0);
+        self.stats.sealed += sealed_now;
+        if self
+            .table
+            .get(&pid)
+            .map(|t| t.argv.is_some() || t.envp.is_some())
+            .unwrap_or(false)
+        {
+            self.set_pending(pid, true);
         }
 
         let avn = avarr.as_ref().map(|v| v.len()).unwrap_or(0);
@@ -223,9 +316,31 @@ impl Tracer {
                 .map(|p| self.elf_is_32(pid, p))
                 .unwrap_or(false);
         if foreign_image {
-            vlog!(self, "pid {}: 32-bit image, refusal at completion", pid);
+            if self.cfg.allow_foreign {
+                vlog!(
+                    self,
+                    "pid {}: 32-bit image, running unredacted (--allow-foreign)",
+                    pid
+                );
+                self.set_state(pid, State::Foreign);
+                self.resume_exec_entry(pid);
+                return;
+            }
+            // The image would run with its real argv, environ and comm.
+            // Refuse before the exec: kill the tracee at the entry stop.
+            self.stats.foreign_refused += 1;
+            self.warn(format_args!(
+                "pid {}: 32-bit (foreign ABI) program refused; a 32-bit image cannot \
+                 be redacted, so it is not run unless --allow-foreign is set",
+                pid
+            ));
             self.set_state(pid, State::Foreign);
-            self.resume_exec_entry(pid);
+            // SAFETY: plain kill(2) of a stopped tracee; the pending
+            // SIGKILL is delivered when it resumes.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            self.resume(pid, 0, false);
             return;
         }
 
@@ -391,6 +506,37 @@ impl Tracer {
         );
     }
 
+    /// Open a sealed argv/envp copy, or pass the plaintext copy through.
+    /// A failed open is a disclosure risk, so it is reported and the
+    /// caller fails closed.
+    fn open_sealed(
+        &self,
+        pid: libc::pid_t,
+        sealed: Option<crate::crypto::EncryptedStrings>,
+        plain: Option<Vec<Vec<u8>>>,
+    ) -> Option<Vec<Vec<u8>>> {
+        match (sealed, &self.cfg.session_key) {
+            (Some(s), Some(key)) => match s.open(key) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    self.warn(format_args!(
+                        "pid {}: sealed strings could not be opened: {}",
+                        pid, e
+                    ));
+                    None
+                }
+            },
+            (Some(_), None) => {
+                self.warn(format_args!(
+                    "pid {}: sealed strings have no session key",
+                    pid
+                ));
+                None
+            }
+            (None, _) => plain,
+        }
+    }
+
     /// Does this environment string name a variable that stays visible?
     fn is_kept_env(&self, s: Option<&Vec<u8>>) -> bool {
         let Some(s) = s else { return false };
@@ -431,13 +577,25 @@ impl Tracer {
                 let _ = write_mem(pid, ev_addr, &ptr_words_bytes(save));
             }
         }
+        let sealed = self
+            .table
+            .get(&pid)
+            .map(|t| t.sealed_argv.is_some() as u32 + t.sealed_envp.is_some() as u32)
+            .unwrap_or(0);
         if let Some(t) = self.table.get_mut(&pid) {
             t.av_save = None;
             t.ev_save = None;
-            t.argv = None;
-            t.envp = None;
+            crate::tracer::zeroize_strings(&mut t.argv);
+            crate::tracer::zeroize_strings(&mut t.envp);
+            t.sealed_argv = None;
+            t.sealed_envp = None;
             t.env_swapped = false;
         }
+        // The exec failed, so the copies sealed at its entry stop were
+        // never used.  Do not let a failed attempt make the run report
+        // `encrypted`.
+        self.stats.sealed = self.stats.sealed.saturating_sub(sealed);
+        self.set_pending(pid, false);
     }
 
     /// exec completed (`PTRACE_EVENT_EXEC`, or the exec's syscall-exit
@@ -449,6 +607,27 @@ impl Tracer {
     /// tracee: a tracee left stopped wedges the whole tree.
     pub(super) fn on_exec_complete(&mut self, pid: libc::pid_t, at_exit_stop: bool) {
         self.drain_rexec_report();
+        if self
+            .table
+            .get(&pid)
+            .map(|t| t.foreign_done)
+            .unwrap_or(false)
+        {
+            // The tracee already ran a 32-bit image under --allow-foreign.
+            // A later exec cannot be redacted; kill it before the new
+            // image runs.
+            self.stats.foreign_refused += 1;
+            self.warn(format_args!(
+                "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it",
+                pid
+            ));
+            // SAFETY: plain kill(2) of a stopped tracee.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            self.resume(pid, 0, false);
+            return;
+        }
         let started = Instant::now();
         let reads0 = crate::remote::READ_CALLS.load(std::sync::atomic::Ordering::Relaxed);
         self.stats.execs += 1;
@@ -468,7 +647,44 @@ impl Tracer {
                 self.warn(format_args!("pid {}: exec not redacted: {}", pid, why));
             }
         }
+        // A completion that returned before the dumpable injection leaves
+        // the payload dumpable, even though the mask asked for the
+        // opposite.  The report must say so.
+        if self.cfg.no_dumpable && !flags.dumpable_done {
+            flags.dumpable_failed = true;
+        }
+        if flags.foreign && !self.cfg.allow_foreign {
+            // A 32-bit image that bypassed the entry refusal (a foreign
+            // `execve` from a settled tracee, a vfork child, or a
+            // post-exec path) reaches its completion stop with the real
+            // argv already copied by the kernel.  Refuse it before the
+            // image runs.  It is counted as refused, not as a foreign
+            // exec that ran, so `account` is skipped.
+            self.stats.foreign_refused += 1;
+            self.warn(format_args!(
+                "pid {}: 32-bit (foreign ABI) program refused at completion; a 32-bit \
+                 image cannot be redacted, so it is not run unless --allow-foreign is set",
+                pid
+            ));
+            // SAFETY: plain kill(2) of a stopped tracee; the pending
+            // SIGKILL is delivered when it resumes.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            self.resume(pid, 0, false);
+            return;
+        }
         self.account(&flags);
+        if flags.foreign && self.cfg.allow_foreign {
+            if let Some(t) = self.table.get_mut(&pid) {
+                t.foreign_done = true;
+            }
+            vlog!(
+                self,
+                "pid {}: 32-bit image settled, later execs will be refused",
+                pid
+            );
+        }
         if self.cfg.audit {
             self.audit_row(pid);
         }
@@ -514,6 +730,9 @@ impl Tracer {
         }
         if f.detached {
             s.detached += 1;
+        }
+        if f.dumpable_failed {
+            s.dumpable_failed += 1;
         }
         if f.script || f.reexec || f.comm_skipped || f.failed || f.foreign {
             s.degraded += 1;
@@ -582,6 +801,12 @@ impl Tracer {
             State::Swapped => {}
             State::Run | State::Slow => flags.reexec = true,
         }
+        // The reread path copies the real strings into this process
+        // before it builds the block.  The swapped path already marked
+        // the tracee pending at the entry stop.
+        if reread {
+            self.set_pending(pid, true);
+        }
 
         let Some(kargc) = peek_word(pid, sp).filter(|v| *v <= MAX_ARGV as u64) else {
             return Err(Fail::Unredacted("argc unreadable or implausible".into()));
@@ -625,11 +850,19 @@ impl Tracer {
         //    redaction that cannot place the real strings in the hidden
         //    block must not leave them where /proc serves them.
         let (argv, envp) = if !reread {
-            let t = self.table.get_mut(&pid);
-            match t {
-                Some(t) => (t.argv.take(), t.envp.take()),
-                None => (None, None),
-            }
+            let (sealed_a, sealed_e, plain_a, plain_e) = match self.table.get_mut(&pid) {
+                Some(t) => (
+                    t.sealed_argv.take(),
+                    t.sealed_envp.take(),
+                    t.argv.take(),
+                    t.envp.take(),
+                ),
+                None => (None, None, None, None),
+            };
+            (
+                self.open_sealed(pid, sealed_a, plain_a),
+                self.open_sealed(pid, sealed_e, plain_e),
+            )
         } else {
             let mut overflow = false;
             let n = kav.len().min(kargc as usize);
@@ -643,11 +876,11 @@ impl Tracer {
             }
             (a, e)
         };
-        let Some(argv) = argv else {
+        let Some(mut argv) = argv else {
             self.zero_visible_spans(pid, arg_lo, arg_hi, env_lo, env_hi);
             return Err(Fail::Unredacted("real argv unavailable".into()));
         };
-        let envp = envp.unwrap_or_default();
+        let mut envp = envp.unwrap_or_default();
         if argv.len() as u64 != kargc {
             self.zero_visible_spans(pid, arg_lo, arg_hi, env_lo, env_hi);
             return Err(Fail::Unredacted(format!(
@@ -680,10 +913,20 @@ impl Tracer {
                 // than real.  The program may misbehave; the secret does
                 // not leak.
                 self.zero_visible_spans(pid, arg_lo, arg_hi, env_lo, env_hi);
+                for s in &mut argv {
+                    s.zeroize();
+                }
+                for s in &mut envp {
+                    s.zeroize();
+                }
                 return Err(Fail::Unredacted(format!("redaction block failed: {}", e)));
             }
         };
         let _ = orig_regs.put(pid);
+        // The block now holds the real strings in the tracee.  Zero the
+        // supervisor's copies when this function returns, on every path.
+        let _argv = ScrubStrings(argv);
+        let envp = ScrubStrings(envp);
 
         // From here until the tracee's next exec, a `prctl(PR_SET_NAME)`
         // redirect can point at the label that already sits in this
@@ -727,36 +970,27 @@ impl Tracer {
             return Ok(());
         }
 
-        // 5. zero the visible spans; the label goes into argv[0]'s slot
+        // 5. present the visible spans.  The exact path has already
+        //    moved the kernel's windows onto the block, so this only
+        //    clears the dead original extent.  The `--no-exact` path
+        //    (or a kernel that refused PR_SET_MM_MAP) keeps the original
+        //    windows, so the presentation is what `/proc` serves: the
+        //    label padded with spaces (no NUL run) and a plausible
+        //    environment (the kept variables, then a fixed decoy).
         let label = self.cfg.label.clone();
         if arg_lo < arg_hi {
-            zero_range(pid, arg_lo, arg_hi);
-            let mut fl = label.len() + 1;
-            if arg_lo + fl as u64 > arg_hi {
-                fl = (arg_hi - arg_lo) as usize;
-            }
-            if fl > 0 {
-                let mut lbl = vec![0u8; fl];
-                lbl[..fl - 1].copy_from_slice(&label[..(fl - 1).min(label.len())]);
-                let _ = write_mem(pid, arg_lo, &lbl);
-            }
+            fill_arg_window(pid, arg_lo, arg_hi, &label);
         }
-        if self.cfg.redact_environ {
-            if self.cfg.keep_env.is_empty() {
-                if env_lo < env_hi {
-                    zero_range(pid, env_lo, env_hi);
-                }
-            } else if reread {
-                // The kernel copied every variable: blank the ones that
-                // are not kept, one string at a time.
-                for i in 0..envc {
-                    if !self.is_kept_env(Some(&envp[i])) {
-                        zero_range(pid, kev[i], kev[i] + envp[i].len() as u64 + 1);
-                    }
-                }
-            }
-            // swapped path with kept variables: everything that is not
-            // kept was an empty string already.
+        if self.cfg.redact_environ && env_lo < env_hi {
+            let kept: Vec<&[u8]> = if self.cfg.keep_env.is_empty() {
+                Vec::new()
+            } else {
+                envp.iter()
+                    .filter(|s| self.is_kept_env(Some(s)))
+                    .map(|s| s.as_slice())
+                    .collect()
+            };
+            fill_env_window(pid, env_lo, env_hi, &kept);
         }
 
         // 6. inject the comm label (and the dumpable flag) via a syscall
@@ -831,6 +1065,7 @@ impl Tracer {
             }
         }
         if !tracee_gone && self.cfg.no_dumpable {
+            flags.dumpable_done = true;
             let r2 = crate::inject::run_remote_syscall(
                 pid,
                 &save,
@@ -843,11 +1078,44 @@ impl Tracer {
                 Ok(0) => {}
                 Ok(rv) => {
                     flags.failed = true;
+                    flags.dumpable_failed = true;
                     self.warn(format_args!("pid {}: PR_SET_DUMPABLE returned {}", pid, rv));
                 }
                 Err(e) => {
                     flags.failed = true;
+                    flags.dumpable_failed = true;
                     tracee_gone = self.injection_failed(pid, "dumpable", &e);
+                }
+            }
+        }
+        if !tracee_gone && self.cfg.fast_exec {
+            let installed = self
+                .table
+                .get(&pid)
+                .map(|t| t.exec_filter_installed)
+                .unwrap_or(false);
+            if !installed {
+                match self.install_exec_filter(pid, site, &block, pending_stop) {
+                    Ok(()) => {
+                        if let Some(t) = self.table.get_mut(&pid) {
+                            t.exec_filter_installed = true;
+                            // A later successful install clears an earlier
+                            // failure; otherwise the tracee stays
+                            // syscall-supervised for the rest of its life.
+                            t.fast_exec_failed = false;
+                        }
+                    }
+                    Err(e) => {
+                        flags.failed = true;
+                        if let Some(t) = self.table.get_mut(&pid) {
+                            t.fast_exec_failed = true;
+                        }
+                        self.warn(format_args!(
+                            "pid {}: seccomp exec filter not installed ({}); the tracee stays \
+                             syscall-supervised",
+                            pid, e
+                        ));
+                    }
                 }
             }
         }
@@ -908,15 +1176,19 @@ impl Tracer {
         }
         fields.arg_start = block.base;
         fields.arg_end = arg_end;
-        if self.cfg.redact_environ && self.cfg.keep_env.is_empty() {
-            fields.env_start = audit_end;
-            fields.env_end = audit_end;
+        if self.cfg.redact_environ {
+            if let Some((start, end)) = block.env_window {
+                // `--keep-env=NAME`: the window is the compact kept-only
+                // span in the block, not the original extent.
+                fields.env_start = start;
+                fields.env_end = end;
+            } else {
+                fields.env_start = audit_end;
+                fields.env_end = audit_end;
+            }
         } else {
-            // Variables the caller asked to keep stay in the kernel's own
-            // environment region, so the environment window keeps its
-            // addresses.  `get_mm_cmdline` still reports the shortened
-            // argv window: it substitutes `arg_end` for both environment
-            // bounds when they no longer touch `arg_end`.
+            // `--keep-env` with no names keeps the whole environment
+            // visible; the window stays where the kernel put it.
             let _ = audit_end;
         }
         // `start_stack` must be a real address above `mmap_min_addr` and
@@ -961,6 +1233,24 @@ impl Tracer {
     /// consumed).  In both cases the tracee settles straight back to
     /// Run: the exec is done.
     fn finish_exec_complete(&mut self, pid: libc::pid_t, at_exit_stop: bool) {
+        self.set_pending(pid, false);
+        // Every early return in the completion path lands here.  If the
+        // exec filter was never installed, the settled tracee must stay
+        // syscall-supervised: `resume_state` checks this flag.  Without
+        // it a completion that failed before the install would be
+        // resumed with PTRACE_CONT and its next exec would run with no
+        // entry swap and no filter.
+        if self.cfg.fast_exec
+            && self
+                .table
+                .get(&pid)
+                .map(|t| !t.exec_filter_installed)
+                .unwrap_or(false)
+        {
+            if let Some(t) = self.table.get_mut(&pid) {
+                t.fast_exec_failed = true;
+            }
+        }
         if let Some(t) = self.table.get_mut(&pid) {
             t.state = State::Run;
             t.clear_exec_state();
@@ -1001,6 +1291,156 @@ impl Tracer {
         }
     }
 
+    /// Map the redaction block inside the tracee.  The block is always
+    /// anonymous; with `--encrypt-memory` it is also marked
+    /// `MADV_DONTDUMP`.  A `memfd_secret` block would leave a
+    /// `/secretmem` VMA in the payload, which is a tool fingerprint.
+    fn map_block(
+        &mut self,
+        pid: libc::pid_t,
+        map_len: usize,
+        site: u64,
+        pending_stop: &mut Option<i32>,
+    ) -> io::Result<(u64, bool)> {
+        if self.cfg.encrypt_memory {
+            // The block is anonymous on every path, including with
+            // --encrypt-memory.  A memfd_secret mapping leaves a
+            // `/secretmem` VMA in the payload's maps, which no ordinary
+            // process has, so it is a tool fingerprint.  The pages are
+            // marked MADV_DONTDUMP below, and the session key still uses
+            // memfd_secret in the supervisor.
+            self.stats.block_anonymous += 1;
+        }
+        let regs = Regs::get(pid)?;
+        let addr = crate::inject::run_remote_syscall(
+            pid,
+            &regs,
+            arch::SYS_MMAP,
+            [
+                0,
+                map_len as u64,
+                libc::PROT_READ as u64 | libc::PROT_WRITE as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                u64::MAX,
+                0,
+            ],
+            site,
+            pending_stop,
+        )
+        .map_err(|e| io::Error::other(format!("mmap injection failed: {:?}", e)))?;
+        if addr <= 0 {
+            return Err(io::Error::other(format!(
+                "mmap injection returned {}",
+                addr
+            )));
+        }
+        if self.cfg.encrypt_memory {
+            match Regs::get(pid) {
+                Ok(regs) => match crate::inject::run_remote_syscall(
+                    pid,
+                    &regs,
+                    arch::SYS_MADVISE,
+                    [
+                        addr as u64,
+                        map_len as u64,
+                        libc::MADV_DONTDUMP as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                    site,
+                    pending_stop,
+                ) {
+                    Ok(0) => {}
+                    Ok(rv) => {
+                        self.stats.dontdump_failed += 1;
+                        self.warn(format_args!(
+                            "pid {}: MADV_DONTDUMP on the redaction block returned {}",
+                            pid, rv
+                        ));
+                    }
+                    Err(e) => {
+                        self.stats.dontdump_failed += 1;
+                        self.warn(format_args!(
+                            "pid {}: MADV_DONTDUMP on the redaction block failed: {:?}",
+                            pid, e
+                        ));
+                    }
+                },
+                Err(e) => {
+                    self.stats.dontdump_failed += 1;
+                    self.warn(format_args!(
+                        "pid {}: MADV_DONTDUMP skipped, registers unreadable: {}",
+                        pid, e
+                    ));
+                }
+            }
+        }
+        Ok((addr as u64, false))
+    }
+
+    /// Install the `execve`/`execveat` seccomp filter in the tracee.
+    ///
+    /// The filter lives in the block's scratch area, so it needs no
+    /// supervisor fd and no extra mapping.  `PR_SET_NO_NEW_PRIVS` is
+    /// required for an unprivileged filter; the child already set it, but
+    /// the call is repeated here so a tracee that cleared it cannot make
+    /// the install fail.
+    fn install_exec_filter(
+        &mut self,
+        pid: libc::pid_t,
+        site: u64,
+        block: &RedactionBlock,
+        pending_stop: &mut Option<i32>,
+    ) -> io::Result<()> {
+        let filter = crate::seccomp::exec_watch_filter();
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                filter.as_ptr() as *const u8,
+                filter.len() * std::mem::size_of::<libc::sock_filter>(),
+            )
+        };
+        let filter_addr = block.scratch;
+        write_block(pid, filter_addr, bytes)?;
+        let prog_addr = filter_addr + bytes.len() as u64;
+        let mut prog = vec![0u8; std::mem::size_of::<libc::sock_fprog>()];
+        prog[0..2].copy_from_slice(&(filter.len() as u16).to_ne_bytes());
+        let ptr_off = std::mem::size_of::<libc::sock_fprog>() - std::mem::size_of::<usize>();
+        prog[ptr_off..].copy_from_slice(&(filter_addr as usize).to_ne_bytes());
+        write_block(pid, prog_addr, &prog)?;
+
+        let regs = Regs::get(pid)?;
+        let r = crate::inject::run_remote_syscall(
+            pid,
+            &regs,
+            arch::SYS_PRCTL,
+            [38, 1, 0, 0, 0, 0], // PR_SET_NO_NEW_PRIVS
+            site,
+            pending_stop,
+        )
+        .map_err(|e| io::Error::other(format!("PR_SET_NO_NEW_PRIVS injection failed: {:?}", e)))?;
+        if r != 0 {
+            return Err(io::Error::other(format!(
+                "PR_SET_NO_NEW_PRIVS returned {}",
+                r
+            )));
+        }
+        let r = crate::inject::run_remote_syscall(
+            pid,
+            &regs,
+            arch::SYS_PRCTL,
+            [22, 2, prog_addr, 0, 0, 0], // PR_SET_SECCOMP, SECCOMP_MODE_FILTER
+            site,
+            pending_stop,
+        )
+        .map_err(|e| io::Error::other(format!("PR_SET_SECCOMP injection failed: {:?}", e)))?;
+        if r != 0 {
+            return Err(io::Error::other(format!("PR_SET_SECCOMP returned {}", r)));
+        }
+        vlog!(self, "pid {}: seccomp exec filter installed", pid);
+        Ok(())
+    }
+
     /// Build and write the redaction block: the real argv/envp strings
     /// and the comm label, in an anonymous mapping inside the tracee.
     /// Returns absolute tracee addresses.
@@ -1027,6 +1467,21 @@ impl Tracer {
         }
         let comm_off = need;
         need += comm.len() + 1;
+        // `--keep-env=NAME`: a compact copy of only the kept variables.
+        // The kernel's environment window points at this span, so
+        // `/proc/<pid>/environ` reads back as `KEEP=value\0` with no
+        // leading NUL padding from the original extent.
+        let kept_start = need;
+        let mut kept_pos = Vec::new();
+        if !self.cfg.keep_env.is_empty() {
+            for (i, s) in envp.iter().enumerate() {
+                if self.is_kept_env(Some(s)) {
+                    kept_pos.push((i, need));
+                    need += s.len() + 1;
+                }
+            }
+        }
+        let kept_end = need;
         if need > MAX_HIDDEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1044,6 +1499,9 @@ impl Tracer {
             buf[eoff[i]..eoff[i] + s.len()].copy_from_slice(s);
         }
         buf[comm_off..comm_off + comm.len()].copy_from_slice(&comm);
+        for (i, off) in &kept_pos {
+            buf[*off..*off + envp[*i].len()].copy_from_slice(&envp[*i]);
+        }
 
         // The strings cannot be parked in the tracee stack: the block
         // would sit below `SP - 4096`, and the tracee's own runtime
@@ -1065,30 +1523,7 @@ impl Tracer {
         let map_len = (strings + SCRATCH_ROOM + 15) & !15usize;
         let site = crate::inject::find_syscall_site(pid, None, self.fault_no_vdso)
             .ok_or_else(|| io::Error::other("no syscall instruction for mmap"))?;
-        let regs = Regs::get(pid)?;
-        let addr = crate::inject::run_remote_syscall(
-            pid,
-            &regs,
-            arch::SYS_MMAP,
-            [
-                0,
-                map_len as u64,
-                libc::PROT_READ as u64 | libc::PROT_WRITE as u64,
-                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
-                u64::MAX,
-                0,
-            ],
-            site,
-            pending_stop,
-        )
-        .map_err(|e| io::Error::other(format!("mmap injection failed: {:?}", e)))?;
-        if addr <= 0 {
-            return Err(io::Error::other(format!(
-                "mmap injection returned {}",
-                addr
-            )));
-        }
-        let base = addr as u64;
+        let (base, _secretmem) = self.map_block(pid, map_len, site, pending_stop)?;
         let mut front = vec![0u8; pres as usize];
         let fl = label.len();
         front[..fl].copy_from_slice(&label);
@@ -1096,6 +1531,10 @@ impl Tracer {
         front[execfn..execfn + fl].copy_from_slice(&label);
         write_block(pid, base, &front)?;
         write_block(pid, base + pres, &buf)?;
+        // The tracee has its copy; the supervisor's staging buffer must
+        // not keep the real strings.
+        buf.zeroize();
+        front.zeroize();
         vlog!(
             self,
             "pid {}: hidden block in an anonymous mapping at {:#x} (presentation {} bytes)",
@@ -1111,6 +1550,14 @@ impl Tracer {
             pres,
             scratch: base + pres + total as u64,
             execfn: base + execfn as u64,
+            env_window: if kept_pos.is_empty() {
+                None
+            } else {
+                Some((
+                    base + pres + kept_start as u64,
+                    base + pres + kept_end as u64,
+                ))
+            },
         })
     }
 
@@ -1336,6 +1783,64 @@ fn write_block(pid: libc::pid_t, base: u64, buf: &[u8]) -> io::Result<()> {
         done += n;
     }
     Ok(())
+}
+
+/// Write the presentation of the argv window when the kernel keeps the
+/// original extent (`--no-exact`, or a refused `PR_SET_MM_MAP`).
+///
+/// The label is followed by spaces, not NULs, and the last byte is the
+/// only NUL.  `get_mm_cmdline()` serves `[arg_start, arg_end)` and stops
+/// at the first NUL, so the reader sees one string with trailing spaces.
+/// The old shape, `label` plus one NUL per argument, was a fingerprint.
+fn fill_arg_window(pid: libc::pid_t, lo: u64, hi: u64, label: &[u8]) {
+    let span = (hi - lo) as usize;
+    if span == 0 {
+        return;
+    }
+    let n = label.len().min(span.saturating_sub(1));
+    if n > 0 {
+        let _ = write_mem(pid, lo, &label[..n]);
+    }
+    let mut off = n;
+    while off < span - 1 {
+        let chunk = (span - 1 - off).min(4096);
+        let spaces = vec![b' '; chunk];
+        let _ = write_mem(pid, lo + off as u64, &spaces);
+        off += chunk;
+    }
+    let _ = write_mem(pid, hi - 1, &[0u8]);
+}
+
+/// Write the presentation of the environment window when the kernel
+/// keeps the original extent.  The kept variables (if any) come first,
+/// then a fixed decoy environment; the last byte is NUL.  The payload's
+/// `envp` points at the hidden block, so this is only what `/proc` and a
+/// `/proc/self/environ` reader see.
+fn fill_env_window(pid: libc::pid_t, lo: u64, hi: u64, kept: &[&[u8]]) {
+    let span = (hi - lo) as usize;
+    if span == 0 {
+        return;
+    }
+    let mut buf = vec![0u8; span];
+    let mut off = 0usize;
+    for s in kept {
+        if off + s.len() + 1 > span {
+            break;
+        }
+        buf[off..off + s.len()].copy_from_slice(s);
+        off += s.len() + 1;
+    }
+    const DECOY: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0\
+HOME=/tmp\0LANG=C.UTF-8\0";
+    let mut di = 0usize;
+    while off < span - 1 {
+        let b = DECOY[di % DECOY.len()];
+        buf[off] = b;
+        off += 1;
+        di += 1;
+    }
+    buf[span - 1] = 0;
+    let _ = write_mem(pid, lo, &buf);
 }
 
 /// Bytes reserved for the `PR_SET_MM_MAP` struct, which is 104, and for

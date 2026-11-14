@@ -1,0 +1,7 @@
+    Finished `release` profile [optimized] target(s) in 0.02s
+PASS qa64-report
+PASS qa64-supervisor (the supervisor's memory has no canary)
+PASS qa64-payload (the payload's memory still has the canary: hits=2)
+SKIP qa64-secretmem (memfd_secret is not active on this host)
+PASS qa64-noreadact (pmask: --encrypt-memory needs the redaction mode: the selected mode is plain, which has no redaction)
+== VERDICT: PASS failures=0 ==
