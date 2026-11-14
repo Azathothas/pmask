@@ -23,7 +23,7 @@
 # The systemd units under contrib/systemd/ use ExecStart=/usr/bin/pmask;
 # for a user-local install, edit ExecStart to the installed path.
 #
-# Requires: Rust 1.85+ (rust-version in Cargo.toml), and for --static
+# Requires: Rust 1.87+ (rust-version in Cargo.toml), and for --static
 # the musl target. See README.md Build for details.
 set -eu
 cd "$(dirname "$0")"

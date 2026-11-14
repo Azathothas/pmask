@@ -367,7 +367,7 @@ fn peer_cred(fd: RawFd) -> io::Result<libc::ucred> {
 /// fallback warning is reachable from a suite.  Read once.
 fn peerpidfd_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("PMASK_FAULT_PEERPIDFD").is_some())
+    *OFF.get_or_init(|| crate::testhooks::flag("PMASK_FAULT_PEERPIDFD"))
 }
 
 /// A pidfd for the peer, when the kernel offers one.

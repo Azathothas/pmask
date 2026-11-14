@@ -676,9 +676,10 @@ struct Key {
 /// The cache is shared by the builder (the first exec) and the tracer
 /// (later execs under `--exec-once`).  It holds the image descriptors
 /// open, so a later exec of the same file reuses the same inode instead
-/// of copying the bytes again.  The tracer uses [`Cache::get_temp`],
-/// because the non-dumpable supervisor cannot hand its memfd to the
-/// tracee.
+/// of copying the bytes again.  The tracer uses [`Cache::get_temp`] for a
+/// later exec: the image descriptor is `FD_CLOEXEC` and the tracee has
+/// no copy after its first exec, so the cached bytes are materialised as
+/// a guarded temporary file the tracee can name.
 #[derive(Debug, Default)]
 pub struct Cache {
     entries: HashMap<Key, Arc<Image>>,

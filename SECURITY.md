@@ -69,7 +69,7 @@ frame one. No field in either body carries an environment value.
 
 ## Secrets
 
-The store is Argon2id + ChaCha20-Poly1305, mode 0600. `pmask agent`
+The store is Argon2id + XChaCha20-Poly1305, mode 0600. `pmask agent`
 holds the unlocked store, not `pmaskd`. `--secret` values never enter the
 child's argv or environ; the descriptor caveat above applies. The
 caller's side is separate: a `literal:` value is in pmask's own argv and

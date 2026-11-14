@@ -298,7 +298,7 @@ root_peer_observer() {
 # ---------------------------------------------------------------- binaries
 # refresh_bins: make tests/{pmask,pmaskd,testcases,protocases} current.
 #   1. TESTBIN_DIR set: copy the prebuilt binaries from there.
-#   2. cargo present: always run `cargo build --release --bins --features testbins` (a no-op
+#   2. cargo present: always run `cargo build --release --bins --features testbins,test-hooks` (a no-op
 #      when fresh) and copy; cargo decides what is stale.
 #   3. otherwise (the VM): use the binaries already in this directory.
 # Returns 1 with a FATAL line when a required binary is missing.
@@ -330,7 +330,7 @@ refresh_bins() {
         done
         [ -x "$TESTBIN_DIR/testcases32" ] && install_bin "$TESTBIN_DIR/testcases32" testcases32
     elif command -v cargo >/dev/null 2>&1 && [ -f "$root/Cargo.toml" ]; then
-        (cd "$root" && cargo build --release --bins --features testbins) \
+        (cd "$root" && cargo build --release --bins --features testbins,test-hooks) \
             || { echo "FATAL: cargo build failed" >&2; return 1; }
         for pair in $BIN_PAIRS; do
             src=${pair%%:*}; dst=${pair##*:}

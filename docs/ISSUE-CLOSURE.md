@@ -141,7 +141,12 @@ One section per issue. The `fix commit` column names the commit whose change fix
   Files: `man/pmask.1`, `src/cli.rs`, `src/main.rs`, `src/run.rs`, `tests/helpers/noptrace.c`
 - Test: `tests/qa.d/14.sh`
 
-### #15 The supervisor's `memfd_secret` buffer is not `MFD_CLOEXEC`, so the plaintext leaks into the tree
+### #15 The supervisor's `memfd_secret` buffer is not close-on-exec, so the plaintext leaks into the tree
+
+> Later correction (0.1.0-beta.5 final): `memfd_secret(2)` masks its flags
+> with `O_CLOEXEC`, not `MFD_CLOEXEC`; 0x1 is `EINVAL` on that ABI.  The code
+> and the unit test now pass `O_CLOEXEC`.  The commit messages below record
+> the first fix and are left as written.
 
 - `b48373f` test: add fix1 evidence for issues 4 5 15 16 17 33 60
 - `398eda3` test: add QA fragments for issues 4 5 15 16 17 33 60

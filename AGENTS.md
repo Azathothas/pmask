@@ -24,7 +24,7 @@ machines with no TEE and no hypervisor. Three faces: a library, a CLI
 | `src/daemon.rs` | `pmaskd` protocol, server, client, env-file parser |
 | `src/mem.rs` | locked, wipe-on-drop buffers (`mlock`, `MADV_DONTDUMP`, `PR_SET_DUMPABLE`) |
 | `src/secret.rs` | secret sources (`file:`, `env:`, `agent:`, `stdin`, `literal:`) and descriptor delivery |
-| `src/store.rs` | the encrypted secret store (Argon2id, ChaCha20-Poly1305, 0600 file) |
+| `src/store.rs` | the encrypted secret store (Argon2id, XChaCha20-Poly1305, 0600 file) |
 | `src/lease.rs` | leases: TTL and use count, revocation, the idle lock, the hash-chained audit |
 | `src/agent.rs` | the secret agent: one process holds the unlocked store and answers over a socket |
 | `src/subcmd.rs` | `store`, `agent`, `get`, `read`, `probe`, `doctor` |
@@ -39,9 +39,11 @@ machines with no TEE and no hypervisor. Three faces: a library, a CLI
 | `scripts/` | the CI guards (rename, completions, notices, static link, artefacts) and `verify.sh`, the gate wrapper |
 | `vm/` | QEMU micro-VM harness (`run.sh`), shared parts (`common.sh`), debug runner (`debug.sh`) |
 | `measurements/` | speed and zapper comparison harnesses, and the one-off probes |
-| `evidence/` | raw logs for the b-team measurements, one directory per batch |
+| `evidence/` | raw logs for the b-team measurements, one directory per batch; `evidence/stealth/` is the detection-audit re-measurement |
 | `docs/` | design, threat model, deployment, research, release notes |
 | `docs/COMMENT-AUDIT.md`, `docs/ISSUE-CLOSURE.md` | the source comments the fix branches corrected, and the per-issue fix, test and evidence record |
+| `docs/DETECTION-AUDIT.md` | the detection-audit findings and the fix, test and evidence for each |
+| `docs/INTEGRATION.md` | the binary and library contract for another project, the feature flags and the packaging |
 | `man/`, `completions/` | manual pages and shell completions |
 | `contrib/` | systemd units, `tmpfiles.d` and `sysusers.d`, excluded from the crate |
 | `fuzz/` | the store header parser target |

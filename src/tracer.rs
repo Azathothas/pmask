@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 /// Knobs of a masking session.
 #[derive(Clone)]
@@ -32,6 +33,29 @@ pub struct Config {
     pub quiet: bool,
     /// Inject `prctl(PR_SET_DUMPABLE, 0)` at every exec completion.
     pub no_dumpable: bool,
+    /// Keep the supervisor non-dumpable for the whole session.  False
+    /// when the supervisor has scrubbed its at-rest plaintext and can be
+    /// an ordinary dumpable process; true for the secret path and
+    /// `--no-dumpable`.
+    pub keep_non_dumpable: bool,
+    /// Run a foreign-ABI (32-bit) image unredacted.  False by default:
+    /// the exec is refused, because a payload that runs with its real
+    /// command line is not a masked payload.
+    pub allow_foreign: bool,
+    /// Hide the tree's pids from same-uid `/proc` readers.  The policy
+    /// check lives in `Mask::to_config`; this flag drives the report and
+    /// the per-tracee dumpable injection.
+    pub hide_pid: bool,
+    /// Encrypt the supervisor's at-rest plaintext copies and keep the
+    /// payload's block anonymous and `MADV_DONTDUMP`.
+    pub encrypt_memory: bool,
+    /// The per-session key for the sealed copies.
+    pub session_key: Option<std::sync::Arc<crate::crypto::SessionKey>>,
+    /// Install a seccomp filter that traps only `execve`/`execveat` on a
+    /// settled tracee, so `--exec-once` does not need a syscall stop for
+    /// every syscall.  Safe only when the tracer outlives every tracee
+    /// (the session-end policy is `wait` or `kill`, not `detach`).
+    pub fast_exec: bool,
     /// The children carry a seccomp filter that traps `prctl(PR_SET_NAME)`
     /// (`SECCOMP_RET_TRACE`). The tracer redirects the rename to the label, or
     /// refuses the call when it cannot reach the label address.
@@ -148,8 +172,10 @@ pub struct SessionStats {
     /// the label.  Counted rather than letting the payload's own name
     /// through (`--watch-rename`, issue 60).
     pub rename_refused: u32,
-    /// Foreign-architecture execs refused.
+    /// Foreign-architecture execs run unredacted (`--allow-foreign`).
     pub foreign_arch: u32,
+    /// Foreign-architecture execs refused before the image ran.
+    pub foreign_refused: u32,
     /// Execs of an already settled process: redacted after the exec, with
     /// a short exposure window (no entry swap).
     pub reexec: u32,
@@ -172,6 +198,23 @@ pub struct SessionStats {
     pub rexec_fallback: u32,
     /// `--rexec` runs that used the explicit on-disk last resort.
     pub rexec_disk: u32,
+    /// Redaction blocks mapped anonymously under `--encrypt-memory`.
+    /// This is the design, not a fallback: a `memfd_secret` block would
+    /// leave a `/secretmem` VMA in the payload, which is a fingerprint.
+    pub block_anonymous: u32,
+    /// Blocks whose `MADV_DONTDUMP` injection failed, so a core dump of
+    /// the payload could include the redaction block.
+    pub dontdump_failed: u32,
+    /// Tracees whose `PR_SET_DUMPABLE=0` injection failed (`--hide-pid`).
+    pub dumpable_failed: u32,
+    /// `--encrypt-memory` copies that were sealed successfully.
+    pub sealed: u32,
+    /// `--encrypt-memory` copies that could not be sealed and stayed
+    /// plaintext in the supervisor.
+    pub seal_failures: u32,
+    /// `--exec-once` runs where a vfork child took the post-exec path, so
+    /// the cache tag was not applied.
+    pub vfork_cache_skipped: u32,
     /// Execs with at least one of the degradations above.
     pub degraded: u32,
 }
@@ -206,6 +249,24 @@ pub struct Tracee {
     pub ev_save: Option<Vec<u64>>,
     pub argv: Option<Vec<Vec<u8>>>,
     pub envp: Option<Vec<Vec<u8>>>,
+    /// `--encrypt-memory`: the saved argv/envp as ciphertext.  The
+    /// plaintext fields above stay `None` while these are set.
+    pub sealed_argv: Option<crate::crypto::EncryptedStrings>,
+    pub sealed_envp: Option<crate::crypto::EncryptedStrings>,
+    /// The seccomp exec filter could not be installed, so this tracee
+    /// must stay syscall-supervised.
+    pub fast_exec_failed: bool,
+    /// The seccomp exec filter is already installed and persists across
+    /// execs, so it is not installed again.
+    pub exec_filter_installed: bool,
+    /// A 32-bit image ran under `--allow-foreign`.  A later exec of this
+    /// tracee is refused, because the 64-bit tracer cannot read the
+    /// 32-bit image's registers and pointer arrays.
+    pub foreign_done: bool,
+    /// This tracee's real strings are in the supervisor's memory right
+    /// now.  The tracer keeps itself non-dumpable while any tracee has
+    /// this set, and dumpable at rest.
+    pub pending_plaintext: bool,
     /// Fork depth relative to the supervised master: 0 for the master, 1
     /// for its direct children.  The descriptor policy needs it, because
     /// the program the caller started keeps the secret descriptors and
@@ -248,6 +309,12 @@ impl Tracee {
             ev_save: None,
             argv: None,
             envp: None,
+            sealed_argv: None,
+            sealed_envp: None,
+            fast_exec_failed: false,
+            exec_filter_installed: false,
+            foreign_done: false,
+            pending_plaintext: false,
             depth: 0,
             secret_fds_open: false,
             vfork_child: false,
@@ -263,8 +330,26 @@ impl Tracee {
         self.ev_addr = 0;
         self.av_save = None;
         self.ev_save = None;
-        self.argv = None;
-        self.envp = None;
+        zeroize_strings(&mut self.argv);
+        zeroize_strings(&mut self.envp);
+        self.sealed_argv = None;
+        self.sealed_envp = None;
+    }
+}
+
+impl Drop for Tracee {
+    fn drop(&mut self) {
+        zeroize_strings(&mut self.argv);
+        zeroize_strings(&mut self.envp);
+    }
+}
+
+/// Zero and drop a saved argv/envp vector.
+pub(crate) fn zeroize_strings(v: &mut Option<Vec<Vec<u8>>>) {
+    if let Some(mut strings) = v.take() {
+        for s in &mut strings {
+            s.zeroize();
+        }
     }
 }
 
@@ -320,6 +405,9 @@ pub struct Tracer {
     /// The `--detach` release warning has been printed.  One line per
     /// session: the count is in the session summary.
     detach_warned: bool,
+    /// Number of tracees whose real argv/environ are in this process's
+    /// memory right now.  Zero at rest: the supervisor can be dumpable.
+    pending_plaintext: usize,
 }
 
 impl Tracer {
@@ -374,6 +462,44 @@ impl Tracer {
             audit_header: false,
             rexec_report_fd: -1,
             detach_warned: false,
+            pending_plaintext: 0,
+        }
+    }
+
+    /// Mark a tracee as holding real strings in the supervisor's memory.
+    /// The first one makes the supervisor non-dumpable; the last release
+    /// makes it dumpable again unless the session asked otherwise.
+    pub(super) fn set_pending(&mut self, pid: libc::pid_t, on: bool) {
+        let Some(t) = self.table.get_mut(&pid) else {
+            return;
+        };
+        if t.pending_plaintext == on {
+            return;
+        }
+        t.pending_plaintext = on;
+        if on {
+            self.pending_plaintext += 1;
+            if self.pending_plaintext == 1 {
+                self.set_dumpable(false);
+            }
+        } else {
+            self.pending_plaintext = self.pending_plaintext.saturating_sub(1);
+            if self.pending_plaintext == 0 {
+                self.set_dumpable(true);
+            }
+        }
+    }
+
+    /// Apply the supervisor's own dumpable flag.  `keep_non_dumpable`
+    /// pins it off for the session.
+    fn set_dumpable(&self, dumpable: bool) {
+        if self.cfg.keep_non_dumpable {
+            return;
+        }
+        let flag = if dumpable { 1 } else { 0 };
+        // SAFETY: our own dumpable flag.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, flag, 0, 0, 0);
         }
     }
 
@@ -385,6 +511,14 @@ impl Tracer {
     }
 
     fn unregister(&mut self, pid: libc::pid_t) {
+        if self
+            .table
+            .get(&pid)
+            .map(|t| t.pending_plaintext)
+            .unwrap_or(false)
+        {
+            self.set_pending(pid, false);
+        }
         self.table.remove(&pid);
         self.interrupted.remove(&pid);
         if let Ok(mut set) = self.cfg.tree.lock() {
@@ -853,6 +987,12 @@ impl Tracer {
         if self.cfg.quiet {
             return;
         }
+        if self.cfg.hide_pid {
+            eprintln!(
+                "pmask: hide-pid: the tree is non-dumpable; same-uid /proc readers cannot \
+                 see it (kill(0), pidfd_open and root still can)"
+            );
+        }
         if s.degraded > 0 {
             let mut reasons: Vec<String> = Vec::new();
             let mut add = |name: &str, n: u32| {
@@ -871,11 +1011,25 @@ impl Tracer {
             add("unredacted", s.unredacted);
             add("comm-not-set", s.comm_skipped);
             add("foreign-arch", s.foreign_arch);
+            add("foreign-refused", s.foreign_refused);
             eprintln!(
                 "pmask: {} of {} execs degraded ({})",
                 s.degraded,
                 s.execs,
                 reasons.join(", ")
+            );
+        }
+        if s.vfork_cache_skipped > 0 {
+            eprintln!(
+                "pmask: {} vfork child(ren) took the post-exec path; the --exec-once cache tag is not applied there",
+                s.vfork_cache_skipped
+            );
+        }
+        if s.foreign_refused > 0 {
+            eprintln!(
+                "pmask: {} 32-bit (foreign ABI) exec(s) refused; a 32-bit image \
+                 cannot be redacted, so it is not run unless --allow-foreign is set",
+                s.foreign_refused
             );
         }
         // A refused window relocation is a degradation in its own right:
@@ -896,6 +1050,22 @@ impl Tracer {
                 "pmask: {} tracee(s) left detached after their exec \
                  (--detach: their later execs are not redacted)",
                 s.detached
+            );
+        }
+        // A tracee that refused PR_SET_DUMPABLE is still readable to its
+        // own uid, so --hide-pid did not take effect for it.
+        if s.dumpable_failed > 0 {
+            eprintln!(
+                "pmask: {} tracee(s) stayed dumpable (PR_SET_DUMPABLE refused); \
+                 --hide-pid is not active for them",
+                s.dumpable_failed
+            );
+        }
+        if s.dontdump_failed > 0 {
+            eprintln!(
+                "pmask: {} redaction block(s) could not be marked MADV_DONTDUMP; \
+                 a core dump could include the block",
+                s.dontdump_failed
             );
         }
         // A descriptor that could not be closed at a descendant's fork is
@@ -1192,6 +1362,13 @@ impl Tracer {
             vlog!(self, "pid {}: registered as a vfork child", pid);
         }
         t.depth = depth;
+        // The seccomp exec filter is inherited across fork and clone, so a
+        // newcomer of a filtered tracee already has it.
+        t.exec_filter_installed = self
+            .table
+            .get(&parent)
+            .map(|p| p.exec_filter_installed)
+            .unwrap_or(false);
         // A thread shares its group's descriptor table, so it holds the
         // secret descriptors exactly when the group does.  A real fork is
         // recorded as open only when the close below fails.
@@ -1456,14 +1633,41 @@ impl Tracer {
     /// the label address is reachable, and refused otherwise.
     fn on_seccomp_stop(&mut self, pid: libc::pid_t) {
         let mut si: SyscallInfo = unsafe { std::mem::zeroed() };
-        if inject::get_syscall_info(pid, &mut si).is_ok()
-            && si.entry_nr() == Some(arch::SYS_PRCTL)
-            && self.cfg.watch_prctl
-        {
-            // SAFETY: the union holds entry-shaped data at a seccomp stop.
-            let opt = unsafe { si.detail.seccomp.args[0] };
-            if opt == libc::PR_SET_NAME as u64 {
-                self.redirect_rename(pid, &si);
+        if inject::get_syscall_info(pid, &mut si).is_ok() {
+            if let Some(nr) = si.entry_nr() {
+                if self.cfg.watch_prctl && nr == arch::SYS_PRCTL {
+                    // SAFETY: the union holds entry-shaped data at a
+                    // seccomp stop.
+                    let opt = unsafe { si.detail.seccomp.args[0] };
+                    if opt == libc::PR_SET_NAME as u64 {
+                        self.redirect_rename(pid, &si);
+                    }
+                    self.resume_state(pid, 0);
+                    return;
+                }
+                if self.cfg.fast_exec && arch::classify_exec(si.arch, nr) != ExecClass::NotExec {
+                    // The seccomp stop can be the second report of an exec
+                    // whose syscall-entry stop already ran the handler.
+                    // `Swapped` is exactly that window: the inline arrays
+                    // are already replaced, so a second `on_exec_entry`
+                    // would save the label as the real argv.  `Script` and
+                    // `Foreign` chose the post-exec path for this exec.
+                    // Only a tracee that has not begun this exec reaches
+                    // the entry handler from here.
+                    let state = self.table.get(&pid).map(|t| t.state).unwrap_or(State::Run);
+                    if !matches!(state, State::Run | State::Slow) {
+                        self.resume(pid, 0, true);
+                        return;
+                    }
+                    match Regs::get(pid) {
+                        Ok(regs) => self.on_exec_entry(pid, nr, &regs),
+                        Err(_) => {
+                            self.set_state(pid, State::Script);
+                            self.resume(pid, 0, true);
+                        }
+                    }
+                    return;
+                }
             }
         }
         self.resume_state(pid, 0);
@@ -1567,6 +1771,34 @@ impl Tracer {
                 None => (State::Run, false),
             };
             let class = arch::classify_exec(si.arch, nr);
+            if class != ExecClass::NotExec
+                && self
+                    .table
+                    .get(&pid)
+                    .map(|t| t.foreign_done)
+                    .unwrap_or(false)
+            {
+                vlog!(
+                    self,
+                    "pid {}: later exec after a 32-bit image, refusing",
+                    pid
+                );
+                // The first 32-bit image ran under --allow-foreign.  A
+                // later exec cannot be redacted: the 64-bit tracer cannot
+                // read the 32-bit image's registers or pointer arrays.
+                // Refuse it before the image runs.
+                self.stats.foreign_refused += 1;
+                self.warn(format_args!(
+                    "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it",
+                    pid
+                ));
+                // SAFETY: plain kill(2) of a stopped tracee.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                self.resume(pid, 0, false);
+                return;
+            }
             if class != ExecClass::NotExec && no_redact {
                 // no redaction wanted: settle to Run and let the exec
                 // proceed normally
@@ -1643,9 +1875,11 @@ impl Tracer {
                     self.set_state(pid, State::Slow);
                     self.resume(pid, 0, true);
                 } else {
-                    // A successful foreign exec is refused at the
-                    // completion stop; keep the state that records it.
-                    self.resume_state(pid, 0);
+                    // A successful foreign exec is completed here on a
+                    // kernel that skipped PTRACE_EVENT_EXEC.  Without
+                    // this call the refusal never ran and the 32-bit
+                    // image kept running.
+                    self.on_exec_complete(pid, true);
                 }
             }
             _ => self.resume_state(pid, 0),
@@ -1660,7 +1894,22 @@ impl Tracer {
         let slow = self
             .table
             .get(&pid)
-            .map(|t| t.state == State::Slow)
+            .map(|t| {
+                t.state == State::Slow
+                    // `--exec-once` redirects a settled tracee's later
+                    // exec, and the redirect is decided at the exec's
+                    // syscall-entry stop.  Without syscall supervision a
+                    // settled tracee is resumed with PTRACE_CONT and its
+                    // later exec runs from the real path (the audit's
+                    // measured `exe=/usr/bin/sleep`).  The cost is paid
+                    // only by a run that asked for the cache.
+                    || (self.cfg.rexec_per_exec
+                        && !self.cfg.fast_exec
+                        && t.state == State::Run)
+                    // A failed fast-exec filter must not leave the tracee
+                    // running free: fall back to syscall supervision.
+                    || t.fast_exec_failed
+            })
             .unwrap_or(false);
         self.resume(pid, sig, slow);
     }
@@ -1706,7 +1955,7 @@ impl Tracer {
         if self.cfg.exit_kill {
             o |= libc::PTRACE_O_EXITKILL as libc::c_long;
         }
-        if self.cfg.watch_prctl {
+        if self.cfg.watch_prctl || self.cfg.fast_exec {
             o |= arch::PTRACE_O_TRACESECCOMP;
         }
         o

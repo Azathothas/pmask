@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.04s
+PASS qa63-off-refused (pmask: --hide-pid needs /proc mounted with hidepid=invisible or hidepid=ptraceable; this host is hid)
+PASS qa63-probe-row
+PASS qa63-noreadact (pmask: --hide-pid needs the redaction mode: the selected mode is plain, which has no tracer to injec)
+PASS qa63-hidden (same-uid readdir omits the supervisor)
+PASS qa63-kill0-present (the pid still exists)
+PASS qa63-payload-hidden
+PASS qa63-report
+PASS qa63-stealth-note
+== VERDICT: PASS failures=0 ==

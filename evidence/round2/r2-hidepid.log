@@ -1,0 +1,431 @@
+
+===== HOST /proc policy (outside the namespace) =====
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+0
+
+===== NAMESPACE RUN round=1 hidepid=invisible =====
+
+===== INNER host before remount =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+remount_rc=0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0
+Uid:	0	0	0	0
+NSpid:	7
+
+===== CONTROL: plain dumpable process as uid 1000 inside the same namespace =====
+control_pid=9 comm=pmask-testcases exe=/srv/pmask-target/release/pmask-testcases
+-- control: same-uid probe must see an ordinary dumpable process --
+uidprobe tag=uid1000-control-invisible pid=9 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== START pmask as uid 1000 with --hide-pid (label r2-hid) =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 41:     9 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$TC" sleeper CANARY_R2_HID_CONTROL > /dev/null 2>&1
+launcher_pid=17
+payload_pid_root_view=31
+-- root view of label processes --
+17 1 /srv/pmask-target/release/pmask
+31 17 /srv/pmask-target/release/pmask-testcases
+
+===== SAME-UID PROBE as uid 1000 (dentry not pre-instantiated by this uid) =====
+uidprobe tag=uid1000-invisible-first pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:ENOENT
+open(/proc/PID/cmdline)=ERR:ENOENT
+open(/proc/PID/environ)=ERR:ENOENT
+open(/proc/PID/maps)=ERR:ENOENT
+open(/proc/PID/auxv)=ERR:ENOENT
+open(/proc/PID/mem)=ERR:ENOENT
+readlink(/proc/PID/exe)=ERR:ENOENT
+listdir(/proc/PID/fd)=ERR:ENOENT
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== ROOT PROBE (contrast: root still sees the pid) =====
+uidprobe tag=root-invisible pid=31 uid=0
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== SAME-UID PROBE AGAIN after root instantiated the dentry =====
+uidprobe tag=uid1000-invisible-second pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:ENOENT
+open(/proc/PID/cmdline)=ERR:ENOENT
+open(/proc/PID/environ)=ERR:ENOENT
+open(/proc/PID/maps)=ERR:ENOENT
+open(/proc/PID/auxv)=ERR:ENOENT
+open(/proc/PID/mem)=ERR:ENOENT
+readlink(/proc/PID/exe)=ERR:ENOENT
+listdir(/proc/PID/fd)=ERR:ENOENT
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== TERMINATE payload and collect report =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 95:    17 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$PMASK" -q -l "$LABEL" --hide-pid --secret S=literal:R2HIDSECRET --report-file "$REP" -- "$TC" sleeper CANARY_R2_HID_2f81
+report=/workspace/pmask-work/evidence/round2/r2-hid.invisible.report.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hide_pid": true,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+remaining label procs: 0
+unshare_exit=0
+-- host-side residue for the round --
+none
+
+===== NAMESPACE RUN round=1 hidepid=ptraceable =====
+
+===== INNER host before remount =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+remount_rc=0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=ptraceable 0 0
+Uid:	0	0	0	0
+NSpid:	7
+
+===== CONTROL: plain dumpable process as uid 1000 inside the same namespace =====
+control_pid=9 comm=pmask-testcases exe=/srv/pmask-target/release/pmask-testcases
+-- control: same-uid probe must see an ordinary dumpable process --
+uidprobe tag=uid1000-control-ptraceable pid=9 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== START pmask as uid 1000 with --hide-pid (label r2-hidp) =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 41:     9 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$TC" sleeper CANARY_R2_HID_CONTROL > /dev/null 2>&1
+launcher_pid=17
+payload_pid_root_view=31
+-- root view of label processes --
+17 1 /srv/pmask-target/release/pmask
+31 17 /srv/pmask-target/release/pmask-testcases
+
+===== SAME-UID PROBE as uid 1000 (dentry not pre-instantiated by this uid) =====
+uidprobe tag=uid1000-ptraceable-first pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:EPERM
+open(/proc/PID/cmdline)=ERR:EPERM
+open(/proc/PID/environ)=ERR:EPERM
+open(/proc/PID/maps)=ERR:EPERM
+open(/proc/PID/auxv)=ERR:EPERM
+open(/proc/PID/mem)=ERR:EPERM
+readlink(/proc/PID/exe)=ERR:EPERM
+listdir(/proc/PID/fd)=ERR:EPERM
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== ROOT PROBE (contrast: root still sees the pid) =====
+uidprobe tag=root-ptraceable pid=31 uid=0
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== SAME-UID PROBE AGAIN after root instantiated the dentry =====
+uidprobe tag=uid1000-ptraceable-second pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:EPERM
+open(/proc/PID/cmdline)=ERR:EPERM
+open(/proc/PID/environ)=ERR:EPERM
+open(/proc/PID/maps)=ERR:EPERM
+open(/proc/PID/auxv)=ERR:EPERM
+open(/proc/PID/mem)=ERR:EPERM
+readlink(/proc/PID/exe)=ERR:EPERM
+listdir(/proc/PID/fd)=ERR:EPERM
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== TERMINATE payload and collect report =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 95:    17 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$PMASK" -q -l "$LABEL" --hide-pid --secret S=literal:R2HIDSECRET --report-file "$REP" -- "$TC" sleeper CANARY_R2_HID_2f81
+report=/workspace/pmask-work/evidence/round2/r2-hid.ptraceable.report.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hide_pid": true,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+remaining label procs: 0
+unshare_exit=0
+-- host-side residue for the round --
+none
+
+===== NAMESPACE RUN round=2 hidepid=invisible =====
+
+===== INNER host before remount =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+remount_rc=0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0
+Uid:	0	0	0	0
+NSpid:	7
+
+===== CONTROL: plain dumpable process as uid 1000 inside the same namespace =====
+control_pid=9 comm=pmask-testcases exe=/srv/pmask-target/release/pmask-testcases
+-- control: same-uid probe must see an ordinary dumpable process --
+uidprobe tag=uid1000-control-invisible pid=9 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== START pmask as uid 1000 with --hide-pid (label r2-hid) =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 41:     9 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$TC" sleeper CANARY_R2_HID_CONTROL > /dev/null 2>&1
+launcher_pid=17
+payload_pid_root_view=31
+-- root view of label processes --
+17 1 /srv/pmask-target/release/pmask
+31 17 /srv/pmask-target/release/pmask-testcases
+
+===== SAME-UID PROBE as uid 1000 (dentry not pre-instantiated by this uid) =====
+uidprobe tag=uid1000-invisible-first pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:ENOENT
+open(/proc/PID/cmdline)=ERR:ENOENT
+open(/proc/PID/environ)=ERR:ENOENT
+open(/proc/PID/maps)=ERR:ENOENT
+open(/proc/PID/auxv)=ERR:ENOENT
+open(/proc/PID/mem)=ERR:ENOENT
+readlink(/proc/PID/exe)=ERR:ENOENT
+listdir(/proc/PID/fd)=ERR:ENOENT
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== ROOT PROBE (contrast: root still sees the pid) =====
+uidprobe tag=root-invisible pid=31 uid=0
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== SAME-UID PROBE AGAIN after root instantiated the dentry =====
+uidprobe tag=uid1000-invisible-second pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:ENOENT
+open(/proc/PID/cmdline)=ERR:ENOENT
+open(/proc/PID/environ)=ERR:ENOENT
+open(/proc/PID/maps)=ERR:ENOENT
+open(/proc/PID/auxv)=ERR:ENOENT
+open(/proc/PID/mem)=ERR:ENOENT
+readlink(/proc/PID/exe)=ERR:ENOENT
+listdir(/proc/PID/fd)=ERR:ENOENT
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== TERMINATE payload and collect report =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 95:    17 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$PMASK" -q -l "$LABEL" --hide-pid --secret S=literal:R2HIDSECRET --report-file "$REP" -- "$TC" sleeper CANARY_R2_HID_2f81
+report=/workspace/pmask-work/evidence/round2/r2-hid.invisible.report.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hide_pid": true,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+remaining label procs: 0
+unshare_exit=0
+-- host-side residue for the round --
+none
+
+===== NAMESPACE RUN round=2 hidepid=ptraceable =====
+
+===== INNER host before remount =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+remount_rc=0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=ptraceable 0 0
+Uid:	0	0	0	0
+NSpid:	7
+
+===== CONTROL: plain dumpable process as uid 1000 inside the same namespace =====
+control_pid=9 comm=pmask-testcases exe=/srv/pmask-target/release/pmask-testcases
+-- control: same-uid probe must see an ordinary dumpable process --
+uidprobe tag=uid1000-control-ptraceable pid=9 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== START pmask as uid 1000 with --hide-pid (label r2-hidp) =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 41:     9 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$TC" sleeper CANARY_R2_HID_CONTROL > /dev/null 2>&1
+launcher_pid=17
+payload_pid_root_view=31
+-- root view of label processes --
+17 1 /srv/pmask-target/release/pmask
+31 17 /srv/pmask-target/release/pmask-testcases
+
+===== SAME-UID PROBE as uid 1000 (dentry not pre-instantiated by this uid) =====
+uidprobe tag=uid1000-ptraceable-first pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:EPERM
+open(/proc/PID/cmdline)=ERR:EPERM
+open(/proc/PID/environ)=ERR:EPERM
+open(/proc/PID/maps)=ERR:EPERM
+open(/proc/PID/auxv)=ERR:EPERM
+open(/proc/PID/mem)=ERR:EPERM
+readlink(/proc/PID/exe)=ERR:EPERM
+listdir(/proc/PID/fd)=ERR:EPERM
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== ROOT PROBE (contrast: root still sees the pid) =====
+uidprobe tag=root-ptraceable pid=31 uid=0
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+readlink(/proc/PID/exe)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+
+===== SAME-UID PROBE AGAIN after root instantiated the dentry =====
+uidprobe tag=uid1000-ptraceable-second pid=31 uid=1000
+readdir.present=False
+stat(/proc/PID)=ERR:ENOENT
+open(/proc/PID/status)=ERR:EPERM
+open(/proc/PID/cmdline)=ERR:EPERM
+open(/proc/PID/environ)=ERR:EPERM
+open(/proc/PID/maps)=ERR:EPERM
+open(/proc/PID/auxv)=ERR:EPERM
+open(/proc/PID/mem)=ERR:EPERM
+readlink(/proc/PID/exe)=ERR:EPERM
+listdir(/proc/PID/fd)=ERR:EPERM
+kill(pid,0)=OK
+pid=31 getdents64=absent readdir=absent stat=absent kill0=present
+
+===== TERMINATE payload and collect report =====
+/workspace/pmask-work/evidence/round2/tools/case7_inner.sh: line 95:    17 Killed                  setpriv --reuid=1000 --regid=1000 --clear-groups -- "$PMASK" -q -l "$LABEL" --hide-pid --secret S=literal:R2HIDSECRET --report-file "$REP" -- "$TC" sleeper CANARY_R2_HID_2f81
+report=/workspace/pmask-work/evidence/round2/r2-hid.ptraceable.report.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": false,
+  "hide_pid": true,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+remaining label procs: 0
+unshare_exit=0
+-- host-side residue for the round --
+none
+
+===== RESIDUE CHECK =====
+none

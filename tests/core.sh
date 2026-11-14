@@ -116,18 +116,28 @@ kill_comm "$L" KILL 2>/dev/null; kill_comm testcases KILL 2>/dev/null
 sleep 0.3
 
 # ------------------------------------------------------------ K4: 32-bit
-# Defect: a 32-bit program was left unredacted without any message.
+# A 32-bit image cannot be redacted by the 64-bit tracer, so the default
+# refuses it before it runs.  `--allow-foreign` is the explicit opt-in and
+# the run is counted as a foreign-arch degradation.
 if [ -x ./testcases32 ]; then
     out=$("$TOOL" -l "$L" ./testcases32 echoargs MK-K4 2>"$T/k4.err")
     rc=$?
+    if [ "$rc" = 137 ] && [ -z "$out" ] && grep -q '32-bit.*refused' "$T/k4.err"; then
+        pass "k4-32bit-refused-by-default (rc=$rc)"
+    else
+        fail "k4-32bit-refused-by-default (rc=$rc out: $(printf '%s' "$out" | cut -c1-120))"
+    fi
+    grep -q '32-bit (foreign ABI) exec(s) refused' "$T/k4.err" \
+        && pass k4-summary-names-foreign-refused \
+        || fail "k4-summary-missing-foreign-refused ($(tail -1 "$T/k4.err"))"
+    out=$("$TOOL" -l "$L" --allow-foreign ./testcases32 echoargs MK-K4 2>"$T/k4b.err")
+    rc=$?
     case "$out" in
-        *"arg2=[MK-K4]"*) pass k4-32bit-program-correct ;;
-        *) fail "k4-32bit-program (rc=$rc out: $(printf '%s' "$out" | cut -c1-120))" ;;
+        *"arg2=[MK-K4]"*) pass k4-32bit-allow-foreign-runs ;;
+        *) fail "k4-32bit-allow-foreign-runs (rc=$rc out: $(printf '%s' "$out" | cut -c1-120))" ;;
     esac
-    if grep -q '32-bit' "$T/k4.err"; then pass "k4-32bit-refusal-is-loud ($(head -1 "$T/k4.err" | cut -c1-100))"
-    else fail "k4-silent-32bit-exec (stderr: $(cat "$T/k4.err" | head -3 | tr '\n' '|'))"; fi
-    grep -q 'foreign-arch' "$T/k4.err" && pass k4-summary-names-foreign-arch \
-        || fail "k4-summary-missing ($(tail -1 "$T/k4.err"))"
+    grep -q 'foreign-arch' "$T/k4b.err" && pass k4-summary-names-foreign-arch \
+        || fail "k4-summary-missing-foreign-arch ($(tail -1 "$T/k4b.err"))"
 else
     skip "k4-32bit (tests/testcases32 absent: the i686 build is part of vm/run.sh)"
 fi
@@ -321,17 +331,20 @@ while [ "$i" -lt 100 ]; do
         sleep 0.05
 done
 if [ -n "$k15pid" ]; then
-        # Without the relocation the kernel's own window stays: the label,
-        # then one NUL per argv entry.  The program's real argv (51 bytes
-        # here) was never in that window; the entry swap replaced it first.
-        k15want=$(( ${#K15L} + 3 ))
+        # Without the relocation the kernel's own window stays.  The
+        # presentation is the label, spaces, and one final NUL, so the
+        # cmdline length equals the stat span and has no NUL run.  The
+        # environment is a decoy, not an all-NUL block.
         k15got=$(sed 's/^.*) //' "/proc/$k15pid/stat" 2>/dev/null | awk '{ print $47 - $46 }')
         k15text=$(head -c "${#K15L}" "/proc/$k15pid/cmdline" 2>/dev/null)
         k15len=$(wc -c < "/proc/$k15pid/cmdline" 2>/dev/null | tr -d ' ')
+        k15nuls=$(tr -cd '\0' < "/proc/$k15pid/cmdline" 2>/dev/null | wc -c)
         k15env=$(wc -c < "/proc/$k15pid/environ" 2>/dev/null | tr -d ' ')
-        if [ "$k15got" = "$k15want" ] && [ "$k15text" = "$K15L" ] && [ "$k15len" = "$k15want" ] && [ "${k15env:-0}" -gt 0 ]; then
-                pass "k15-window-kept (arg extent $k15got = label + argc, environ ${k15env} NUL bytes not empty)"
-        else fail "k15-window (stat $k15got, cmdline $k15len, environ ${k15env:-?}, want $k15want, text is not the label)"; fi
+        k15envnuls=$(tr -cd '\0' < "/proc/$k15pid/environ" 2>/dev/null | wc -c)
+        if [ "$k15got" = "$k15len" ] && [ "$k15text" = "$K15L" ] && [ "$k15nuls" = 1 ] \
+            && [ "${k15env:-0}" -gt 0 ] && [ "${k15envnuls:-0}" -lt "${k15env:-0}" ]; then
+                pass "k15-window-kept (arg extent $k15got = cmdline length, one NUL, environ ${k15env} bytes with a decoy)"
+        else fail "k15-window (stat $k15got, cmdline $k15len nuls $k15nuls, environ ${k15env:-?} nuls ${k15envnuls:-?}, text is not the label)"; fi
 else fail "k15-window: no labelled process appeared after $i polls"; fi
 kill_comm "$K15L" KILL 2>/dev/null; kill_comm sleeper KILL 2>/dev/null; wait "$k15bg" 2>/dev/null; sleep 0.2
 
@@ -397,14 +410,17 @@ if cc -O1 -o "$T/deny_mm" "$T/deny_mm.c" 2>/dev/null; then
         sleep 0.05
     done
     if [ -n "$k15bpid" ]; then
-        k15bwant=$(( ${#K15BL} + 3 ))
         k15bgot=$(sed 's/^.*) //' "/proc/$k15bpid/stat" 2>/dev/null | awk '{ print $47 - $46 }')
         k15btext=$(head -c "${#K15BL}" "/proc/$k15bpid/cmdline" 2>/dev/null)
+        k15blen=$(wc -c < "/proc/$k15bpid/cmdline" 2>/dev/null | tr -d ' ')
+        k15bnuls=$(tr -cd '\0' < "/proc/$k15bpid/cmdline" 2>/dev/null | wc -c)
         k15benv=$(wc -c < "/proc/$k15bpid/environ" 2>/dev/null | tr -d ' ')
-        if [ "$k15bgot" = "$k15bwant" ] && [ "$k15btext" = "$K15BL" ] && [ "${k15benv:-0}" -gt 0 ]; then
-            pass "k15b-real-refusal-keeps-the-window (extent $k15bgot = label + argc)"
+        k15benvnuls=$(tr -cd '\0' < "/proc/$k15bpid/environ" 2>/dev/null | wc -c)
+        if [ "$k15bgot" = "$k15blen" ] && [ "$k15btext" = "$K15BL" ] && [ "$k15bnuls" = 1 ] \
+            && [ "${k15benv:-0}" -gt 0 ] && [ "${k15benvnuls:-0}" -lt "${k15benv:-0}" ]; then
+            pass "k15b-real-refusal-keeps-the-window (extent $k15bgot = cmdline length, one NUL)"
         else
-            fail "k15b-window (stat $k15bgot, environ ${k15benv:-?}, want $k15bwant, text is not the label)"
+            fail "k15b-window (stat $k15bgot, cmdline $k15blen nuls $k15bnuls, environ ${k15benv:-?} nuls ${k15benvnuls:-?}, text is not the label)"
         fi
     else
         fail "k15b-window: no labelled process appeared after $i polls"
@@ -446,6 +462,14 @@ out=$("$TOOL" -q -l "$L" "$CASES" proctitle MK-K12 2>&1)
 case "$out" in
     *"args-same=true path-same=true"*) pass k12-setproctitle-rewrite-keeps-args ;;
     *) fail "k12-setproctitle ($(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160))" ;;
+esac
+# Control: without pmask, the same rewrite is visible to `std::env::args()`
+# because std re-reads the saved argv pointers.  This is the contract an
+# embedder must know: snapshot argv before `mask_self`.
+out=$("$CASES" proctitle MK-K12C 2>&1)
+case "$out" in
+    *"args-same=false"*) pass k12-control-std-args-read-the-kernel-block ;;
+    *) fail "k12-control-std-args-read-the-kernel-block ($(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160))" ;;
 esac
 
 PMASK_FAULT_NOVDSO=1 "$TOOL" -l "$L" "$CASES" sleeper MK-K12V >/dev/null 2>"$T/k12v.err"

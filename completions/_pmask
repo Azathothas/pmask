@@ -17,6 +17,10 @@ _pmask() {
         '--no-exit-kill[do not set PTRACE_O_EXITKILL]' \
         '--no-exitkill[alias for --no-exit-kill]' \
         '--no-dumpable[set PR_SET_DUMPABLE=0]' \
+        '--allow-foreign[run a 32-bit image unredacted]' \
+        '--hide-pid[hide the tree from same-uid /proc readers]' \
+        '--encrypt-memory[seal at-rest copies and use a secretmem block]' \
+        '--stealth[compose --rexec, --watch-rename and the best dumpable choice]' \
         '--no-new-privs[set no_new_privs]' \
         '--no-exact[keep the original cmdline byte extent]' \
         '--detach[detach each tracee after its exec; TracerPid reads 0]' \

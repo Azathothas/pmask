@@ -586,6 +586,12 @@ pub struct DaemonConfig {
     pub quiet: bool,
 }
 
+impl Drop for DaemonConfig {
+    fn drop(&mut self) {
+        wipe_env(&mut self.env);
+    }
+}
+
 impl DaemonConfig {
     pub fn new() -> DaemonConfig {
         DaemonConfig {
@@ -1286,7 +1292,7 @@ fn pidfd_alive(fd: RawFd) -> bool {
 /// fallback warning is reachable from a suite.  Read once.
 fn peerpidfd_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("PMASK_FAULT_PEERPIDFD").is_some())
+    *OFF.get_or_init(|| crate::testhooks::flag("PMASK_FAULT_PEERPIDFD"))
 }
 
 /// A pidfd for the peer, when the kernel offers one.
@@ -1389,8 +1395,17 @@ impl PeerPin {
                 io::ErrorKind::PermissionDenied,
                 format!("the peer process {} has exited", self.pid),
             )),
-            // The pin had no start time to compare; the connection is
-            // still the one the kernel authorised.
+            // No pidfd and no start time: there is no evidence that
+            // this pid still names the peer.  Fail closed.
+            (None, _) if self.gfid.is_none() => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the peer process {} has no pidfd and no readable start time; \
+                     refusing the connection",
+                    self.pid
+                ),
+            )),
+            // A live pidfd already answered the question.
             (None, _) => Ok(()),
         }
     }
@@ -2605,6 +2620,11 @@ fn run_job(
 
     let mut mask = Mask::new()
         .label(label)
+        // The daemon holds the job environment and the secret store for
+        // its whole life.  Its own self-mask made it non-dumpable; a job
+        // tracer that toggled the process back to dumpable at rest would
+        // undo that.
+        .supervisor_non_dumpable(true)
         .envs(cfg.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     // A job that degrades must say so on the daemon's stderr: invariant 13
     // applies to a daemon's jobs too.  `--quiet` is the operator asking for
@@ -2722,6 +2742,35 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn peer_pin_without_pidfd_or_start_fails_closed() {
+        let pin = PeerPin {
+            pid: -1,
+            gfid: None,
+            start: None,
+            method: PeerMethod::CredsOnly,
+        };
+        assert!(pin.revalidate().is_err());
+    }
+
+    #[test]
+    fn peer_pin_with_a_live_pidfd_and_no_start_is_fine() {
+        // A pidfd is the direct answer; the start time is not needed.
+        let fd =
+            unsafe { libc::syscall(libc::SYS_pidfd_open, std::process::id(), 0) } as libc::c_int;
+        if fd < 0 {
+            return; // this kernel has no pidfd_open
+        }
+        let pin = PeerPin {
+            pid: std::process::id() as libc::pid_t,
+            gfid: Some(fd),
+            start: None,
+            method: PeerMethod::Pidfd,
+        };
+        assert!(pin.revalidate().is_ok());
+        unsafe { libc::close(fd) };
+    }
 
     fn test_dir(tag: &str) -> PathBuf {
         let d =

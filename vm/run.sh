@@ -54,20 +54,30 @@ rustup target list --installed | grep -q "^$MUSL_TARGET$" \
     || rustup target add "$MUSL_TARGET"
 
 cd "$ROOT"
-cargo build --locked --offline --release --target "$MUSL_TARGET" --bins --features testbins
+cargo build --locked --offline --release --target "$MUSL_TARGET" --bins --features testbins,test-hooks
 
-# The 32-bit probe for core.sh.  Non-fatal: a missing target or linker
-# leaves tests/testcases32 absent and the 32-bit case reports it.
-rm -f "$ROOT/tests/testcases32"
+# The 32-bit probe for core.sh.  A missing probe is a missing check, not a
+# graceful skip: fail unless PMASK_ALLOW_NO_32BIT=1 says the run accepts
+# the gap.
 if [ "$ARCH" = x86_64 ]; then
     I686=i686-unknown-linux-musl
+    have_i686=1
     if ! rustup target list --installed | grep -q "^$I686$"; then
-        rustup target add "$I686" || echo "NOTE: cannot install target $I686"
+        rustup target add "$I686" || have_i686=0
     fi
-    if cargo build --locked --offline --release --target "$I686" --bin pmask-testcases --features testbins; then
-        cp "${CARGO_TARGET_DIR:-$ROOT/target}/$I686/release/pmask-testcases" "$ROOT/tests/testcases32"
-    else
-        echo "NOTE: i686 build failed; tests/testcases32 not produced (32-bit case will not run)"
+    ok=0
+    if [ "$have_i686" = 1 ]; then
+        if cargo build --locked --offline --release --target "$I686" --bin pmask-testcases --features testbins,test-hooks; then
+            cp "${CARGO_TARGET_DIR:-$ROOT/target}/$I686/release/pmask-testcases" "$ROOT/tests/testcases32" && ok=1
+        fi
+    fi
+    if [ "$ok" != 1 ]; then
+        if [ "${PMASK_ALLOW_NO_32BIT:-0}" = 1 ]; then
+            echo "NOTE: no i686 probe; PMASK_ALLOW_NO_32BIT=1 accepts the missing 32-bit case" >&2
+        else
+            echo "FATAL: the i686 probe could not be built, so the 32-bit case cannot run; set PMASK_ALLOW_NO_32BIT=1 to accept that gap" >&2
+            exit 2
+        fi
     fi
 else
     echo "NOTE: no 32-bit probe build for $ARCH"

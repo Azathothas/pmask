@@ -34,9 +34,10 @@
 # 2 when it could not be produced at all.
 # ============================================================================
 set -u
-cd "$(dirname "$0")" || exit 2
+SELF="$(cd "$(dirname "$0")" && pwd)" || exit 2
+ROOT="$(cd "$SELF/.." && pwd)" || exit 2
+cd "$SELF" || exit 2
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOOL="${PMASK_BIN:-$ROOT/target/release/pmask}"
 [ -x "$TOOL" ] || { echo "missing built binary: $TOOL (cargo build --release --bin pmask)" >&2; exit 2; }
 
@@ -182,6 +183,7 @@ variant_run() {
         zapper-f)   [ -n "$ZAPPER" ] || return 3; "$ZAPPER" -f "$@" ;;
         pmask)   "$TOOL" -q -l bench -- "$@" ;;
         pmask-detach) "$TOOL" -q -l bench --detach -- "$@" ;;
+        pmask-fast) "$TOOL" -q -l bench --exec-once --on-exit wait -- "$@" ;;
         *) return 3 ;;
     esac
 }
@@ -219,7 +221,7 @@ spread_of() {
     echo $(( (so_max - so_min) * 100 / so_min ))
 }
 
-VARIANTS="baseline zapper zapper-f pmask pmask-detach"
+VARIANTS="baseline zapper zapper-f pmask pmask-detach pmask-fast"
 
 # --------------------------------------------- measurement 1: startup-to-exit
 # Only meaningful with a nanosecond clock.
@@ -261,7 +263,7 @@ fi
 # ---------------------------------------------- measurement 2: exec throughput
 if [ -x "$T/execpay" ]; then
     for v in $VARIANTS; do
-        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ]; then
+        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ] && [ "$v" != pmask-fast ]; then
             echo "EXEC variant=$v SKIP no zapper"
             continue
         fi
@@ -298,7 +300,7 @@ fi
 # --------------------------------------------------- measurement 3: syscall loop
 if [ -x "$T/syspay" ]; then
     for v in $VARIANTS; do
-        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ]; then
+        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ] && [ "$v" != pmask-fast ]; then
             echo "SYSCALL variant=$v SKIP no zapper"
             continue
         fi
@@ -346,7 +348,7 @@ done
 EOF
     chmod +x "$T/buildpay.sh"
     for v in $VARIANTS; do
-        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ]; then
+        if [ -z "$ZAPPER" ] && [ "$v" != baseline ] && [ "$v" != pmask ] && [ "$v" != pmask-detach ] && [ "$v" != pmask-fast ]; then
             echo "BUILD variant=$v SKIP no zapper"
             continue
         fi

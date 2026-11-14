@@ -256,7 +256,7 @@ esac
 # while the session is alive (the session removes it at the end).
 mkdir -p "$D/eo" 2>/dev/null
 TMPDIR="$D/eo" "$TOOL" -q -l "$L" --rexec --exec-once --memfd-name "$IMG" \
-    -- /bin/sh -c '"$1" sleepfor 20' sh "$CASES" >/dev/null 2>"$D/q5.err" &
+    -- "$CASES" forkexec "$D" "$CASES" sleeper 20 >/dev/null 2>"$D/q5.err" &
 SUP=$!
 SH=$(await_pid "$SUP") || SH=""
 PAY=""
@@ -289,24 +289,64 @@ done
 kill "$SUP" 2>/dev/null
 wait "$SUP" 2>/dev/null
 SUP=""
-eo_dir=$(cd "$D/eo" 2>/dev/null && pwd -P)
 case "$exe" in
-    "$eo_dir"/.pmask-rexec-"$IMG"-*)
+    */.pmask-rexec-"$IMG"-*)
         if [ "$eo_present" = 1 ]; then
             pass "q5-exec-once-carrier-tag ($exe)"
         else
             fail "q5-exec-once-carrier-tag (exe names $exe but no file was there while the session ran)"
         fi ;;
     *)
-        if [ -z "$exe" ] || [ "$exe" = "$CASES" ]; then
+        if grep -q -- '--rexec unavailable' "$D/q5.err" 2>/dev/null; then
+            # The kernel refused a memfd carrier (vm.memfd_noexec, a
+            # read-only /dev/shm, no hugetlb pages): the run falls back to
+            # the real path and there is no cache tag to observe.  Name
+            # the host reason rather than reporting the writable carrier.
+            skip "q5-exec-once-carrier-tag ($(grep -m1 -- '--rexec unavailable' "$D/q5.err"))"
+        elif [ -z "$exe" ] || [ "$exe" = "$CASES" ]; then
             # A vfork child's first exec takes the post-exec path, so the
             # tracer never sees the entry stop that installs the redirect.
             # The cache tag is then not observable; say so instead of
             # failing a host whose shell chose vfork.
             skip "q5-exec-once-carrier-tag (the child's first exec took the post-exec path; no cache entry to observe)"
         else
-            fail "q5-exec-once-carrier-tag (exe=[$exe], want $eo_dir/.pmask-rexec-$IMG-*; stderr=$(head -1 "$D/q5.err"))"
+            fail "q5-exec-once-carrier-tag (exe=[$exe], want $D/eo/.pmask-rexec-$IMG-*; stderr=$(head -1 "$D/q5.err"))"
         fi ;;
+esac
+
+# --------------------- q5c: a settled re-exec under the seccomp fast path
+# `--on-exit wait` keeps the tracer, so `--exec-once` can install a filter
+# that traps only execve and resume the settled tracee with PTRACE_CONT.
+# The shell's later `exec /bin/sleep` must still be redirected to the
+# cache.
+"$TOOL" -q -l "$L" --exec-once --on-exit wait -- /bin/sh -c 'sleep 0.2; exec /bin/sleep 1' \
+    >/dev/null 2>"$D/q5c.err" &
+SUP=$!
+PAY=""
+n=0
+while [ -z "$PAY" ] && [ "$n" -lt 40 ]; do
+    PAY=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
+    [ -n "$PAY" ] && break
+    n=$((n + 1))
+    sleep 0.1 2>/dev/null || sleep 1
+done
+exe=""
+n=0
+while [ -n "$PAY" ] && [ "$n" -lt 40 ]; do
+    exe=$(readlink "/proc/$PAY/exe" 2>/dev/null)
+    case "$exe" in
+        */.pmask-rexec-*) break ;;
+    esac
+    [ -z "$exe" ] && break
+    n=$((n + 1))
+    sleep 0.1 2>/dev/null || sleep 1
+done
+kill "$SUP" 2>/dev/null
+wait "$SUP" 2>/dev/null
+SUP=""
+case "$exe" in
+    */.pmask-rexec-*) pass "q5c-settled-reexec-fast-path ($exe)" ;;
+    *) fail "q5c-settled-reexec-fast-path (exe=[$exe]; stderr=$(head -1 "$D/q5c.err"))" ;;
 esac
 
 # --------------------- q5b: the plain --rexec temporary carrier's tag

@@ -298,7 +298,7 @@ impl Watcher {
                 (raw_len - NLMSG_HDRLEN, raw_len)
             };
             let payload = &buf[off + NLMSG_HDRLEN..off + NLMSG_HDRLEN + payload_len];
-            if std::env::var_os("PMASK_AUDIT_LEN").is_some() {
+            if pmask::testhooks::flag("PMASK_AUDIT_LEN") {
                 let mut h = String::new();
                 for b in payload.iter().take(64) {
                     h.push_str(&format!("{:02x}", b));
@@ -325,7 +325,7 @@ impl Watcher {
                 // The record length in the netlink header is what the
                 // kernel sent; it is logged so a truncated record is
                 // visible instead of being mistaken for a short argv.
-                if std::env::var_os("PMASK_AUDIT_LEN").is_some() {
+                if pmask::testhooks::flag("PMASK_AUDIT_LEN") {
                     self.write_line(&format!(
                         "# type={} nlmsg_len={} payload_len={}",
                         type_name(msg_type),

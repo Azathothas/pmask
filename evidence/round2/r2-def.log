@@ -1,0 +1,566 @@
+
+===== HOST =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=1000(agent) gid=1000(agent) groups=1000(agent)
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+
+===== MASKED RUN label=r2-def =====
+started pmask pgid=538269
+538269 1 r2-def /srv/pmask-target/release/pmask 0
+538275 538269 r2-def /srv/pmask-target/release/pmask-testcases 538273
+supervisor=538269 payload=538275
+-- same-uid (uid 1000) dump of payload 538275 --
+### procdump tag=sameuid-r2-def pid=538275 uid=1000
+cmdline.len=7
+cmdline.hex=72322d64656600
+cmdline.text='r2-def|'
+comm='r2-def'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140186223632384
+stat.49_arg_end=140186223632391
+stat.50_env_start=140186223632394
+stat.51_env_end=140186223632394
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f7fa60fe00a
+auxv.execfn_string='r2-def'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 55c35eae6000-55c35eb05000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eb05000-55c35eb9d000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eb9d000-55c35eba1000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eba1000-55c35eba3000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c3720c5000-55c3720e6000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f7fa5ed0000-7f7fa5ed2000 rw-p 00000000 00:00 0 
+maps| 7f7fa5ed2000-7f7fa5efa000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa5efa000-7f7fa605d000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa605d000-7f7fa60b3000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b3000-7f7fa60b7000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b7000-7f7fa60b9000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b9000-7f7fa60c6000 rw-p 00000000 00:00 0 
+maps| 7f7fa60c6000-7f7fa60ca000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60ca000-7f7fa60ed000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60ed000-7f7fa60f1000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f1000-7f7fa60f2000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f2000-7f7fa60f3000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f8000-7f7fa60f9000 ---p 00000000 00:00 0 
+maps| 7f7fa60f9000-7f7fa60fc000 rw-p 00000000 00:00 0 
+maps| 7f7fa60fc000-7f7fa6100000 rw-p 00000000 00:00 0                          [stack]
+maps| 7f7fa6100000-7f7fa6104000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f7fa6104000-7f7fa6106000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f7fa6106000-7f7fa6107000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa6107000-7f7fa612f000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa612f000-7f7fa613a000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613a000-7f7fa613c000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613c000-7f7fa613d000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613d000-7f7fa613e000 rw-p 00000000 00:00 0 
+maps| 7ffdb8db0000-7ffdb8dd1000 rw-p 00000000 00:00 0 
+maps.open=OK
+status.TracerPid:	538273
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+### end tag=sameuid-r2-def pid=538275
+-- root dump of payload 538275 (for AT_EXECFN through /proc/pid/mem) --
+### procdump tag=root-r2-def pid=538275 uid=0
+cmdline.len=7
+cmdline.hex=72322d64656600
+cmdline.text='r2-def|'
+comm='r2-def'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140186223632384
+stat.49_arg_end=140186223632391
+stat.50_env_start=140186223632394
+stat.51_env_end=140186223632394
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f7fa60fe00a
+auxv.execfn_string='r2-def'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 55c35eae6000-55c35eb05000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eb05000-55c35eb9d000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eb9d000-55c35eba1000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c35eba1000-55c35eba3000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55c3720c5000-55c3720e6000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f7fa5ed0000-7f7fa5ed2000 rw-p 00000000 00:00 0 
+maps| 7f7fa5ed2000-7f7fa5efa000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa5efa000-7f7fa605d000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa605d000-7f7fa60b3000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b3000-7f7fa60b7000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b7000-7f7fa60b9000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f7fa60b9000-7f7fa60c6000 rw-p 00000000 00:00 0 
+maps| 7f7fa60c6000-7f7fa60ca000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60ca000-7f7fa60ed000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60ed000-7f7fa60f1000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f1000-7f7fa60f2000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f2000-7f7fa60f3000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f7fa60f8000-7f7fa60f9000 ---p 00000000 00:00 0 
+maps| 7f7fa60f9000-7f7fa60fc000 rw-p 00000000 00:00 0 
+maps| 7f7fa60fc000-7f7fa6100000 rw-p 00000000 00:00 0                          [stack]
+maps| 7f7fa6100000-7f7fa6104000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f7fa6104000-7f7fa6106000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f7fa6106000-7f7fa6107000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa6107000-7f7fa612f000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa612f000-7f7fa613a000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613a000-7f7fa613c000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613c000-7f7fa613d000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f7fa613d000-7f7fa613e000 rw-p 00000000 00:00 0 
+maps| 7ffdb8db0000-7ffdb8dd1000 rw-p 00000000 00:00 0 
+maps.open=OK
+status.TracerPid:	538273
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+### end tag=root-r2-def pid=538275
+-- same-uid memory scan of payload 538275 for the canary --
+hit needle=CANARY_R2_DEF_7f3a region=55c3720c5000-55c3720e6000 off=e10
+hit needle=CANARY_R2_DEF_7f3a region=55c3720c5000-55c3720e6000 off=ee0
+hit needle=CANARY_R2_DEF_7f3a region=7f7fa60fc000-7f7fa6100000 off=204e
+scanmem pid=538275 regions=28 scanned_bytes=3551249
+needle=CANARY_R2_DEF_7f3a hits=3
+-- root memory scan of supervisor 538269 for the canary --
+scanmem pid=538269 regions=33 scanned_bytes=6193186
+needle=CANARY_R2_DEF_7f3a hits=0
+-- same-uid dump of supervisor 538269 --
+### procdump tag=sup-r2-def pid=538269 uid=1000
+cmdline.len=7
+cmdline.hex=72322d64656600
+cmdline.text='r2-def|'
+comm='r2-def'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140735739295320
+stat.49_arg_end=140735739295327
+stat.50_env_start=140735739295327
+stat.51_env_end=140735739295327
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7fff97bf7658
+auxv.execfn_string='r2-def'
+exe.readlink='/srv/pmask-target/release/pmask'
+exe.open=OK
+maps.lines=37
+maps| 55881ea81000-55881eab3000 r--p 00000000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 55881eab3000-55881eb98000 r-xp 00031000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 55881eb98000-55881eb9d000 r--p 00115000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 55881eb9d000-55881eb9f000 rw-p 00119000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 55881f9ec000-55881fa0d000 rw-p 00000000 00:00 0                          [heap]
+maps| 7fe538000000-7fe538021000 rw-p 00000000 00:00 0 
+maps| 7fe538021000-7fe53c000000 ---p 00000000 00:00 0 
+maps| 7fe53d9b6000-7fe53d9b7000 ---p 00000000 00:00 0 
+maps| 7fe53d9b7000-7fe53d9ba000 rw-p 00000000 00:00 0 
+maps| 7fe53d9ba000-7fe53d9bb000 ---p 00000000 00:00 0 
+maps| 7fe53d9bb000-7fe53dbbb000 rw-p 00000000 00:00 0 
+maps| 7fe53dbbb000-7fe53dbbd000 rw-p 00000000 00:00 0 
+maps| 7fe53dbbd000-7fe53dbe5000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fe53dbe5000-7fe53dd48000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fe53dd48000-7fe53dd9e000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fe53dd9e000-7fe53dda2000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fe53dda2000-7fe53dda4000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fe53dda4000-7fe53ddb1000 rw-p 00000000 00:00 0 
+maps| 7fe53ddb1000-7fe53ddb5000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fe53ddb5000-7fe53ddd8000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fe53ddd8000-7fe53dddc000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fe53dddc000-7fe53dddd000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fe53dddd000-7fe53ddde000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fe53dde1000-7fe53dde2000 rw-p 00000000 00:00 0 
+maps| 7fe53dde2000-7fe53dde3000 rw-p 00000000 00:00 0 
+maps| 7fe53dde3000-7fe53dde4000 ---p 00000000 00:00 0 
+maps| 7fe53dde4000-7fe53dde7000 rw-p 00000000 00:00 0 
+maps| 7fe53dde7000-7fe53dde9000 rw-p 00000000 00:00 0 
+maps| 7fe53dde9000-7fe53dded000 r--p 00000000 00:00 0                          [vvar]
+maps| 7fe53dded000-7fe53ddef000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7fe53ddef000-7fe53ddf0000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fe53ddf0000-7fe53de18000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fe53de18000-7fe53de23000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fe53de23000-7fe53de25000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fe53de25000-7fe53de26000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fe53de26000-7fe53de27000 rw-p 00000000 00:00 0 
+maps| 7fff97bd7000-7fff97bf8000 rw-p 00000000 00:00 0                          [stack]
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def.out
+### end tag=sup-r2-def pid=538269
+STOP verified: 0 label processes remain
+
+===== MASKED RUN label=r2-def-b =====
+started pmask pgid=538968
+538968 1 r2-def-b /srv/pmask-target/release/pmask 0
+538972 538968 r2-def-b /srv/pmask-target/release/pmask-testcases 538970
+supervisor=538968 payload=538972
+-- same-uid (uid 1000) dump of payload 538972 --
+### procdump tag=sameuid-r2-def-b pid=538972 uid=1000
+cmdline.len=9
+cmdline.hex=72322d6465662d6200
+cmdline.text='r2-def-b|'
+comm='r2-def-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140038581841920
+stat.49_arg_end=140038581841929
+stat.50_env_start=140038581841932
+stat.51_env_end=140038581841932
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f5d45ecf00c
+auxv.execfn_string='r2-def-b'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 557d8a4ea000-557d8a509000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a509000-557d8a5a1000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a5a1000-557d8a5a5000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a5a5000-557d8a5a7000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557da8c18000-557da8c39000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f5d45ca1000-7f5d45ca3000 rw-p 00000000 00:00 0 
+maps| 7f5d45ca3000-7f5d45ccb000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45ccb000-7f5d45e2e000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e2e000-7f5d45e84000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e84000-7f5d45e88000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e88000-7f5d45e8a000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e8a000-7f5d45e97000 rw-p 00000000 00:00 0 
+maps| 7f5d45e97000-7f5d45e9b000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45e9b000-7f5d45ebe000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ebe000-7f5d45ec2000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec2000-7f5d45ec3000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec3000-7f5d45ec4000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec9000-7f5d45eca000 ---p 00000000 00:00 0 
+maps| 7f5d45eca000-7f5d45ecd000 rw-p 00000000 00:00 0 
+maps| 7f5d45ecd000-7f5d45ed1000 rw-p 00000000 00:00 0                          [stack]
+maps| 7f5d45ed1000-7f5d45ed5000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f5d45ed5000-7f5d45ed7000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f5d45ed7000-7f5d45ed8000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45ed8000-7f5d45f00000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f00000-7f5d45f0b000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0b000-7f5d45f0d000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0d000-7f5d45f0e000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0e000-7f5d45f0f000 rw-p 00000000 00:00 0 
+maps| 7fffef76c000-7fffef78d000 rw-p 00000000 00:00 0 
+maps.open=OK
+status.TracerPid:	538970
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+### end tag=sameuid-r2-def-b pid=538972
+-- root dump of payload 538972 (for AT_EXECFN through /proc/pid/mem) --
+### procdump tag=root-r2-def-b pid=538972 uid=0
+cmdline.len=9
+cmdline.hex=72322d6465662d6200
+cmdline.text='r2-def-b|'
+comm='r2-def-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140038581841920
+stat.49_arg_end=140038581841929
+stat.50_env_start=140038581841932
+stat.51_env_end=140038581841932
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f5d45ecf00c
+auxv.execfn_string='r2-def-b'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 557d8a4ea000-557d8a509000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a509000-557d8a5a1000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a5a1000-557d8a5a5000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557d8a5a5000-557d8a5a7000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 557da8c18000-557da8c39000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f5d45ca1000-7f5d45ca3000 rw-p 00000000 00:00 0 
+maps| 7f5d45ca3000-7f5d45ccb000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45ccb000-7f5d45e2e000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e2e000-7f5d45e84000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e84000-7f5d45e88000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e88000-7f5d45e8a000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f5d45e8a000-7f5d45e97000 rw-p 00000000 00:00 0 
+maps| 7f5d45e97000-7f5d45e9b000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45e9b000-7f5d45ebe000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ebe000-7f5d45ec2000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec2000-7f5d45ec3000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec3000-7f5d45ec4000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f5d45ec9000-7f5d45eca000 ---p 00000000 00:00 0 
+maps| 7f5d45eca000-7f5d45ecd000 rw-p 00000000 00:00 0 
+maps| 7f5d45ecd000-7f5d45ed1000 rw-p 00000000 00:00 0                          [stack]
+maps| 7f5d45ed1000-7f5d45ed5000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f5d45ed5000-7f5d45ed7000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f5d45ed7000-7f5d45ed8000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45ed8000-7f5d45f00000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f00000-7f5d45f0b000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0b000-7f5d45f0d000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0d000-7f5d45f0e000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f5d45f0e000-7f5d45f0f000 rw-p 00000000 00:00 0 
+maps| 7fffef76c000-7fffef78d000 rw-p 00000000 00:00 0 
+maps.open=OK
+status.TracerPid:	538970
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+### end tag=root-r2-def-b pid=538972
+-- same-uid memory scan of payload 538972 for the canary --
+hit needle=CANARY_R2_DEF_7f3a region=557da8c18000-557da8c39000 off=e10
+hit needle=CANARY_R2_DEF_7f3a region=557da8c18000-557da8c39000 off=ee0
+hit needle=CANARY_R2_DEF_7f3a region=7f5d45ecd000-7f5d45ed1000 off=2052
+scanmem pid=538972 regions=28 scanned_bytes=3551249
+needle=CANARY_R2_DEF_7f3a hits=3
+-- root memory scan of supervisor 538968 for the canary --
+scanmem pid=538968 regions=33 scanned_bytes=6193186
+needle=CANARY_R2_DEF_7f3a hits=0
+-- same-uid dump of supervisor 538968 --
+### procdump tag=sup-r2-def-b pid=538968 uid=1000
+cmdline.len=9
+cmdline.hex=72322d6465662d6200
+cmdline.text='r2-def-b|'
+comm='r2-def-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140722141501014
+stat.49_arg_end=140722141501023
+stat.50_env_start=140722141501023
+stat.51_env_end=140722141501023
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7ffc6d419656
+auxv.execfn_string='r2-def-b'
+exe.readlink='/srv/pmask-target/release/pmask'
+exe.open=OK
+maps.lines=37
+maps| 558c3ef75000-558c3efa7000 r--p 00000000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 558c3efa7000-558c3f08c000 r-xp 00031000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 558c3f08c000-558c3f091000 r--p 00115000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 558c3f091000-558c3f093000 rw-p 00119000 00:40 141002                     /srv/pmask-target/release/pmask
+maps| 558c6b1d1000-558c6b1f2000 rw-p 00000000 00:00 0                          [heap]
+maps| 7fdebc000000-7fdebc021000 rw-p 00000000 00:00 0 
+maps| 7fdebc021000-7fdec0000000 ---p 00000000 00:00 0 
+maps| 7fdec0384000-7fdec0385000 ---p 00000000 00:00 0 
+maps| 7fdec0385000-7fdec0388000 rw-p 00000000 00:00 0 
+maps| 7fdec0388000-7fdec0389000 ---p 00000000 00:00 0 
+maps| 7fdec0389000-7fdec0589000 rw-p 00000000 00:00 0 
+maps| 7fdec0589000-7fdec058b000 rw-p 00000000 00:00 0 
+maps| 7fdec058b000-7fdec05b3000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fdec05b3000-7fdec0716000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fdec0716000-7fdec076c000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fdec076c000-7fdec0770000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fdec0770000-7fdec0772000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7fdec0772000-7fdec077f000 rw-p 00000000 00:00 0 
+maps| 7fdec077f000-7fdec0783000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fdec0783000-7fdec07a6000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fdec07a6000-7fdec07aa000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fdec07aa000-7fdec07ab000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fdec07ab000-7fdec07ac000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7fdec07af000-7fdec07b0000 rw-p 00000000 00:00 0 
+maps| 7fdec07b0000-7fdec07b1000 rw-p 00000000 00:00 0 
+maps| 7fdec07b1000-7fdec07b2000 ---p 00000000 00:00 0 
+maps| 7fdec07b2000-7fdec07b5000 rw-p 00000000 00:00 0 
+maps| 7fdec07b5000-7fdec07b7000 rw-p 00000000 00:00 0 
+maps| 7fdec07b7000-7fdec07bb000 r--p 00000000 00:00 0                          [vvar]
+maps| 7fdec07bb000-7fdec07bd000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7fdec07bd000-7fdec07be000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fdec07be000-7fdec07e6000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fdec07e6000-7fdec07f1000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fdec07f1000-7fdec07f3000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fdec07f3000-7fdec07f4000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7fdec07f4000-7fdec07f5000 rw-p 00000000 00:00 0 
+maps| 7ffc6d3f9000-7ffc6d41a000 rw-p 00000000 00:00 0                          [stack]
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-def-b.out
+### end tag=sup-r2-def-b pid=538968
+STOP verified: 0 label processes remain
+
+===== CONTROL RUN 1 (no pmask) =====
+control pid=539666
+-- same-uid dump --
+### procdump tag=control1 pid=539666 uid=1000
+cmdline.len=80
+cmdline.hex=2f776f726b73706163652f706d61736b2d776f726b2f7461726765742f72656c656173652f706d61736b2d74657374636173657300736c65657065720043414e4152595f52325f4445465f3766336100
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_DEF_7f3a|'
+comm='pmask-testcases'
+environ.open=OK
+environ.len=2318
+environ.keys=no_proxy,ERRAND_PROVIDER_PG_IMAGE_API_KEY,XDG_DATA_HOME,XDG_CONFIG_HOME,GH_TOKEN,ERRAND_BROKER_SOCKET,PWD,ERRAND_PROVIDER_PG_CANDY_API_KEY,GIT_COMMITTER_NAME,NODE_USE_ENV_PROXY,container,HOME,LANG,ERRAND_BROKER_PORT,ERRAND_PROVIDER_PG_ANT_API_KEY,TMPDIR,https_proxy,ERRAND_PROVIDER_PG_OC_API_KEY,ERRAND_PROVIDER_PG_KENARI_API_KEY,GIT_AUTHOR_EMAIL,ERRAND_PROVIDER_PG_FREE_API_KEY,XDG_CACHE_HOME,GIT_COMMITTER_EMAIL,RUSTUP_HOME,NO_PROXY,ERRAND_PROVIDER_PG_TTS_API_KEY,SHLVL,HTTPS_PROXY,HTTP_PROXY,CROSS_CONTAINER_ENGINE,http_proxy,XDG_STATE_HOME,GIT_AUTHOR_NAME,PATH,ERRAND_PROVIDER_PG_MUSIC_API_KEY,ERRAND_PROVIDER_PG_MISTRAL_API_KEY,OLDPWD,_,R2_ENV_CANARY
+stat.48_arg_start=140723369825893
+stat.49_arg_end=140723369825973
+stat.50_env_start=140723369825973
+stat.51_env_end=140723369828291
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7ffcb6785fc3
+auxv.execfn_string='/workspace/pmask-work/target/release/pmask-testcases'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 563072b8f000-563072bae000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 563072bae000-563072c46000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 563072c46000-563072c4a000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 563072c4a000-563072c4c000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 563089eb0000-563089ed1000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f64baf1b000-7f64baf1d000 rw-p 00000000 00:00 0 
+maps| 7f64baf1d000-7f64baf45000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f64baf45000-7f64bb0a8000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f64bb0a8000-7f64bb0fe000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f64bb0fe000-7f64bb102000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f64bb102000-7f64bb104000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f64bb104000-7f64bb111000 rw-p 00000000 00:00 0 
+maps| 7f64bb111000-7f64bb115000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f64bb115000-7f64bb138000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f64bb138000-7f64bb13c000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f64bb13c000-7f64bb13d000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f64bb13d000-7f64bb13e000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f64bb143000-7f64bb144000 ---p 00000000 00:00 0 
+maps| 7f64bb144000-7f64bb147000 rw-p 00000000 00:00 0 
+maps| 7f64bb147000-7f64bb149000 rw-p 00000000 00:00 0 
+maps| 7f64bb149000-7f64bb14d000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f64bb14d000-7f64bb14f000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f64bb14f000-7f64bb150000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f64bb150000-7f64bb178000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f64bb178000-7f64bb183000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f64bb183000-7f64bb185000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f64bb185000-7f64bb186000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f64bb186000-7f64bb187000 rw-p 00000000 00:00 0 
+maps| 7ffcb6765000-7ffcb6786000 rw-p 00000000 00:00 0                          [stack]
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.control1.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.control1.out
+### end tag=control1 pid=539666
+-- root dump of auxv AT_EXECFN --
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_DEF_7f3a|'
+comm='pmask-testcases'
+environ.len=2318
+auxv.open=OK
+auxv.entries=23 AT_EXECFN=0x7ffcb6785fc3
+auxv.execfn_string='/workspace/pmask-work/target/release/pmask-testcases'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+
+===== CONTROL RUN 2 (no pmask) =====
+control pid=539673
+-- same-uid dump --
+### procdump tag=control2 pid=539673 uid=1000
+cmdline.len=80
+cmdline.hex=2f776f726b73706163652f706d61736b2d776f726b2f7461726765742f72656c656173652f706d61736b2d74657374636173657300736c65657065720043414e4152595f52325f4445465f3766336100
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_DEF_7f3a|'
+comm='pmask-testcases'
+environ.open=OK
+environ.len=2318
+environ.keys=no_proxy,ERRAND_PROVIDER_PG_IMAGE_API_KEY,XDG_DATA_HOME,XDG_CONFIG_HOME,GH_TOKEN,ERRAND_BROKER_SOCKET,PWD,ERRAND_PROVIDER_PG_CANDY_API_KEY,GIT_COMMITTER_NAME,NODE_USE_ENV_PROXY,container,HOME,LANG,ERRAND_BROKER_PORT,ERRAND_PROVIDER_PG_ANT_API_KEY,TMPDIR,https_proxy,ERRAND_PROVIDER_PG_OC_API_KEY,ERRAND_PROVIDER_PG_KENARI_API_KEY,GIT_AUTHOR_EMAIL,ERRAND_PROVIDER_PG_FREE_API_KEY,XDG_CACHE_HOME,GIT_COMMITTER_EMAIL,RUSTUP_HOME,NO_PROXY,ERRAND_PROVIDER_PG_TTS_API_KEY,SHLVL,HTTPS_PROXY,HTTP_PROXY,CROSS_CONTAINER_ENGINE,http_proxy,XDG_STATE_HOME,GIT_AUTHOR_NAME,PATH,ERRAND_PROVIDER_PG_MUSIC_API_KEY,ERRAND_PROVIDER_PG_MISTRAL_API_KEY,OLDPWD,_,R2_ENV_CANARY
+stat.48_arg_start=140728736945765
+stat.49_arg_end=140728736945845
+stat.50_env_start=140728736945845
+stat.51_env_end=140728736948163
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7ffdf6601fc3
+auxv.execfn_string='/workspace/pmask-work/target/release/pmask-testcases'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps| 55dcc1238000-55dcc1257000 r--p 00000000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55dcc1257000-55dcc12ef000 r-xp 0001e000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55dcc12ef000-55dcc12f3000 r--p 000b5000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55dcc12f3000-55dcc12f5000 rw-p 000b8000 00:40 140900                     /srv/pmask-target/release/pmask-testcases
+maps| 55dcc30ee000-55dcc310f000 rw-p 00000000 00:00 0                          [heap]
+maps| 7f6eea30c000-7f6eea30e000 rw-p 00000000 00:00 0 
+maps| 7f6eea30e000-7f6eea336000 r--p 00000000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f6eea336000-7f6eea499000 r-xp 00028000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f6eea499000-7f6eea4ef000 r--p 0018b000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f6eea4ef000-7f6eea4f3000 r--p 001e0000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f6eea4f3000-7f6eea4f5000 rw-p 001e4000 00:40 2325                       /usr/lib/x86_64-linux-gnu/libc.so.6
+maps| 7f6eea4f5000-7f6eea502000 rw-p 00000000 00:00 0 
+maps| 7f6eea502000-7f6eea506000 r--p 00000000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f6eea506000-7f6eea529000 r-xp 00004000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f6eea529000-7f6eea52d000 r--p 00027000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f6eea52d000-7f6eea52e000 r--p 0002b000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f6eea52e000-7f6eea52f000 rw-p 0002c000 00:40 2365                       /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+maps| 7f6eea534000-7f6eea535000 ---p 00000000 00:00 0 
+maps| 7f6eea535000-7f6eea538000 rw-p 00000000 00:00 0 
+maps| 7f6eea538000-7f6eea53a000 rw-p 00000000 00:00 0 
+maps| 7f6eea53a000-7f6eea53e000 r--p 00000000 00:00 0                          [vvar]
+maps| 7f6eea53e000-7f6eea540000 r-xp 00000000 00:00 0                          [vdso]
+maps| 7f6eea540000-7f6eea541000 r--p 00000000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f6eea541000-7f6eea569000 r-xp 00001000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f6eea569000-7f6eea574000 r--p 00029000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f6eea574000-7f6eea576000 r--p 00034000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f6eea576000-7f6eea577000 rw-p 00036000 00:40 2283                       /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+maps| 7f6eea577000-7f6eea578000 rw-p 00000000 00:00 0 
+maps| 7ffdf65e1000-7ffdf6602000 rw-p 00000000 00:00 0                          [stack]
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.control2.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.control2.out
+### end tag=control2 pid=539673
+-- root dump of auxv AT_EXECFN --
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_DEF_7f3a|'
+comm='pmask-testcases'
+environ.len=2318
+auxv.open=OK
+auxv.entries=23 AT_EXECFN=0x7ffdf6601fc3
+auxv.execfn_string='/workspace/pmask-work/target/release/pmask-testcases'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+
+===== RESIDUE CHECK =====
+none

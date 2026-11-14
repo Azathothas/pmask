@@ -2,10 +2,11 @@
 # Issue 39: the supervisor's own /proc entry, and PMASK_NO_SELFMASK.
 #
 # The self-mask is the documented shape: comm == label cut to 15 bytes,
-# cmdline == label + one NUL, empty environment window, a tracer task
-# task, and PR_SET_DUMPABLE=0 (so a same-uid read of exe/environ fails).
-# A same-uid reader gets `0 0 0 0` for stat fields 48-51; only root sees
-# the relocated window.
+# cmdline == label + one NUL, empty environment window, and a tracer
+# task.  The supervisor is dumpable at rest: it scrubs the real argv and
+# environment after the fork, so it holds no plaintext and must not look
+# like a hidden pid on a `hidepid=invisible` host.  A same-uid reader
+# sees the same relocated window root sees.
 #
 # PMASK_NO_SELFMASK is a documented debugging escape and stays.  Two
 # measured facts decide what it may claim (evidence/bteam1/39/):
@@ -62,8 +63,7 @@ L=qa39-sup
 SECRET=QA39-CANARY-hunter2
 
 # Arg and env spans of pid, after the last ') '.  The supervisor is
-# non-dumpable, so a same-uid reader gets four zeros; root sees the real
-# window.  Both readers are measured because both are part of the shape.
+# dumpable at rest, so a same-uid reader sees the relocated window.
 spans_self() {
     awk '{sub(/.*\) /,""); print $47 - $46, $49 - $48}' "/proc/$1/stat" 2>/dev/null
 }
@@ -97,13 +97,14 @@ EOT
         [ "$(cat "$t/comm" 2>/dev/null)" = "$L" ] && tracer=yes
     done
     if [ "$comm" = "$L" ] && [ "$cmdline" = "$L|" ] \
-        && [ "$self_as" = 0 ] && [ "$self_es" = 0 ] && [ "$tracer" = yes ]; then
+        && [ "$self_as" = "$(( ${#L} + 1 ))" ] && [ "$self_es" = 0 ] \
+        && [ "$tracer" = yes ]; then
         pass "s1-self-mask-shape (comm=$comm cmdline=$cmdline self=$self_as/$self_es tracer=$tracer)"
     else
         fail "s1-self-mask-shape (comm=$comm cmdline=$cmdline self=$self_as/$self_es tracer=$tracer)"
     fi
     if [ "$have_root" = no ]; then
-        echo "SKIP s1b-self-mask-window (no passwordless sudo: a same-uid reader sees zeros by design)"
+        echo "SKIP s1b-self-mask-window (no passwordless sudo: root's view is not measured)"
     else
         read -r root_as root_es <<EOT
 $(spans_root "$SUP")
@@ -116,14 +117,17 @@ EOT
     fi
 fi
 
-# ------------------------------- S2: non-dumpable supervisor
-# PR_SET_DUMPABLE=0 is what makes a same-uid observer get EACCES on
-# exe/environ/maps.  That refusal is itself the second half of the shape.
+# ------------------------------- S2: dumpable supervisor at rest
+# The supervisor scrubs its at-rest copies, so it can stay dumpable.
+# A same-uid observer can read its maps; its environ is present and
+# empty.  On a `hidepid=invisible` host this is what keeps it out of the
+# hidden-pid family.
 if [ -n "$SUP" ]; then
-    if [ -r "/proc/$SUP/environ" ] && [ -s "/proc/$SUP/environ" ]; then
-        fail "s2-supervisor-non-dumpable (environ readable: $(wc -c < "/proc/$SUP/environ") bytes)"
+    env_len=$(wc -c < "/proc/$SUP/environ" 2>/dev/null || echo x)
+    if [ -r "/proc/$SUP/maps" ] && [ "$env_len" = 0 ]; then
+        pass "s2-supervisor-dumpable-at-rest (maps readable, environ 0 bytes)"
     else
-        pass "s2-supervisor-non-dumpable"
+        fail "s2-supervisor-dumpable-at-rest (maps=$( [ -r "/proc/$SUP/maps" ] && echo yes || echo no) environ=$env_len)"
     fi
     kill "$SUP" 2>/dev/null
     wait "$SUP" 2>/dev/null

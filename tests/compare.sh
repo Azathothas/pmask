@@ -668,15 +668,16 @@ printf 'reports nothing at all, even for the control whose canary sits in its\n'
 printf 'stack mapping.  The strings_bytes column is that figure, and it is why\n'
 printf 'the column exists.\n'
 
-# The supervisor is non-dumpable for the life of the session, so a
-# same-uid peer cannot read its maps (it holds the real argv of every
-# tracee).  The payload follows --no-dumpable: readable without it,
+# The supervisor is dumpable at rest (it scrubs the real argv and
+# environment after the fork), so a same-uid peer can read its maps but
+# finds no plaintext.  --no-dumpable pins it non-dumpable for the
+# session.  The payload follows --no-dumpable: readable without it,
 # refused with it.  Root is not a same-uid peer and cannot test this.
 sup_fail=""
 if [ "$(id -u)" != 0 ]; then
     [ "$SELF_MAPS" = REFUSED ] && sup_fail="$sup_fail control-not-readable"
-    [ "$SUP_MAPS" = REFUSED ] || sup_fail="$sup_fail supervisor-readable"
-    [ "$SUP_NODUMP" = REFUSED ] || sup_fail="$sup_fail supervisor-readable-nodumpable"
+    [ "$SUP_MAPS" != REFUSED ] || sup_fail="$sup_fail supervisor-refused-without-flag"
+    [ "$SUP_NODUMP" = REFUSED ] || sup_fail="$sup_fail supervisor-readable-with-nodumpable"
     [ "$PAY_MAPS" != REFUSED ] || sup_fail="$sup_fail payload-refused-without-flag"
     [ "$PAY_NODUMP" = REFUSED ] || sup_fail="$sup_fail payload-readable-with-flag"
 fi

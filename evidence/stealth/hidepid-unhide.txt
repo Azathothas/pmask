@@ -1,0 +1,9 @@
+=== default sup=3 ===
+[*]Searching for Hidden processes through kill(..,0) scanning
+=== nodump sup=18 ===
+[*]Searching for Hidden processes through kill(..,0) scanning
+Found HIDDEN PID: 18
+Found HIDDEN PID: 20
+Found HIDDEN PID: 21
+=== stealth sup=3 ===
+[*]Searching for Hidden processes through kill(..,0) scanning

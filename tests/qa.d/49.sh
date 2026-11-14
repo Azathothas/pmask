@@ -222,6 +222,8 @@ else
             "$LABEL|") pass "49c-isolate-intermediate-labelled (supervisor cmdline=[$supcl])" ;;
             *) fail "49c-isolate-intermediate-labelled (supervisor cmdline=[$supcl])" ;;
         esac
+    else
+        skip "49c-isolate-intermediate-labelled (the supervisor had already exited)"
     fi
     kill_sup "$SUP"
 fi
@@ -275,56 +277,160 @@ unshare_row() {
 unshare_row 49d-unshare --unshare
 
 # `--redact --isolate` is the composed spelling.  It takes the redaction
-# path, so `--report=json` is refused there (the report needs a
-# secret-side run); the shape assertion still applies.
+# path and produces a report there; the shape assertion still applies.
 unshare_row 49e-redact-isolate --redact --isolate
 
 # ------------------------------------------------------ 49f: 32-bit image
-# The i686 probe is a vm/run.sh artifact; without it the row is a SKIP.
-# Two runs: the first parks so the argv can be read, the second exits at
-# once so the session summary is written.  `sleeper` pauses forever, so a
-# `wait` on the first run would hang.
+# The i686 probe is a vm/run.sh artifact.  When it is absent, a static
+# 32-bit C probe is built with `cc -m32`; without either the row is a
+# SKIP.  Two runs: the first parks so the argv can be read, the second
+# exits at once so the session summary is written.
+T32=""
 if [ -x ./testcases32 ]; then
-    "$TOOL" -l "$LABEL" -- ./testcases32 sleeper "MK49B-$MARK" \
+    T32="$PWD/testcases32"
+elif command -v cc >/dev/null 2>&1; then
+    cat > "$T/t32.c" <<'EOF'
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "sleeper") == 0) {
+        sleep(30);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "exec64") == 0) {
+        usleep(200000);
+        char *av[] = {"/bin/sleep", "2", 0};
+        execv("/bin/sleep", av);
+        return 127;
+    }
+    for (int i = 0; i < argc; i++) printf("argv[%d]=%s\n", i, argv[i]);
+    return 0;
+}
+EOF
+    if cc -m32 -static -o "$T/t32" "$T/t32.c" 2>/dev/null; then
+        T32="$T/t32"
+    fi
+fi
+if [ -n "$T32" ]; then
+    # Default: the 32-bit exec is refused before the image runs, so no
+    # process with the real argv appears.
+    "$TOOL" -l "$LABEL" -- "$T32" sleeper "MK49B-$MARK" \
         >"$T/k32.out" 2>"$T/k32.err" &
+    K32=$!
+    sleep 0.8
+    LEAF=$(leaf_of "$K32")
+    if [ -z "$LEAF" ]; then
+        pass "49f-32bit-refused-by-default"
+    else
+        fail "49f-32bit-refused-by-default (a 32-bit payload appeared: $(cmdline_of "$LEAF"))"
+    fi
+    kill -9 "$K32" 2>/dev/null
+    wait "$K32" 2>/dev/null
+    if grep -q '32-bit.*refused' "$T/k32.err"; then
+        pass "49f-32bit-refusal-is-loud ($(head -1 "$T/k32.err" | cut -c1-90))"
+    else
+        fail "49f-silent-32bit-refusal (stderr=$(head -2 "$T/k32.err" | tr '\n' '|'))"
+    fi
+
+    # `--allow-foreign` restores the documented unredacted run and the
+    # summary counts it.
+    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" sleeper "MK49B-$MARK" \
+        >"$T/k32c.out" 2>"$T/k32c.err" &
     K32=$!
     sleep 0.8
     LEAF=$(leaf_of "$K32")
     if [ -n "$LEAF" ]; then
         cl=$(cmdline_of "$LEAF")
         case "$cl" in
-            *"testcases32"*"sleeper"*"MK49B-$MARK"*)
-                pass "49f-32bit-real-argv cmdline=[$cl]" ;;
-            *) fail "49f-32bit-real-argv (cmdline=[$cl], want the real argv)" ;;
+            *"sleeper"*"MK49B-$MARK"*)
+                pass "49f-32bit-allow-foreign-runs-unredacted cmdline=[$cl]" ;;
+            *) fail "49f-32bit-allow-foreign-runs-unredacted (cmdline=[$cl])" ;;
         esac
         exe=$(readlink "/proc/$LEAF/exe" 2>/dev/null)
         case "$exe" in
-            *testcases32) pass "49f-32bit-exe-names-the-image (exe=$exe)" ;;
-            *) fail "49f-32bit-exe-names-the-image (exe=[$exe])" ;;
+            *testcases32|*/t32) pass "49f-32bit-allow-foreign-exe-names-the-image (exe=$exe)" ;;
+            *) fail "49f-32bit-allow-foreign-exe-names-the-image (exe=[$exe])" ;;
         esac
     else
-        fail "49f-32bit-real-argv (no 32-bit payload appeared)"
+        fail "49f-32bit-allow-foreign-runs-unredacted (no 32-bit payload appeared)"
     fi
+    [ -n "$LEAF" ] && kill -9 "$LEAF" 2>/dev/null
     kill -9 "$K32" 2>/dev/null
     wait "$K32" 2>/dev/null
 
-    # The second run exits on its own, so the summary line is written.
-    "$TOOL" -l "$LABEL" -- ./testcases32 echoargs "MK49B-$MARK" \
+    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" echoargs "MK49B-$MARK" \
         >"$T/k32b.out" 2>"$T/k32b.err"
-    if grep -q '32-bit' "$T/k32b.err"; then
-        pass "49f-32bit-refusal-is-loud ($(head -1 "$T/k32b.err" | cut -c1-80))"
-    else
-        fail "49f-silent-32bit-refusal (stderr=$(head -2 "$T/k32b.err" | tr '\n' '|'))"
-    fi
     if grep -q 'foreign-arch' "$T/k32b.err"; then
         pass "49f-32bit-summary-counts-foreign-arch ($(tail -1 "$T/k32b.err"))"
     else
         fail "49f-32bit-summary-counts-foreign-arch (stderr=$(tail -1 "$T/k32b.err"))"
     fi
+    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" exec64 \
+        >/dev/null 2>"$T/k32d.err"
+    rc=$?
+    if [ "$rc" = 137 ] \
+        && grep -q 'later exec of a tracee that already ran a 32-bit image is refused' \
+            "$T/k32d.err"; then
+        pass "49f-32bit-later-exec-refused (rc=$rc)"
+    else
+        fail "49f-32bit-later-exec-refused (rc=$rc err=$(tr '\n' '|' < "$T/k32d.err" | cut -c1-200))"
+    fi
+
+    # A native master settles, then execs a 32-bit image.  There is no
+    # entry stop for it, so the completion stop is the last place to
+    # refuse; the kernel has already copied the real argv by then.
+    "$TOOL" -l "$LABEL" -- /bin/sh -c "sleep 0.2; exec $T32 sleeper 30" \
+        >/dev/null 2>"$T/k32e.err"
+    rc=$?
+    if [ "$rc" = 137 ] && grep -q 'refused at completion' "$T/k32e.err"; then
+        pass "49f-32bit-later-exec-native-refused (rc=$rc)"
+    else
+        fail "49f-32bit-later-exec-native-refused (rc=$rc err=$(tr '\n' '|' < "$T/k32e.err" | cut -c1-200))"
+    fi
+
+    # The explicit opt-in keeps the documented unredacted run.
+    "$TOOL" -l "$LABEL" --allow-foreign -- /bin/sh -c "sleep 0.2; exec $T32 sleeper 30" \
+        >/dev/null 2>"$T/k32f.err" &
+    K32F=$!
+    sleep 0.9
+    LEAF=$(leaf_of "$K32F")
+    if [ -n "$LEAF" ]; then
+        cl=$(cmdline_of "$LEAF")
+        exe=$(readlink "/proc/$LEAF/exe" 2>/dev/null)
+        case "$cl:$exe" in
+            *sleeper*:*/testcases32|*sleeper*:*/t32)
+                pass "49f-32bit-later-exec-native-allow-foreign cmdline=[$cl] exe=$exe" ;;
+            *) fail "49f-32bit-later-exec-native-allow-foreign (cmdline=[$cl] exe=[$exe])" ;;
+        esac
+    else
+        skip "49f-32bit-later-exec-native-allow-foreign (the 30 s payload had already settled or the host refused the exec)"
+    fi
+    [ -n "$LEAF" ] && kill -9 "$LEAF" 2>/dev/null
+    kill -9 "$K32F" 2>/dev/null
+    wait "$K32F" 2>/dev/null
+
+    # The seccomp fast path sees the exec at its entry stop, so the
+    # refusal happens before the image runs.
+    "$TOOL" -l "$LABEL" --exec-once --on-exit wait -- /bin/sh -c "sleep 0.2; exec $T32 sleeper 30" \
+        >/dev/null 2>"$T/k32g.err"
+    rc=$?
+    if [ "$rc" = 137 ] && grep -q '32-bit.*refused' "$T/k32g.err" \
+        && ! grep -q 'at completion' "$T/k32g.err"; then
+        pass "49f-32bit-later-exec-fastpath-refused (rc=$rc)"
+    else
+        fail "49f-32bit-later-exec-fastpath-refused (rc=$rc err=$(tr '\n' '|' < "$T/k32g.err" | cut -c1-200))"
+    fi
 else
-    skip "49f-32bit-real-argv (tests/testcases32 absent: the i686 probe is built by vm/run.sh)"
+    skip "49f-32bit-refused-by-default (tests/testcases32 absent: the i686 probe is built by vm/run.sh)"
     skip "49f-32bit-refusal-is-loud (tests/testcases32 absent)"
+    skip "49f-32bit-allow-foreign-runs-unredacted (tests/testcases32 absent)"
+    skip "49f-32bit-allow-foreign-exe-names-the-image (tests/testcases32 absent)"
     skip "49f-32bit-summary-counts-foreign-arch (tests/testcases32 absent)"
+    skip "49f-32bit-later-exec-refused (tests/testcases32 absent)"
+    skip "49f-32bit-later-exec-native-refused (tests/testcases32 absent)"
+    skip "49f-32bit-later-exec-native-allow-foreign (tests/testcases32 absent)"
+    skip "49f-32bit-later-exec-fastpath-refused (tests/testcases32 absent)"
 fi
 
 # ------------------------------------- 49g: the report's mode for --unshare

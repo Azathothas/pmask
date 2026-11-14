@@ -276,6 +276,9 @@ fn guarantee(caps: &Caps, name: &str) -> Option<crate::caps::State> {
         "mlock" => row("mlock"),
         "no-new-privs" => row("no_new_privs"),
         "non-dumpable" => row("non-dumpable"),
+        "hidepid" => row("proc hidepid policy"),
+        "hide-pid" => row("hide-pid"),
+        "encrypt-memory" => row("memory encryption"),
         "landlock" => row("landlock"),
         // the report's own row names work too, so `--require` can name
         // whatever `probe` printed

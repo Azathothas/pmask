@@ -158,7 +158,9 @@ fn poke_fallback(pid: libc::pid_t, addr: u64, data: &[u8]) -> isize {
 pub fn read_cstr_checked(pid: libc::pid_t, addr: u64, max: usize) -> Option<(Vec<u8>, bool)> {
     let mut out: Vec<u8> = Vec::with_capacity(256);
     let mut window = 256usize;
-    let mut buf = vec![0u8; 16 * 1024];
+    // The scratch window holds the payload's real bytes; zero it when
+    // this function returns, on every path.
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; 16 * 1024]);
     while out.len() <= max {
         let want = window.min(buf.len());
         let k = read_mem(pid, addr + out.len() as u64, &mut buf[..want]);

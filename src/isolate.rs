@@ -1038,18 +1038,45 @@ fn mount_private_dev() -> Result<DevOutcome, i32> {
     // may refuse the bind.  Each one that fails is left out of `extra` and
     // named as a degradation, and the run continues: failing it here would
     // turn a host detail into a refused payload.
+    //
+    // Prefer a private `devpts` over a bind of the host's.  The host's
+    // devpts carries the host's tty gid (usually 5), which the payload's
+    // user namespace does not map, so `openpty` fails with EPERM.  A
+    // private instance mounted with `gid=0` uses the namespace's mapped
+    // gid and works.
+    let mut private_pts = false;
+    // SAFETY: creating a directory inside our own tmpfs.
+    let mkdir_rc = unsafe { libc::mkdir(DEV_PTS.as_ptr(), 0o755 as libc::mode_t) };
+    if mkdir_rc == 0 || last_errno() == libc::EEXIST {
+        let opts = c"newinstance,ptmxmode=0666,mode=0620,gid=0";
+        let mounted = mount_checked(
+            c"devpts".as_ptr(),
+            DEV_PTS.as_ptr(),
+            c"devpts".as_ptr(),
+            (libc::MS_NOSUID | libc::MS_NOEXEC) as libc::c_ulong,
+            opts.as_ptr() as *const libc::c_void,
+        );
+        if mounted.is_ok() {
+            private_pts = true;
+            out.extra |= DE_PTS;
+            // SAFETY: absolute paths inside our own mount namespace.
+            if unsafe { libc::symlink(c"pts/ptmx".as_ptr(), DEV_PTMX.as_ptr()) } == 0 {
+                out.extra |= DE_PTMX;
+            }
+        }
+    }
     if held[basic] >= 0 {
         // An optional member that fails is a degradation of that member
         // alone, so it does not set `first_errno`: the basic set is what
         // decides whether the fresh /dev exists at all.
-        if bind_held_as(held[basic], DEV_PTS, true).is_ok() {
+        if !private_pts && bind_held_as(held[basic], DEV_PTS, true).is_ok() {
             out.extra |= DE_PTS;
         }
         // SAFETY: a descriptor opened above.
         unsafe { libc::close(held[basic]) };
     }
     if held[basic + 1] >= 0 {
-        if bind_held_as(held[basic + 1], DEV_PTMX, false).is_ok() {
+        if (out.extra & DE_PTMX) == 0 && bind_held_as(held[basic + 1], DEV_PTMX, false).is_ok() {
             out.extra |= DE_PTMX;
         }
         // SAFETY: a descriptor opened above.

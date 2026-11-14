@@ -102,6 +102,7 @@ macro_rules! vlog {
 pub mod agent;
 mod arch;
 pub mod caps;
+pub mod crypto;
 pub mod daemon;
 mod execimg;
 mod inject;
@@ -118,6 +119,8 @@ pub mod secret;
 mod selfmask;
 pub mod store;
 pub mod subcmd;
+#[doc(hidden)]
+pub mod testhooks;
 mod tracer;
 mod userns;
 

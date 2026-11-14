@@ -1,0 +1,159 @@
+
+===== HOST =====
+Linux errand-42kfknhjswru 6.12.116+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.116-1 (2026-11-07) x86_64 GNU/Linux
+uid=1000(agent) gid=1000(agent) groups=1000(agent)
+
+===== RUN A1/A2: exact command, no report support, with a status sampler =====
+-- A1 --
+exit=0
+stdout_hex=4f4e452054574f
+stdout=<<<ONE TWO>>>
+stderr=<<<>>>
+sampler observations:
+t=123204.2793 pid=547150 ppid=547149 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=/srv/pmask-target/release/pmask
+t=123204.2803 pid=547150 ppid=547149 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=?
+t=123204.2803 pid=547152 ppid=547150 comm=r2-once seccomp=1 nnp=1 tracer=547151 exe=/srv/pmask-target/release/pmask
+t=123204.2813 pid=547152 ppid=547150 comm=r2-once seccomp=1 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2825 pid=547152 ppid=547150 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2836 pid=547153 ppid=547152 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=/memfd:r2-once (deleted)
+t=123204.2855 pid=547153 ppid=547152 comm=r2-once seccomp=2 nnp=1 tracer=547151 exe=?
+sampler.done observations=7
+-- A2 --
+exit=0
+stdout_hex=4f4e452054574f
+stdout=<<<ONE TWO>>>
+stderr=<<<>>>
+sampler observations:
+t=123205.3038 pid=547163 ppid=547162 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=/srv/pmask-target/release/pmask
+t=123205.3048 pid=547163 ppid=547162 comm=r2-once seccomp=1 nnp=0 tracer=0 exe=?
+t=123205.3057 pid=547165 ppid=547163 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/memfd:r2-once (deleted)
+t=123205.3067 pid=547166 ppid=547165 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/memfd:r2-once (deleted)
+t=123205.3077 pid=547166 ppid=547165 comm=r2-once seccomp=2 nnp=1 tracer=547164 exe=/dev/shm/.pmask-rexec-r2-once-547163-3bf13e50-0
+sampler.done observations=5
+
+===== RUN B: exact command plus --secret/--report-file (report needs a secret side) =====
+exit=0
+stdout_hex=4f4e452054574f0a
+stdout=<<<ONE TWO>>>
+stderr=<<<>>>
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hide_pid": false,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 0, "signal": null},
+  "execs": {"total": 2, "degraded": 0, "detached": 0, "sized": 2, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+
+===== RUN C: same flags, long-lived child so the status line is certainly observable =====
+started pgid=547192
+547192 1 r2-once-c /srv/pmask-target/release/pmask 0
+547195 547192 r2-once-c /memfd:r2-once-c (deleted) 547194
+547196 547195 r2-once-c /dev/shm/.pmask-rexec-r2-once-c-547192-753ee461-0 547194
+-- status of label pid 547192 --
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+NoNewPrivs:	0
+Seccomp_filters:	1
+exe=/srv/pmask-target/release/pmask comm=r2-once-c cmdline=r2-once-c|
+### procdump tag=once-c-547192 pid=547192 uid=1000
+cmdline.text='r2-once-c|'
+comm='r2-once-c'
+environ.open=OK
+environ.len=0
+environ.keys=
+auxv.open=OK
+mem.open=OK
+auxv.execfn_string='r2-once-c'
+exe.readlink='/srv/pmask-target/release/pmask'
+exe.open=OK
+maps.lines=37
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=7
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+fd| 7 -> pipe:[6456170]
+fd| 200 -> /memfd:r2-once-c (deleted)
+fd| 210 -> /tmp/#440182 (deleted)
+fd| 211 -> /dev/shm/.pmask-rexec-r2-once-c-547192-753ee461-0
+### end tag=once-c-547192 pid=547192
+-- status of label pid 547195 --
+TracerPid:	547194
+Uid:	1000	1000	1000	1000
+NoNewPrivs:	1
+Seccomp_filters:	2
+exe=/memfd:r2-once-c (deleted) comm=r2-once-c cmdline=r2-once-c|
+### procdump tag=once-c-547195 pid=547195 uid=1000
+cmdline.text='r2-once-c|'
+comm='r2-once-c'
+environ.open=OK
+environ.len=0
+environ.keys=
+auxv.open=OK
+mem.open=OK
+auxv.execfn_string='r2-once-c'
+exe.readlink='/memfd:r2-once-c (deleted)'
+exe.open=OK
+maps.lines=29
+maps.open=OK
+status.TracerPid:	547194
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+### end tag=once-c-547195 pid=547195
+-- status of label pid 547196 --
+TracerPid:	547194
+Uid:	1000	1000	1000	1000
+NoNewPrivs:	1
+Seccomp_filters:	2
+exe=/dev/shm/.pmask-rexec-r2-once-c-547192-753ee461-0 comm=r2-once-c cmdline=r2-once-c|
+### procdump tag=once-c-547196 pid=547196 uid=1000
+cmdline.text='r2-once-c|'
+comm='r2-once-c'
+environ.open=OK
+environ.len=0
+environ.keys=
+auxv.open=OK
+mem.open=OK
+auxv.execfn_string='r2-once-c'
+exe.readlink='/dev/shm/.pmask-rexec-r2-once-c-547192-753ee461-0'
+exe.open=OK
+maps.lines=37
+maps.open=OK
+status.TracerPid:	547194
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-once-c.out
+### end tag=once-c-547196 pid=547196
+STOP verified: 0 label processes remain
+
+===== RESIDUE CHECK =====
+none
