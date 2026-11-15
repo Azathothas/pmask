@@ -127,18 +127,28 @@ if grep -q "isolation: .*dev:" "$T/c.err"; then
     else
         fail "q25f-report-counts-the-basic-nodes (dev:${base:-?}+${extra:-?}, want >=6 basic)"
     fi
-    # Every member this host has and the run could place must be counted.
-    want=0
-    [ -e /dev/pts ] && want=$((want + 1))
-    [ -e /dev/ptmx ] && want=$((want + 1))
-    [ -e /dev/shm ] && want=$((want + 1))
-    want=$((want + 1))  # the stdio links, which are always created
-    if [ "${extra:-0}" -eq "$want" ]; then
-        pass "q25f2-report-counts-the-optional-members (${extra}/${want})"
-    elif grep -q "fresh /dev has no" "$T/c.err"; then
-        skip "q25f2-report-counts-the-optional-members (${extra}/${want}: the report names a refused member)"
+    # The report's optional count describes the /dev the payload gets.
+    # Measure that /dev from inside a second run with the same flags rather
+    # than modelling it from this host: the run builds a fresh /dev and can
+    # carry a member this host lacks, so a host-derived count is wrong in
+    # both directions.
+    iso "$T/f2.out" "$T/f2.err" -- /bin/sh -c '
+        n=0
+        for p in pts ptmx shm; do
+            [ -e "/dev/$p" ] && n=$((n + 1))
+        done
+        l=0
+        for p in fd stdin stdout stderr; do
+            [ -e "/dev/$p" ] && l=$((l + 1))
+        done
+        [ "$l" = 4 ] && n=$((n + 1))
+        echo "OPT=$n"
+    '
+    opt=$(sed -n 's/^OPT=//p' "$T/f2.out" | head -1)
+    if [ -n "${opt:-}" ] && [ "${extra:-0}" -eq "$opt" ]; then
+        pass "q25f2-report-counts-the-optional-members (${extra} == payload ${opt})"
     else
-        fail "q25f2-report-counts-the-optional-members (${extra}/${want}, want ${want})"
+        fail "q25f2-report-counts-the-optional-members (report=${extra:-?} payload=${opt:-?})"
     fi
     if grep -q "fresh /dev has no /dev/pts" "$T/c.err" && [ -d /dev/pts ]; then
         fail "q25f3-report-does-not-disclaim-a-present-member (host has /dev/pts, report says it is absent)"
@@ -152,22 +162,32 @@ else
 fi
 
 # q25g: a degradation is named for a member this host lacks.  When the
-# host has all three, the only honest answer is a SKIP.
+# A member is genuinely missing only when the payload's fresh /dev lacks it
+# too.  A host-derived list is not the premise: the run builds its own /dev
+# and can supply a member this host does not have, in which case there is no
+# degradation to name and the honest answer is a SKIP.
+iso "$T/g.out" "$T/g.err" -- /bin/sh -c '
+    for n in pts ptmx shm; do
+        [ -e "/dev/$n" ] || echo "NO=$n"
+    done
+'
 missing=""
 for n in pts ptmx shm; do
-    [ -e "/dev/$n" ] || missing="$missing $n"
+    [ -e "/dev/$n" ] && continue
+    grep -qx "NO=$n" "$T/g.out" && missing="$missing $n"
 done
 if [ -z "$missing" ]; then
-    skip "q25g-degradation-is-named-for-a-missing-member (this host has /dev/pts, /dev/ptmx and /dev/shm)"
+    skip "q25g-degradation-is-named-for-a-missing-member (the run supplied every optional member in its fresh /dev)"
 else
     hit=0
+    want_n=$(echo $missing | wc -w | tr -d ' ')
     for n in $missing; do
         grep -q "fresh /dev has no /dev/$n" "$T/c.err" && hit=$((hit + 1))
     done
-    if [ "$hit" -eq $(echo $missing | wc -w | tr -d ' ') ]; then
-        pass "q25g-degradation-is-named-for-a-missing-member ($missing)"
+    if [ "$hit" -eq "$want_n" ]; then
+        pass "q25g-degradation-is-named-for-a-missing-member (named:$missing)"
     else
-        fail "q25g-degradation-is-named-for-a-missing-member (missing:$missing named=$hit)"
+        fail "q25g-degradation-is-named-for-a-missing-member (missing:$missing named=$hit of $want_n)"
     fi
 fi
 

@@ -119,7 +119,13 @@ sweep_literal() {
 # ------------------------------------------------- q1: the default name
 # The default must not change: the conformance suite asserts a /memfd:
 # link, and this asserts the exact literal the issue names.
-"$TOOL" -q -l "$L" --secret TOK=literal:QA45VAL8 \
+#
+# A delivered secret makes the tree non-dumpable by default (issue 67), so
+# this observer cannot list /proc/<payload>/fd at all.  --allow-dumpable is
+# the documented way to keep the descriptor visible; it does not change the
+# name, which is the property under test, and q1b is the control that
+# proves the sweep can see a live run at all.
+"$TOOL" -q -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
     -- "$CASES" secretfd TOK 3 >"$D/q1.out" 2>"$D/q1.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
@@ -145,7 +151,7 @@ else
 fi
 
 # --------------------------------------- q2: the chosen secret fd name
-"$TOOL" -q -l "$L" --secret TOK=literal:QA45VAL8 \
+"$TOOL" -q -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
     --secret-fd-name "$NAME" -- "$CASES" secretfd TOK 3 >"$D/q2.out" 2>"$D/q2.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""

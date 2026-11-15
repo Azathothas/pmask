@@ -84,14 +84,18 @@ env_bytes() { wc -c < "/proc/$1/environ" 2>/dev/null || echo 0; }
 env_nuls() { tr -cd '\0' < "/proc/$1/environ" 2>/dev/null | wc -c; }
 env_span() { awk '{sub(/.*\) /,""); print $49 - $48}' "/proc/$1/stat" 2>/dev/null; }
 
-# ------------------------------------------- E1: default, 0 bytes
+# --------------------------------- e1: exact, the fixed decoy window
 if start; then
     n=$(env_bytes "$PAY")
     sp=$(env_span "$PAY")
-    if [ "$n" = 0 ] && [ "$sp" = 0 ]; then
-        pass "e1-default-empty-environ (bytes=$n span=$sp)"
+    z=$(env_nuls "$PAY")
+    # The exact mode relocates the windows, so the decoy fills the span it
+    # was given: bytes == span, non-zero, and not a run of NULs.  A
+    # zero-length window was the beta.4 shape.
+    if [ "${n:-0}" -gt 0 ] && [ "$n" = "$sp" ] && [ "${z:-0}" -lt "$n" ]; then
+        pass "e1-default-decoy-environ (bytes=$n span=$sp nuls=$z)"
     else
-        fail "e1-default-empty-environ (bytes=$n span=$sp, want 0 and 0)"
+        fail "e1-default-decoy-environ (bytes=${n:-?} span=${sp:-?} nuls=${z:-?}, want bytes==span>0 and not all NUL)"
     fi
     stop
 else
@@ -133,7 +137,7 @@ fi
 # ------------------- E4: --keep-env + env: secret warns and names it
 err="$D/e4.err"
 env -i PATH=/usr/bin:/bin HUSH="$SECRET" \
-    "$TOOL" -l "$L" --keep-env --secret T=env:HUSH \
+    "$TOOL" -l "$L" --keep-env --allow-dumpable --secret T=env:HUSH \
     -- "$CASES" sleeper QAMARK >/dev/null 2>"$err" &
 SUP=$!
 sleep 0.9
@@ -162,7 +166,13 @@ SUP=""
 # ------------------- E5: the kept variable is still kept
 # The warning must not turn into a silent redaction: --keep-env keeps
 # everything, warning or not.
-if start --keep-env --secret U=env:HUSH; then
+#
+# The delivered secret makes the tree non-dumpable, so /proc/<payload> is
+# unreadable to this observer and the kept variable cannot be seen from
+# outside.  --allow-dumpable keeps the payload readable without changing
+# what is presented in the window, which is the property under test: a
+# refusal to read would be indistinguishable from a silent redaction.
+if start --keep-env --allow-dumpable --secret U=env:HUSH; then
     if tr '\0' '\n' < "/proc/$PAY/environ" 2>/dev/null | grep -qF "HUSH=$SECRET"; then
         pass "e5-kept-vars-still-kept"
     else
