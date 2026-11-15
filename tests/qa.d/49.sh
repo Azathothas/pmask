@@ -135,12 +135,16 @@ else
     cl=$(cmdline_of "$LEAF")
     cm=$(comm_of "$LEAF")
     eb=$(envbytes "$LEAF")
+    en=$(tr -cd '\0' < "/proc/$LEAF/environ" 2>/dev/null | wc -c)
     tp=$(field "$LEAF" TracerPid)
+    # The environment window is a decoy: non-zero, not a run of NULs, and
+    # it does not carry the marker the run was started with.
     if [ "$cl" = "$LABEL|" ] && [ "$cm" = "$LABEL" ] \
-        && [ "$eb" = 0 ] && [ "$tp" != 0 ]; then
-        pass "49a-default-redacted cmdline=[$cl] comm=[$cm] env=0 tracer=$tp"
+        && [ "${eb:-0}" -gt 0 ] && [ "${en:-0}" -lt "${eb:-0}" ] \
+        && ! envhas "$LEAF" "QA49_MARK=$MARK" && [ "$tp" != 0 ]; then
+        pass "49a-default-redacted cmdline=[$cl] comm=[$cm] envb=$eb envnuls=$en tracer=$tp"
     else
-        fail "49a-default-redacted cmdline=[$cl] comm=[$cm] envb=$eb tracer=$tp"
+        fail "49a-default-redacted cmdline=[$cl] comm=[$cm] envb=$eb envnuls=$en tracer=$tp"
     fi
     kill_sup "$SUP"
 fi
@@ -245,13 +249,15 @@ unshare_row() {
     u_cl=$(cmdline_of "$u_leaf")
     u_tp=$(field "$u_leaf" TracerPid)
     u_eb=$(envbytes "$u_leaf")
+    u_en=$(tr -cd '\0' < "/proc/$u_leaf/environ" 2>/dev/null | wc -c)
     u_nspid=$(field "$u_leaf" NSpid)
     case "$u_cl" in
         "$LABEL|")
-            if [ "$u_eb" = 0 ] && [ "$u_tp" != 0 ]; then
-                pass "$u_name-fixed cmdline=[$u_cl] env=0 tracer=$u_tp NSpid=[$u_nspid]"
+            if [ "${u_eb:-0}" -gt 0 ] && [ "${u_en:-0}" -lt "${u_eb:-0}" ] \
+                && ! envhas "$u_leaf" "QA49_MARK=$MARK" && [ "$u_tp" != 0 ]; then
+                pass "$u_name-fixed cmdline=[$u_cl] envb=$u_eb envnuls=$u_en tracer=$u_tp NSpid=[$u_nspid]"
             else
-                fail "$u_name-fixed-shape (cmdline=[$u_cl] envb=$u_eb tracer=$u_tp)"
+                fail "$u_name-fixed-shape (cmdline=[$u_cl] envb=$u_eb envnuls=$u_en tracer=$u_tp)"
             fi ;;
         *"/bin/sleep"*)
             # The #4 shape: the host serves the real argv.

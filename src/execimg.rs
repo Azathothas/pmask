@@ -2115,6 +2115,34 @@ fn shrink_env(room: u64) -> Vec<u8> {
     out
 }
 
+/// The bytes written into an environment window of `span` bytes: each kept
+/// variable once, then decoy entries from the same table the compact block
+/// uses, then NUL padding to the end of the window.  An entry that does not
+/// fit is skipped so a smaller one still fills the window: breaking at the
+/// first oversized entry left the whole window NUL, and no real environment
+/// is a run of NUL bytes.
+fn env_window_bytes(span: usize, kept: &[&[u8]]) -> Vec<u8> {
+    let mut buf = vec![0u8; span];
+    if span == 0 {
+        return buf;
+    }
+    let mut off = 0usize;
+    for s in kept {
+        if off + s.len() + 1 > span - 1 {
+            break;
+        }
+        buf[off..off + s.len()].copy_from_slice(s);
+        off += s.len() + 1;
+    }
+    if off < span {
+        // Every entry carries its own NUL, so an entry that ends on the last
+        // byte of the window still leaves the window NUL-terminated.
+        let rest = shrink_env((span - off) as u64);
+        buf[off..off + rest.len()].copy_from_slice(&rest);
+    }
+    buf
+}
+
 /// Write the presentation of the environment window when the kernel
 /// keeps the original extent.  Each kept variable appears once, then
 /// each decoy entry once; the rest of the original extent is NUL.  A
@@ -2125,22 +2153,7 @@ fn fill_env_window(pid: libc::pid_t, lo: u64, hi: u64, kept: &[&[u8]]) {
     if span == 0 {
         return;
     }
-    let mut buf = vec![0u8; span];
-    let mut off = 0usize;
-    for s in kept {
-        if off + s.len() + 1 > span - 1 {
-            break;
-        }
-        buf[off..off + s.len()].copy_from_slice(s);
-        off += s.len() + 1;
-    }
-    for entry in DECOY_ENV.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-        if off + entry.len() + 1 > span - 1 {
-            break;
-        }
-        buf[off..off + entry.len()].copy_from_slice(entry);
-        off += entry.len() + 1;
-    }
+    let buf = env_window_bytes(span, kept);
     let _ = write_mem(pid, lo, &buf);
 }
 
@@ -2348,6 +2361,64 @@ mod tests {
         // Every entry came from the decoy list.
         for e in entries(&out) {
             assert!(DECOY_ENV.split(|b| *b == 0).any(|d| d == e));
+        }
+    }
+
+    /// The environment window a `--no-exact` run leaves behind must look
+    /// like an environment.  A window too small for `PATH=` used to be
+    /// written as NUL bytes only, because the decoy loop stopped at the
+    /// first entry that did not fit.
+    #[test]
+    fn a_small_env_window_still_holds_a_plausible_entry() {
+        // `env -i PATH=/usr/bin:/bin` is 19 bytes, the shape qa.d/40.sh
+        // measures; the first decoy entry is 62 bytes and does not fit.
+        let b = env_window_bytes(19, &[]);
+        assert_eq!(b.len(), 19);
+        assert!(
+            b.iter().any(|c| *c != 0),
+            "the window is a run of NUL bytes: {:?}",
+            b
+        );
+        let first = b.split(|c| *c == 0).next().unwrap_or(&[]);
+        assert!(
+            first.contains(&b'='),
+            "the first entry is not KEY=VALUE: {:?}",
+            String::from_utf8_lossy(first)
+        );
+        // The window ends with a NUL and never overruns.
+        assert_eq!(b[18], 0);
+    }
+
+    /// A window large enough for the whole decoy holds every entry once.
+    #[test]
+    fn a_full_env_window_holds_the_decoy_once() {
+        let b = env_window_bytes(DECOY_ENV.len(), &[]);
+        assert_eq!(b.len(), DECOY_ENV.len());
+        assert_eq!(b.as_slice(), DECOY_ENV);
+    }
+
+    /// A kept variable comes first, then decoy entries fill the rest.
+    #[test]
+    fn a_kept_variable_comes_before_the_decoy() {
+        let b = env_window_bytes(64, &[b"PMASK_KEPT=1"]);
+        assert_eq!(b.len(), 64);
+        assert_eq!(&b[..12], b"PMASK_KEPT=1");
+        assert_eq!(b[12], 0);
+        assert!(
+            b[13..].iter().any(|c| *c != 0),
+            "no decoy after the kept entry"
+        );
+    }
+
+    /// A window too small for even one entry is NUL padding, and that is
+    /// the one shape the function cannot make plausible; it must not panic
+    /// or write past the window.
+    #[test]
+    fn a_window_shorter_than_any_entry_is_padding() {
+        for span in 0..6 {
+            let b = env_window_bytes(span, &[]);
+            assert_eq!(b.len(), span);
+            assert!(b.iter().all(|c| *c == 0), "span {span} is not padding");
         }
     }
 }
