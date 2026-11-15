@@ -29,6 +29,12 @@ echo "=== running full test suite inside the VM as root (uid $(id -u))"
 cd /app/tests
 ID=root sh run.sh 2>&1
 rc=$?
+# A test may leave a payload that ignores its session end.  It holds the
+# console open after the harness has printed its verdict, so clean the
+# exact binary names before the next pass.
+pkill -9 -x testcases 2>/dev/null
+pkill -9 -x pmaskd 2>/dev/null
+pkill -9 -x pmask 2>/dev/null
 echo "VM-HARNESS-RESULT:$rc"
 
 # --- pass 2: an unprivileged uid.  Suites that need root (audit, userns
@@ -40,7 +46,7 @@ echo 'user:x:1000:' > /etc/group
 echo 'root:x:0:' >> /etc/group
 chown -R 1000:1000 /app/tests /home/user
 echo "=== running full test suite inside the VM as uid 1000"
-su -s /bin/sh -c 'cd /app/tests && PATH=/bin:/app:/app/tests ID=nonroot sh run.sh 2>&1' user
+su -s /bin/sh -c 'cd /app/tests && PATH=/bin:/app:/app/tests ID=nonroot sh run.sh 2>&1; rc=$?; pkill -9 -x testcases 2>/dev/null; pkill -9 -x pmaskd 2>/dev/null; pkill -9 -x pmask 2>/dev/null; exit $rc' user
 rc_nr=$?
 echo "VM-HARNESS-RESULT-NONROOT:$rc_nr"
 

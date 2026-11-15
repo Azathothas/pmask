@@ -378,13 +378,15 @@ stop_daemon
 # tracee, so a comm sweep would kill the daemon this case still needs.
 # The tracees are the ones whose exe is the test probe.
 kill_job_tracees() {
+    # A non-dumpable job refuses `readlink exe` to a same-uid reader, so
+    # an exe-only sweep misses exactly the job this case needs to stop.
+    # The label is the comm of the job supervisor and every tracee; the
+    # daemon itself is the one pid this must not kill.
     for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        [ "$p" = "${DPID:-}" ] && continue
         case "$(cat "$d/comm" 2>/dev/null)" in
-            "$1"*)
-                case "$(readlink "$d/exe" 2>/dev/null)" in
-                    */testcases) kill -9 "${d#/proc/}" 2>/dev/null ;;
-                esac
-                ;;
+            "$1"*) kill -9 "$p" 2>/dev/null ;;
         esac
     done
 }

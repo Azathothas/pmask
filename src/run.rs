@@ -1266,7 +1266,17 @@ impl Runner {
         }
         notes.extend(self.check_sources(mode)?);
 
-        // 1. Load secrets into protected memory.
+        // 1. Load secrets into protected memory.  The holder is hardened
+        //    *before* the first source is opened: `PR_SET_DUMPABLE=0` and
+        //    `RLIMIT_CORE=0` applied after the load leave the plaintext
+        //    readable through `/proc/<pid>/mem` for as long as a blocking
+        //    source takes (issue 005).  The hardening is not fatal on a
+        //    host that refuses it; the note says so.
+        let harden_notes = if self.secrets.is_empty() {
+            Vec::new()
+        } else {
+            crate::mem::harden_self()
+        };
         let mut secrets: Vec<Secret> = Vec::with_capacity(self.secrets.len());
         let socket = self.socket.clone();
         for idx in 0..self.secrets.len() {
@@ -1306,11 +1316,7 @@ impl Runner {
             delivery_mode,
             self.mask.as_ref().and_then(|m| m.secret_fd_name_value()),
         )?;
-        if !secrets.is_empty() {
-            // Once we hold plaintext, stop other processes of this account
-            // from reading our memory.
-            notes.extend(crate::mem::harden_self());
-        }
+        notes.extend(harden_notes);
         // Prove in the parent that the child can install the descriptors.
         // A failure here is the difference between "no secret" and "no
         // run".

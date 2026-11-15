@@ -753,3 +753,27 @@ No entry below matches `#N` in its subject or body; that is not the same as nami
 - `c9ed635` fix: warn about the escapes only for a run that happens
 - `fcec4b0` feat: warn when a documented escape publishes a secret
 
+
+## beta.5 review (PR #63): issues 001-014 and the b-team records
+
+One squashed commit carries the fixes below.  The test column names the
+fragment or suite row that fails if the property is removed.
+
+| issue | fix | test |
+|---|---|---|
+| 001 `--exec-once` carrier replaceable / cache metadata-only | the carrier is re-opened with `O_NOFOLLOW`, its dev/ino and bytes are compared with the cached descriptor before every reuse, a mismatch kills the exec instead of running it, the carrier prefers `$XDG_RUNTIME_DIR`, and a double-forked reaper unlinks it when the supervisor is SIGKILLed | `tests/qa.d/65.sh`, `tests/redteam.sh` R4 |
+| 002 `--no-dumpable` drops the fast path | `--exec-once` with `--no-dumpable` or `--hide-pid` is refused before the fork; the filter install runs before the dumpable injection at completion | `tests/qa.d/65.sh`, `options.sh` O39 |
+| 003 argv window on script / vfork / `--no-dumpable` / `--detach` | `--strict-exec` refuses the shapes that cannot be redacted at entry; the numbers and the default trade are documented | `tests/qa.d/66.sh` |
+| 004 same-uid memory, secret and image reads | a delivered secret makes the payload non-dumpable by default (`--allow-dumpable` opts out), the supervisor closes its image fds after the fork, and the daemon jobs are non-dumpable | `tests/qa.d/67.sh`, `options.sh` O27, `daemon.sh` d7b/d8 |
+| 005 secret load window | the holder calls `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0` before the first source is opened, in the CLI, `pmaskd --env-file` and the passphrase resolver | `tests/qa.d/68.sh` |
+| 006 `/proc/self/exe` later exec runs pmask | `tracee_open_path` rewrites `/proc/self` and `/proc/thread-self` to the tracee pid before the cache key is resolved | `tests/qa.d/69.sh`, `redteam.sh` R4 |
+| 007 report/audit writable, audit fd name-keyed | the report is staged in `O_TMPFILE` (or a 0600 name) and linked after the tree is gone, report runs wait unless told otherwise and keep the supervisor non-dumpable, `--audit` + stdout JSON is refused, and the audit fd reason matches memfd/deleted targets instead of the string `pmask`.  A report run with an explicit `--on-exit detach` warns that a descendant can still append to the linked document | `tests/qa.d/70.sh`, `redteam.sh` R6 |
+| 008 `write(2)` to `/proc/self/comm` | the watch filter traps openat/open/openat2 and refuses a write-mode open; a relative path is resolved against the `dirfd` or the cwd the tracee named, so `openat(dirfd, "comm")` is refused in the default mode; `--watch-rename=strict` also checks the descriptor target on write, catching symlink and `SCM_RIGHTS` aliases | `tests/qa.d/71.sh`, `redteam.sh` R7/R7b/R7c |
+| 009 orphan filter after detach | a run with the filter waits for the tree by default and an explicit `--on-exit detach` is refused | `tests/qa.d/72.sh` |
+| 010 `--hide-pid` cgroup and syscall channels | the README, help and threat model name `cgroup.procs`/`cgroup.threads`, `sched_getaffinity`, `getpriority` and `prlimit`; the tool message says the same | `tests/qa.d/73.sh` |
+| 011 `--no-exact` extent and repeated decoy | the entry transform is skipped for `--no-exact`, so the kernel copies the real extent; the completion fills it with a unique, complete decoy, and the entry stores nothing about it | `tests/qa.d/74.sh`, `redteam.sh` R2 |
+| 012 exact `stat` gap, `start_stack`, `[stack]`, `dd` | the presentation is written into the kernel-copied stack region, `arg_end == env_start`, the environment span is non-zero, `start_stack` keeps the kernel value, and the real `[stack]` VMA is untouched; `--keep-env` anchors its compact argv window at `env_start` and shrinks the decoy to fit rather than moving `arg_start`, and the geometry is unit-tested for an exact region, a slack region and a region too small for the full decoy | `tests/qa.d/75.sh`, `redteam.sh` R1 |
+| 013 `--rexec` silent disk fallback | a refused image returns 126 (127 for a missing source) unless `--rexec-allow-disk` was given, and the error names `RLIMIT_NOFILE` | `tests/qa.d/76.sh`, `options.sh` O32 |
+| 014 plain supervisor NUL cmdline | a plain run with no plain-sight secret restores the caller's argv block; a plain run with one keeps the zeroing and warns | `tests/qa.d/77.sh`, `redteam.sh` R3 |
+| 040 / 042 / 043 b-team measurements | exact mode now keeps `arg_end == env_start`, a non-zero decoy environment, the real `start_stack` and `[stack]` VMA, and both auxv copies name the label, with `--keep-env` held to the same window geometry; the remaining `comm`/`exe` split and the non-redacting modes are stated in the threat model | `redteam.sh` R1, `core.sh` k13/k13b, `qa.d/40.sh`, `qa.d/43.sh` |
+| 049 / 057 / 058 b-team modes and kernel observers | the 32-bit refusal, plain and isolate modes keep their documented shapes; the eBPF and hidden-pid measurements are unchanged and the `--hide-pid` exception is named | `qa.d/49.sh`, `qa.d/57.sh`, `qa.d/58.sh` |

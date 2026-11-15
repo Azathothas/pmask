@@ -17,6 +17,8 @@ _pmask() {
         '--no-exit-kill[do not set PTRACE_O_EXITKILL]' \
         '--no-exitkill[alias for --no-exit-kill]' \
         '--no-dumpable[set PR_SET_DUMPABLE=0]' \
+        '--allow-dumpable[keep the payload dumpable when a secret is delivered]' \
+        '--strict-exec[refuse exec shapes that cannot be redacted at entry]' \
         '--allow-foreign[run a 32-bit image unredacted]' \
         '--hide-pid[hide the tree from same-uid /proc readers]' \
         '--encrypt-memory[seal at-rest copies and use a secretmem block]' \

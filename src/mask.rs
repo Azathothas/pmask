@@ -172,6 +172,10 @@ pub struct Mask {
     env_overrides: Vec<(OsString, OsString)>,
     keep_env_names: Vec<Vec<u8>>,
     session_end: SessionEnd,
+    /// True when the caller named the session-end policy; a report run
+    /// that did not choose one gets `WaitTree` so the document is linked
+    /// only after the tree is gone.
+    session_end_explicit: bool,
     no_dumpable: bool,
     /// Keep the supervisor non-dumpable for the whole session.  The
     /// default is false: the supervisor scrubs its at-rest copies, stays
@@ -196,6 +200,8 @@ pub struct Mask {
     /// The per-session key, created by [`Mask::encrypt_memory`].
     session_key: Option<std::sync::Arc<crate::crypto::SessionKey>>,
     watch_rename: bool,
+    watch_rename_strict: bool,
+    strict_exec: bool,
     no_new_privs: bool,
     unshare: bool,
     /// The namespace set `--redact --isolate` asked the redaction child to
@@ -370,6 +376,7 @@ impl Mask {
             env_overrides: Vec::new(),
             keep_env_names: Vec::new(),
             session_end: SessionEnd::Detach,
+            session_end_explicit: false,
             no_dumpable: false,
             supervisor_non_dumpable: false,
             allow_foreign: false,
@@ -377,6 +384,8 @@ impl Mask {
             encrypt_memory: false,
             session_key: None,
             watch_rename: false,
+            watch_rename_strict: false,
+            strict_exec: false,
             no_new_privs: false,
             unshare: false,
             namespaces: None,
@@ -479,7 +488,28 @@ impl Mask {
     /// Default: `SessionEnd::Detach`.
     pub fn session_end(mut self, policy: SessionEnd) -> Mask {
         self.session_end = policy;
+        self.session_end_explicit = true;
         self
+    }
+
+    /// True when the caller chose the session-end policy explicitly.
+    pub fn session_end_explicit(&self) -> bool {
+        self.session_end_explicit
+    }
+
+    /// The session-end policy the run will use.
+    pub fn session_end_value(&self) -> SessionEnd {
+        self.session_end
+    }
+
+    /// True when `--exec-once` was requested.
+    pub fn exec_once_enabled(&self) -> bool {
+        self.rexec_exec_once
+    }
+
+    /// True when `--watch-rename` installed the unremovable prctl filter.
+    pub fn watch_rename_enabled(&self) -> bool {
+        self.watch_rename
     }
 
     /// Whether the payload's own `PR_GET_DUMPABLE` stays 1 under this
@@ -582,6 +612,25 @@ impl Mask {
     /// installed the child prints one line and runs without it.
     pub fn watch_rename(mut self) -> Mask {
         self.watch_rename = true;
+        self.no_new_privs = true;
+        self
+    }
+
+    /// `--strict-exec`: refuse an exec shape that cannot be redacted at
+    /// its entry stop (a `#!` script, a vfork child, a later exec under
+    /// `--no-dumpable`) instead of running it with the post-exec window.
+    pub fn strict_exec(mut self) -> Mask {
+        self.strict_exec = true;
+        self
+    }
+
+    /// `--watch-rename=strict`: also refuse a write to an already-open
+    /// `/proc/.../comm` descriptor.  The open-path guard cannot see a
+    /// symlink alias or a descriptor received over `SCM_RIGHTS`; the
+    /// write-fd guard resolves the actual target and catches both.
+    pub fn watch_rename_strict(mut self) -> Mask {
+        self.watch_rename = true;
+        self.watch_rename_strict = true;
         self.no_new_privs = true;
         self
     }
@@ -1050,6 +1099,8 @@ impl Mask {
             session_key,
             fast_exec,
             watch_prctl: self.watch_rename,
+            watch_strict: self.watch_rename_strict,
+            strict_exec: self.strict_exec,
             session_end: self.session_end,
             keep_env: self.keep_env_names.clone(),
             // Test hooks, read before the supervisor redacts its own
@@ -1163,7 +1214,7 @@ impl Mask {
 
         let no_new_privs = self.no_new_privs || self.watch_rename || cfg.fast_exec;
         let filter: Vec<libc::sock_filter> = if self.watch_rename {
-            crate::seccomp::prctl_watch_filter()
+            crate::seccomp::rename_watch_filter(self.watch_rename_strict)
         } else {
             Vec::new()
         };
@@ -1299,15 +1350,24 @@ impl Mask {
                         rexec_image = Some(image);
                     }
                     Err(e) => {
-                        // `--image` has no on-disk program to fall back
-                        // to, so a source that cannot be prepared is a
-                        // hard error.  A path passed to `--rexec` can
-                        // still run normally, with the refusal reported.
-                        if self.rexec_image.is_some() {
-                            return Err(e);
+                        // A refused image is fatal unless the caller
+                        // explicitly added the on-disk path as the last
+                        // resort.  Continuing with the file on disk keeps
+                        // the label but exposes the real `exe`, `maps`
+                        // and `map_files`, which is exactly what
+                        // `--rexec` exists to prevent; doing that on a
+                        // clean exit status is a silent posture change
+                        // (issue 013).
+                        let disk_ok = self.rexec_allow_disk
+                            && matches!(
+                                &self.rexec_image,
+                                None | Some(crate::rexec::Source::Path(_))
+                            );
+                        if !disk_ok {
+                            return Err(io::Error::new(e.kind(), format!("--rexec: {}", e)));
                         }
                         if !self.quiet {
-                            eprintln!("pmask: {}", e);
+                            eprintln!("pmask: {} (running the on-disk path by request)", e);
                         }
                     }
                 }
@@ -1827,6 +1887,27 @@ impl MaskedChild {
 /// (after it has restored its own `dumpable`) and then blocks on the read
 /// end until the tracer has seized it and writes one byte.  Only
 /// async-signal-safe calls happen in the child.
+/// Close the supervisor's copies of the image descriptors after the
+/// fork.  The child has its own copies for the exec, and a supervisor
+/// that keeps 200/210 open hands a same-uid reader the real binary
+/// through `/proc/<supervisor>/fd` for the life of the session (issue
+/// 004).  The carriers' paths stay; only the descriptors close.
+fn close_parent_image_fds(p: &mut Prepared) {
+    for arc in [&mut p.rexec_image, &mut p.rexec_temp]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(img) = std::sync::Arc::get_mut(arc) {
+            if img.fd >= 0 {
+                // SAFETY: the descriptor is the supervisor's copy and is
+                // not used after this point.
+                unsafe { libc::close(img.fd) };
+                img.fd = -1;
+            }
+        }
+    }
+}
+
 fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, RawFd)> {
     let mut rdy = [0 as libc::c_int; 2];
     let mut fds = [0 as libc::c_int; 2];
@@ -1954,6 +2035,7 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
             libc::close(report_w);
         }
     }
+    close_parent_image_fds(p);
     Ok((pid, rdy_r, go_w, report_r))
 }
 

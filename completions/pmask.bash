@@ -7,7 +7,7 @@ _pmask() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     opts="-l --label --label-empty --argv0 --comm --keep-env --env --env-file \
---args-from-fd --on-exit --no-follow --no-exit-kill --no-exitkill --no-dumpable \
+--args-from-fd --on-exit --no-follow --no-exit-kill --no-exitkill --no-dumpable --allow-dumpable --strict-exec \
 --allow-foreign --stealth --hide-pid --encrypt-memory --no-new-privs --no-exact --detach --watch-rename --rexec --unshare \
 --image --image-from-fd --exec-once --hugetlb --rexec-allow-disk \
 --scope-name --daemon --secret --socket --isolate --redact --no-redact \

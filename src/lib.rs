@@ -134,7 +134,7 @@ pub use userns::ChildNs;
 pub use arch::arch_name;
 pub use mask::{Mask, MaskedChild};
 pub use remote::MAX_HIDDEN;
-pub use selfmask::mask_self;
+pub use selfmask::{mask_self, restore_own_argv};
 pub use tracer::{ExitState, SessionEnd, SessionStats, TreeRegistry};
 
 /// Crate version, as reported by the CLI.

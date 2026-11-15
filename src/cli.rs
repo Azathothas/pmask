@@ -76,6 +76,9 @@ Options:
       --no-exit-kill   Let the tree survive if pmask dies (default: kill
                        the whole tree, so no half-redacted orphans remain).
       --no-dumpable    Set PR_SET_DUMPABLE=0 in every process of the tree.
+      --allow-dumpable Keep the payload dumpable when a secret is delivered.
+      --strict-exec    Refuse a script, vfork child or later exec that would
+                       only be redacted after its exec.
                        Same-uid observers cannot read environ, maps, exe or
                        fd.  Core dumps and debugger attach stop working.
       --allow-foreign  Run a 32-bit (foreign-ABI) image unredacted.  The
@@ -91,8 +94,10 @@ Options:
       --hide-pid       Hide the tree's pids from same-uid /proc readers.
                        Opt in, never the default.  Needs /proc mounted
                        with hidepid=invisible or hidepid=ptraceable; the
-                       run is refused on a weaker mount.  kill(0), pidfd
-                       and root still see the pid.  Refused with
+                       run is refused on a weaker mount.  cgroup.procs,
+                       cgroup.threads, kill(0), pidfd, sched_getaffinity,
+                       getpriority, prlimit and root still see the pid.
+                       Refused with
                        --no-follow or --detach, which take a process off
                        the path that re-applies the flag; a descendant
                        left running by --on-exit detach stays hidden only
@@ -344,6 +349,9 @@ pub struct Cli {
     /// `--no-dumpable`: the redaction mode makes `payload_dumpable` false;
     /// isolate and plain mode ignore it and leave the payload dumpable.
     pub no_dumpable: bool,
+    /// `--allow-dumpable`: keep the payload dumpable even when a secret
+    /// is delivered.  The same-uid fd and memory reads stay open.
+    pub allow_dumpable: bool,
     /// `--hide-pid`: hide the tree from same-uid `/proc` readers.  Needs
     /// a `hidepid=invisible` or `hidepid=ptraceable` mount.
     pub hide_pid: bool,
@@ -532,6 +540,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     let mut secret_burn = false;
     let mut secret_close_on_exec = false;
     let mut no_dumpable = false;
+    let mut allow_dumpable = false;
     let mut no_dumpable_hidepid = false;
     let mut hide_pid = false;
     let mut encrypt_memory = false;
@@ -738,6 +747,14 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     no_dumpable_hidepid = pmask::caps::proc_hidepid().hides_non_dumpable();
                     note_opt(&mut mask_opts, "--no-dumpable");
                 }
+                "allow-dumpable" => {
+                    allow_dumpable = true;
+                    note_opt(&mut mask_opts, "--allow-dumpable");
+                }
+                "strict-exec" => {
+                    mask = mask.strict_exec();
+                    note_opt(&mut mask_opts, "--strict-exec");
+                }
                 "allow-foreign" => {
                     mask = mask.allow_foreign(true);
                     note_opt(&mut mask_opts, "--allow-foreign");
@@ -783,7 +800,14 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--detach");
                 }
                 "watch-rename" => {
-                    mask = mask.watch_rename();
+                    match inline.as_deref() {
+                        None => mask = mask.watch_rename(),
+                        Some(b"strict") => mask = mask.watch_rename_strict(),
+                        Some(other) => die(&format!(
+                            "--watch-rename takes 'strict' or no value, not '{}'",
+                            String::from_utf8_lossy(other)
+                        )),
+                    }
                     note_opt(&mut mask_opts, "--watch-rename");
                 }
                 "rexec" => {
@@ -1183,6 +1207,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         secret_burn,
         secret_close_on_exec,
         no_dumpable,
+        allow_dumpable,
         hide_pid,
         encrypt_memory,
         report_json,

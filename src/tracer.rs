@@ -60,6 +60,11 @@ pub struct Config {
     /// (`SECCOMP_RET_TRACE`). The tracer redirects the rename to the label, or
     /// refuses the call when it cannot reach the label address.
     pub watch_prctl: bool,
+    /// `--watch-rename=strict`: the filter also traps the write family,
+    /// and the handler checks the descriptor target.
+    pub watch_strict: bool,
+    /// `--strict-exec`: refuse an exec that would take the post-exec path.
+    pub strict_exec: bool,
     /// What happens to the remaining tree when the master exits.
     pub session_end: SessionEnd,
     /// Environment variable names that stay visible in `environ` while
@@ -249,6 +254,11 @@ pub struct Tracee {
     pub ev_save: Option<Vec<u64>>,
     pub argv: Option<Vec<Vec<u8>>>,
     pub envp: Option<Vec<Vec<u8>>>,
+    /// Bytes the presentation environment will occupy for this exec.
+    /// The entry swap sizes the kernel's environment block from it so
+    /// the completion can write the presentation in the original stack
+    /// region.
+    pub pres_env_len: usize,
     /// `--encrypt-memory`: the saved argv/envp as ciphertext.  The
     /// plaintext fields above stay `None` while these are set.
     pub sealed_argv: Option<crate::crypto::EncryptedStrings>,
@@ -309,6 +319,7 @@ impl Tracee {
             ev_save: None,
             argv: None,
             envp: None,
+            pres_env_len: 0,
             sealed_argv: None,
             sealed_envp: None,
             fast_exec_failed: false,
@@ -334,6 +345,7 @@ impl Tracee {
         zeroize_strings(&mut self.envp);
         self.sealed_argv = None;
         self.sealed_envp = None;
+        self.pres_env_len = 0;
     }
 }
 
@@ -408,6 +420,78 @@ pub struct Tracer {
     /// Number of tracees whose real argv/environ are in this process's
     /// memory right now.  Zero at rest: the supervisor can be dumpable.
     pending_plaintext: usize,
+}
+
+/// True for a `/proc/.../comm` path.  The check is deliberately on the
+/// shape, not on a pid: `/proc/self/comm`, `/proc/thread-self/comm`,
+/// `/proc/<pid>/comm` and `/proc/<pid>/task/<tid>/comm` all end in
+/// `/comm` under `/proc/`.  A write to any of them changes a comm.
+fn join_open_path(base: Option<&[u8]>, path: &[u8]) -> Vec<u8> {
+    if path.first() == Some(&b'/') {
+        return path.to_vec();
+    }
+    match base {
+        Some(base) => {
+            let mut out = base.to_vec();
+            if out.last() != Some(&b'/') {
+                out.push(b'/');
+            }
+            out.extend_from_slice(path);
+            out
+        }
+        None => path.to_vec(),
+    }
+}
+
+/// The absolute path an `open`/`openat`/`openat2` will resolve, as far as
+/// the tracee's own cwd and descriptors reveal it.
+///
+/// A relative path is joined onto the directory the kernel will use: the
+/// `dirfd` the tracee named, or its cwd.  Without this, the path the trap
+/// reads is `comm`, which the shape test cannot place anywhere, so
+/// `openat(open("/proc/self", O_PATH), "comm", O_WRONLY)` changed the
+/// comm under `--watch-rename` (issue 71).  A symlinked component below
+/// that directory is still not resolved; `--watch-rename=strict` checks
+/// the descriptor target on the write instead, which catches it.
+///
+/// When the directory cannot be read -- the descriptor is not open, or
+/// the tracee is already gone -- the path is used as given, so the shape
+/// test decides on the relative name and a `comm` reached that way is
+/// allowed.  Only the confined shapes above are refused from this path;
+/// refusing every relative write-mode open would break ordinary output
+/// files.
+fn open_target_path(pid: libc::pid_t, dirfd: Option<u64>, path: &[u8]) -> Vec<u8> {
+    if path.first() == Some(&b'/') {
+        return path.to_vec();
+    }
+    let link = match dirfd {
+        Some(n) if n as i64 != libc::AT_FDCWD as i64 => {
+            format!("/proc/{}/fd/{}", pid, n as libc::c_int)
+        }
+        _ => format!("/proc/{}/cwd", pid),
+    };
+    let base = std::fs::read_link(&link).ok();
+    let base = base.as_ref().map(|b| {
+        use std::os::unix::ffi::OsStrExt;
+        b.as_os_str().as_bytes().to_vec()
+    });
+    join_open_path(base.as_deref(), path)
+}
+
+fn is_proc_comm_path(path: &[u8]) -> bool {
+    let p = path.strip_suffix(b"\0").unwrap_or(path);
+    p.starts_with(b"/proc/") && p.ends_with(b"/comm") && p.len() > b"/proc/".len() + b"/comm".len()
+}
+
+/// True when one `/proc/<pid>/fd` entry (`N:target`) names a descriptor
+/// that no ordinary program holds.
+///
+/// The test is on what the descriptor is, not on a string a caller chose:
+/// a sealed secret memfd is residue whatever name it carries, and a file
+/// whose path happens to contain `pmask` is not (issue 007).
+fn fd_is_residue(entry: &str) -> bool {
+    let target = entry.split_once(':').map(|(_, t)| t).unwrap_or(entry);
+    target.contains("/memfd:") || target.contains("(deleted)") || target.contains(".pmask-rexec-")
 }
 
 impl Tracer {
@@ -961,7 +1045,9 @@ impl Tracer {
         if std::fs::File::open(format!("{}/mem", base)).is_ok() {
             reasons.push("mem");
         }
-        if fd_names.iter().any(|f| f.contains("pmask")) {
+        // Classify by what the descriptor is, not by a cosmetic name.
+        let fd_residue = fd_names.iter().any(|f| fd_is_residue(f));
+        if fd_residue {
             reasons.push("fd");
         }
         if !reasons.is_empty() {
@@ -990,7 +1076,8 @@ impl Tracer {
         if self.cfg.hide_pid {
             eprintln!(
                 "pmask: hide-pid: the tree is non-dumpable; same-uid /proc readers cannot \
-                 see it (kill(0), pidfd_open and root still can)"
+                 see it.  cgroup.procs/cgroup.threads, kill(0), pidfd_open, \
+                 sched_getaffinity/getpriority/prlimit and root still can."
             );
         }
         if s.degraded > 0 {
@@ -1645,6 +1732,96 @@ impl Tracer {
                     self.resume_state(pid, 0);
                     return;
                 }
+                if self.cfg.watch_prctl {
+                    let args = unsafe { si.detail.seccomp.args };
+                    let open = match nr {
+                        arch::SYS_OPENAT => Some((args[1], args[2], false)),
+                        arch::SYS_OPEN => Some((args[0], args[1], false)),
+                        arch::SYS_OPENAT2 => Some((args[1], args[2], true)),
+                        _ => None,
+                    };
+                    if let Some((path_ptr, flags_or_ptr, is_openat2)) = open {
+                        let flags = if is_openat2 {
+                            let mut how = [0u8; 8];
+                            if crate::remote::read_mem(pid, flags_or_ptr, &mut how) == 8 {
+                                u64::from_le_bytes(how)
+                            } else {
+                                // A comm path whose flags cannot be read is
+                                // refused rather than allowed; any other
+                                // path is allowed.
+                                u64::MAX
+                            }
+                        } else {
+                            flags_or_ptr
+                        };
+                        let write = if is_openat2 && flags != u64::MAX {
+                            (flags & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64
+                        } else if is_openat2 {
+                            true
+                        } else {
+                            (flags & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64
+                        };
+                        if write {
+                            if let Some(path) = crate::remote::read_cstr(pid, path_ptr, 4096) {
+                                // `openat` may name the directory by
+                                // descriptor; resolve it before the shape
+                                // test, or `openat(dirfd, "comm")` walks
+                                // past it (issue 71).
+                                let dirfd = match nr {
+                                    arch::SYS_OPENAT | arch::SYS_OPENAT2 => Some(args[0]),
+                                    _ => None,
+                                };
+                                let path = open_target_path(pid, dirfd, &path);
+                                if is_proc_comm_path(&path) {
+                                    if let Ok(mut regs) = Regs::get(pid) {
+                                        regs.deny_syscall(libc::EACCES);
+                                        let _ = regs.put(pid);
+                                        self.stats.rename_refused += 1;
+                                        self.warn(format_args!(
+                                            "pid {}: a write-mode open of {} is refused; the \
+                                             label stays the comm",
+                                            pid,
+                                            String::from_utf8_lossy(&path)
+                                        ));
+                                    }
+                                    self.resume_state(pid, 0);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    if self.cfg.watch_strict {
+                        let is_write = matches!(
+                            nr,
+                            arch::SYS_WRITE
+                                | arch::SYS_WRITEV
+                                | arch::SYS_PWRITE64
+                                | arch::SYS_PWRITEV
+                                | arch::SYS_PWRITEV2
+                        );
+                        if is_write {
+                            let fd = args[0];
+                            let link = format!("/proc/{}/fd/{}", pid, fd);
+                            if let Ok(target) = std::fs::read_link(&link) {
+                                let target = target.to_string_lossy().into_owned();
+                                if is_proc_comm_path(target.as_bytes()) {
+                                    if let Ok(mut regs) = Regs::get(pid) {
+                                        regs.deny_syscall(libc::EACCES);
+                                        let _ = regs.put(pid);
+                                        self.stats.rename_refused += 1;
+                                        self.warn(format_args!(
+                                            "pid {}: a write to {} is refused; the label stays \
+                                             the comm",
+                                            pid, target
+                                        ));
+                                    }
+                                    self.resume_state(pid, 0);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 if self.cfg.fast_exec && arch::classify_exec(si.arch, nr) != ExecClass::NotExec {
                     // The seccomp stop can be the second report of an exec
                     // whose syscall-entry stop already ran the handler.
@@ -2180,5 +2357,81 @@ mod tests {
         // Unknown newcomer: the conservative depth the old code used.
         assert_eq!(newcomer_depth(None, None, None, None), 1);
         assert_eq!(newcomer_depth(Some(1), None, None, None), 1);
+    }
+}
+
+#[cfg(test)]
+mod comm_path_tests {
+    use super::{is_proc_comm_path, join_open_path};
+
+    #[test]
+    fn a_relative_path_is_joined_onto_the_directory() {
+        assert_eq!(
+            join_open_path(Some(b"/proc/1234"), b"comm"),
+            b"/proc/1234/comm"
+        );
+        assert_eq!(
+            join_open_path(Some(b"/proc/1234/"), b"comm"),
+            b"/proc/1234/comm"
+        );
+        assert_eq!(join_open_path(Some(b"/tmp"), b"comm"), b"/tmp/comm");
+        assert_eq!(join_open_path(None, b"comm"), b"comm");
+    }
+
+    #[test]
+    fn an_absolute_path_is_used_as_written() {
+        assert_eq!(
+            join_open_path(Some(b"/tmp"), b"/proc/self/comm"),
+            b"/proc/self/comm"
+        );
+    }
+
+    #[test]
+    fn a_resolved_dirfd_reaches_the_comm_shapes() {
+        // openat(open("/proc/self", O_PATH), "comm", O_WRONLY)
+        assert!(is_proc_comm_path(&join_open_path(
+            Some(b"/proc/1234"),
+            b"comm"
+        )));
+        // The same call with the cwd outside /proc is not a comm.
+        assert!(!is_proc_comm_path(&join_open_path(Some(b"/tmp"), b"comm")));
+    }
+
+    #[test]
+    fn the_shape_test_covers_every_proc_comm_spelling() {
+        assert!(is_proc_comm_path(b"/proc/self/comm"));
+        assert!(is_proc_comm_path(b"/proc/thread-self/comm"));
+        assert!(is_proc_comm_path(b"/proc/1234/comm"));
+        assert!(is_proc_comm_path(b"/proc/1234/task/1234/comm"));
+        assert!(!is_proc_comm_path(b"/proc/comm"));
+        assert!(!is_proc_comm_path(b"/proc/1234/comm/x"));
+        assert!(!is_proc_comm_path(b"/tmp/comm"));
+    }
+}
+
+#[cfg(test)]
+mod fd_tests {
+    use super::fd_is_residue;
+
+    #[test]
+    fn secret_memfd_is_residue_whatever_its_name() {
+        assert!(fd_is_residue("3:/memfd:custom-name (deleted)"));
+        assert!(fd_is_residue("3:/memfd:pmask-secret (deleted)"));
+        assert!(fd_is_residue("4:/memfd:custom-name"));
+    }
+
+    #[test]
+    fn an_ordinary_file_is_not_residue() {
+        assert!(!fd_is_residue("9:/tmp/qa70.abc/pmask-looking-file"));
+        assert!(!fd_is_residue("0:/dev/null"));
+        assert!(!fd_is_residue("1:/dev/pts/3"));
+        assert!(!fd_is_residue("5:/usr/bin/pmask"));
+        assert!(!fd_is_residue("9:not reachable"));
+    }
+
+    #[test]
+    fn deleted_and_rexec_targets_are_residue() {
+        assert!(fd_is_residue("6:/tmp/x (deleted)"));
+        assert!(fd_is_residue("7:/tmp/.pmask-rexec-1234"));
     }
 }

@@ -47,6 +47,10 @@ fn main() {
         "rawspawn" => rawspawn(rest),
         "ptraceprobe" => ptraceprobe(),
         "whoami" => whoami(),
+        "selfchild" => {
+            println!("SELF-SECOND");
+            0
+        }
         // The fault-hook cases exec this binary with its argv zeroed.
         // Behave like a program that ignores its argv: print the
         // environment and exit 0.

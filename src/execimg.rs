@@ -23,8 +23,8 @@
 
 use crate::arch::{self, Regs};
 use crate::remote::{
-    dup_strings, peek_word, poke_word, read_cstr, read_ptr_array, write_mem, zero_range, MAX_ARGV,
-    MAX_ENVV, MAX_HIDDEN, MAX_STRLEN,
+    dup_strings, peek_word, poke_word, read_cstr, read_mem, read_ptr_array, write_mem, zero_range,
+    MAX_ARGV, MAX_ENVV, MAX_HIDDEN, MAX_STRLEN,
 };
 use crate::tracer::{State, Tracer};
 use std::io;
@@ -96,22 +96,15 @@ struct RedactionBlock {
     /// actually mapped.
     base: u64,
     mapped: u64,
-    /// Bytes reserved at the front of the mapping for the presentation
-    /// area: the label, the NUL padding an audit reader walks, and the
-    /// `AT_EXECFN` copy at `env_end`.
-    pres: u64,
     /// First byte after the real strings: scratch for the
     /// `PR_SET_MM_MAP` struct and the auxiliary vector copy, so writing
     /// them can never land on the strings the payload reads.
     scratch: u64,
-    /// Address of the second label copy, which is what `AT_EXECFN` is
-    /// repointed at.
-    execfn: u64,
-    /// The compact kept-only environment span, when `--keep-env` names
-    /// variables.  The kernel's environment window points here, so
-    /// `/proc/<pid>/environ` reads the kept variables with no NUL
-    /// padding from the original extent.
-    env_window: Option<(u64, u64)>,
+    /// The bytes served as the presentation: label, NUL, environment,
+    /// label copy.  They are written into the original argv/environment
+    /// region of the stack when it is large enough, so `start_stack`, the
+    /// `[stack]` VMA and its `gd` flag stay ordinary.
+    pres_bytes: Vec<u8>,
 }
 
 /// Why a completion stop could not fully redact an exec.
@@ -197,6 +190,18 @@ impl Tracer {
         // post-exec path instead: the exec runs unswapped and the
         // completion redacts the new image.
         if self.table.get(&pid).map(|t| t.vfork_child).unwrap_or(false) {
+            if self.cfg.strict_exec {
+                self.warn(format_args!(
+                    "pid {}: --strict-exec refuses a vfork child, which can only be redacted \
+                     after its exec",
+                    pid
+                ));
+                // SAFETY: plain kill(2) of a stopped tracee.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                self.set_state(pid, State::Script);
+                self.resume(pid, 0, false);
+                return;
+            }
             vlog!(self, "pid {}: vfork child, post-exec mode", pid);
             if self.cfg.rexec_per_exec {
                 self.stats.vfork_cache_skipped += 1;
@@ -345,6 +350,18 @@ impl Tracer {
         }
 
         if !elf {
+            if self.cfg.strict_exec {
+                self.warn(format_args!(
+                    "pid {}: --strict-exec refuses a non-ELF image, which can only be redacted \
+                     after its exec",
+                    pid
+                ));
+                // SAFETY: plain kill(2) of a stopped tracee.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                self.set_state(pid, State::Script);
+                self.resume(pid, 0, false);
+                return;
+            }
             // script / unknown: the kernel needs the real argv to build
             // the interpreter line; redact after completion instead.
             vlog!(self, "pid {}: script/unknown exec, post-exec mode", pid);
@@ -366,6 +383,22 @@ impl Tracer {
                         rexec_redirect = Some((img, bytes));
                     }
                     Ok(None) => {}
+                    Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                        // The carrier the session promised was replaced or
+                        // edited.  Running the on-disk program instead
+                        // would be a silent posture change and could run
+                        // the attacker's bytes under the label; refuse
+                        // the exec.
+                        self.warn(format_args!(
+                            "pid {}: --exec-once carrier refused: {}; the exec is killed",
+                            pid, e
+                        ));
+                        // SAFETY: plain kill(2) of a stopped tracee.
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                        self.set_state(pid, State::Script);
+                        self.resume(pid, 0, false);
+                        return;
+                    }
                     Err(e) => self.warn(format_args!(
                         "pid {}: --exec-once image unavailable: {}",
                         pid, e
@@ -420,53 +453,6 @@ impl Tracer {
             }
         }
 
-        // rewrite the inline argv array: label, then empty strings
-        let mut nv = vec![empty_str; avn + 1];
-        if avn > 0 {
-            nv[0] = fake_str;
-        }
-        nv[avn] = 0;
-        let nv_bytes = ptr_words_bytes(&nv);
-        if write_mem(pid, av, &nv_bytes) != nv_bytes.len() as isize {
-            // A partial write leaves a mix: put the originals back.
-            if let Some(t) = self.table.get(&pid) {
-                if let Some(save) = &t.av_save {
-                    let _ = write_mem(pid, av, &ptr_words_bytes(save));
-                }
-            }
-            self.set_state(pid, State::Script);
-            self.resume_exec_entry(pid);
-            return;
-        }
-
-        // same treatment for the environment, except for variables the
-        // caller asked to keep visible
-        if self.cfg.redact_environ && evarr.is_some() {
-            let envp = self
-                .table
-                .get(&pid)
-                .and_then(|t| t.envp.clone())
-                .unwrap_or_default();
-            let orig_ptrs = evarr.clone().unwrap_or_default();
-            let mut ne = vec![empty_str; evn + 1];
-            for (i, slot) in ne.iter_mut().enumerate().take(evn) {
-                if self.is_kept_env(envp.get(i)) {
-                    *slot = orig_ptrs[i];
-                }
-            }
-            ne[evn] = 0;
-            let ne_bytes = ptr_words_bytes(&ne);
-            if write_mem(pid, ev, &ne_bytes) == ne_bytes.len() as isize {
-                if let Some(t) = self.table.get_mut(&pid) {
-                    t.env_swapped = true;
-                }
-            } else if let Some(t) = self.table.get(&pid) {
-                if let Some(save) = &t.ev_save {
-                    let _ = write_mem(pid, ev, &ptr_words_bytes(save));
-                }
-            }
-        }
-
         if let Some((image, _)) = rexec_redirect {
             let mut r = *regs;
             match flavor {
@@ -492,6 +478,111 @@ impl Tracer {
                     "pid {}: --exec-once redirect not applied: {}",
                     pid, e
                 )),
+            }
+        }
+
+        // `--no-exact` keeps the kernel's windows where they are, so the
+        // kernel must copy the real argv and environment and the
+        // completion stop overwrites that original extent in place.
+        // Swapping the inline arrays here would make the kernel build a
+        // shortened window (`label` plus one NUL per slot), which is a
+        // label-independent fingerprint and not the documented shape.
+        if !self.cfg.exact {
+            self.set_state(pid, State::Script);
+            self.resume_exec_entry(pid);
+            vlog!(
+                self,
+                "pid {}: --no-exact entry keeps the real extent; presentation at completion",
+                pid
+            );
+            return;
+        }
+
+        // rewrite the inline argv array: label, then empty strings
+        let mut nv = vec![empty_str; avn + 1];
+        if avn > 0 {
+            nv[0] = fake_str;
+        }
+        nv[avn] = 0;
+        let nv_bytes = ptr_words_bytes(&nv);
+        if write_mem(pid, av, &nv_bytes) != nv_bytes.len() as isize {
+            // A partial write leaves a mix: put the originals back.
+            if let Some(t) = self.table.get(&pid) {
+                if let Some(save) = &t.av_save {
+                    let _ = write_mem(pid, av, &ptr_words_bytes(save));
+                }
+            }
+            self.set_state(pid, State::Script);
+            self.resume_exec_entry(pid);
+            return;
+        }
+
+        // The environment array is sized for the presentation the
+        // completion stop will write back into the same stack region.
+        // The kernel copies whatever this array names; a single small
+        // decoy would leave no room for the label, the exposed
+        // environment, and the second `AT_EXECFN` copy, and the
+        // completion would have to move the windows to an anonymous
+        // mapping (which breaks `arg_start`/`[stack]`).  Each slot gets a
+        // filler string of the right length; the payload's own `envp`
+        // slots are repointed at the hidden real strings at completion.
+        let mut env_ptrs = vec![empty_str; evn + 1];
+        if self.cfg.exact && self.cfg.redact_environ && evn > 0 {
+            let pres_env = self.presentation_env_len(pid, evarr.as_deref().unwrap_or(&[]));
+            let region_min = fl + 1 + pres_env + fl;
+            let arg_block = fl + avn;
+            let env_block_min = region_min.saturating_sub(arg_block);
+            let synth_total = env_block_min.saturating_sub(evn);
+            let total = fl + 1 + synth_total + evn;
+            if total <= 4096 && base + total as u64 <= sp {
+                let mut buf = vec![0u8; total];
+                if fl > 1 {
+                    buf[..fl - 1].copy_from_slice(&label[..fl - 1]);
+                }
+                let mut off = fl + 1;
+                let mut used = 0usize;
+                for (i, ptr) in env_ptrs.iter_mut().enumerate().take(evn) {
+                    *ptr = base + off as u64;
+                    let len = if i + 1 == evn {
+                        synth_total.saturating_sub(used)
+                    } else {
+                        synth_total / evn
+                    };
+                    for b in buf.iter_mut().skip(off).take(len) {
+                        *b = b'A';
+                    }
+                    off += len;
+                    used += len;
+                    off += 1; // NUL
+                }
+                if write_mem(pid, base, &buf) != buf.len() as isize {
+                    // Fall back to the empty-string array if the filler
+                    // could not be written; the completion then uses the
+                    // anonymous block.
+                    env_ptrs = vec![empty_str; evn + 1];
+                }
+            }
+        }
+        if self.cfg.redact_environ && evarr.is_some() {
+            let orig_ptrs = evarr.clone().unwrap_or_default();
+            let mut ne = env_ptrs;
+            if !self.cfg.exact {
+                // `--no-exact` keeps the kernel's own extent and fills it
+                // at completion; the original pointers stay.
+                for (i, slot) in ne.iter_mut().enumerate().take(evn) {
+                    *slot = orig_ptrs[i];
+                }
+            }
+            ne[evn] = 0;
+            let ne_bytes = ptr_words_bytes(&ne);
+            if write_mem(pid, ev, &ne_bytes) == ne_bytes.len() as isize {
+                if let Some(t) = self.table.get_mut(&pid) {
+                    t.env_swapped = true;
+                }
+            } else if let Some(t) = self.table.get(&pid) {
+                if let Some(save) = &t.ev_save {
+                    let _ = write_mem(pid, ev, &ptr_words_bytes(save));
+                }
             }
         }
 
@@ -1028,7 +1119,7 @@ impl Tracer {
                     pid
                 );
             } else {
-                match self.relocate_windows(pid, &save, site, &block, argc, pending_stop) {
+                match self.relocate_windows(pid, &save, site, &block, auxv_at, pending_stop) {
                     WindowOutcome::Moved => flags.sized = true,
                     WindowOutcome::Refused(errno) => {
                         flags.sized_skipped = true;
@@ -1064,30 +1155,6 @@ impl Tracer {
                 tracee_gone = self.injection_failed(pid, "comm", &e);
             }
         }
-        if !tracee_gone && self.cfg.no_dumpable {
-            flags.dumpable_done = true;
-            let r2 = crate::inject::run_remote_syscall(
-                pid,
-                &save,
-                arch::SYS_PRCTL,
-                [libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
-                site,
-                pending_stop,
-            );
-            match r2 {
-                Ok(0) => {}
-                Ok(rv) => {
-                    flags.failed = true;
-                    flags.dumpable_failed = true;
-                    self.warn(format_args!("pid {}: PR_SET_DUMPABLE returned {}", pid, rv));
-                }
-                Err(e) => {
-                    flags.failed = true;
-                    flags.dumpable_failed = true;
-                    tracee_gone = self.injection_failed(pid, "dumpable", &e);
-                }
-            }
-        }
         if !tracee_gone && self.cfg.fast_exec {
             let installed = self
                 .table
@@ -1119,6 +1186,30 @@ impl Tracer {
                 }
             }
         }
+        if !tracee_gone && self.cfg.no_dumpable {
+            flags.dumpable_done = true;
+            let r2 = crate::inject::run_remote_syscall(
+                pid,
+                &save,
+                arch::SYS_PRCTL,
+                [libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+                site,
+                pending_stop,
+            );
+            match r2 {
+                Ok(0) => {}
+                Ok(rv) => {
+                    flags.failed = true;
+                    flags.dumpable_failed = true;
+                    self.warn(format_args!("pid {}: PR_SET_DUMPABLE returned {}", pid, rv));
+                }
+                Err(e) => {
+                    flags.failed = true;
+                    flags.dumpable_failed = true;
+                    tracee_gone = self.injection_failed(pid, "dumpable", &e);
+                }
+            }
+        }
         if !tracee_gone {
             // final registers: the pristine exec-exit state
             if orig_regs.put(pid).is_err() {
@@ -1146,10 +1237,9 @@ impl Tracer {
         regs: &Regs,
         site: u64,
         block: &RedactionBlock,
-        argc: usize,
+        auxv_at: u64,
         pending_stop: &mut Option<i32>,
     ) -> WindowOutcome {
-        let label = self.cfg.label.clone();
         let brk = match crate::inject::run_remote_syscall(
             pid,
             regs,
@@ -1166,37 +1256,70 @@ impl Tracer {
             return WindowOutcome::Refused(0);
         };
 
-        // The presentation is `label` then `argc` NULs, which satisfies
-        // both readers: cmdline stops at the first NUL, audit walks argc
-        // NUL-terminated strings and never faults.
-        let arg_end = block.base + label.len() as u64 + 1;
-        let audit_end = arg_end + argc as u64;
-        if audit_end > block.base + block.pres {
+        // The presentation is `label`, one NUL, the exposed environment,
+        // and the label copy `AT_EXECFN` points at.  It is written into
+        // the kernel-copied argv+environment region of the stack when that
+        // region is large enough, so `arg_start` stays inside the VMA the
+        // kernel labels `[stack]`, `start_stack` is untouched, and
+        // `arg_end == env_start` holds as it does for an ordinary exec.
+        //
+        // Three shapes need care.  `--keep-env` keeps the kernel's
+        // environment window, so the compact argv window is anchored just
+        // below `env_start` instead of moving both windows onto the block.
+        // A region too small for the full presentation is shortened to the
+        // decoy entries that fit (a kept variable must appear whole, so
+        // that case falls back).  Only when nothing plausible fits does
+        // the presentation move to the block, which is the extent shape
+        // `--no-exact` also has.
+        let label = self.cfg.label.clone();
+        let fl = label.len() as u64;
+        let Some(p) = plan_presentation(
+            &label,
+            self.cfg.redact_environ,
+            self.cfg.keep_env.is_empty(),
+            &fields,
+            block.base,
+            &block.pres_bytes,
+        ) else {
+            return WindowOutcome::Refused(0);
+        };
+        if write_mem(pid, p.base, &p.bytes) != p.bytes.len() as isize {
             return WindowOutcome::Refused(0);
         }
-        fields.arg_start = block.base;
-        fields.arg_end = arg_end;
-        if self.cfg.redact_environ {
-            if let Some((start, end)) = block.env_window {
-                // `--keep-env=NAME`: the window is the compact kept-only
-                // span in the block, not the original extent.
-                fields.env_start = start;
-                fields.env_end = end;
-            } else {
-                fields.env_start = audit_end;
-                fields.env_end = audit_end;
+        let arg_end = p.base + fl + 1;
+        let env_end = arg_end + p.env_len;
+        if !p.env_visible {
+            // The real strings above the presentation are unreachable
+            // through /proc, but they are still readable through
+            // `/proc/<pid>/mem`; removing them costs one write.  A block
+            // presentation leaves nothing to zero here: the visible spans
+            // were already overwritten by the label and decoy writes.
+            if p.label_copy && p.base == fields.arg_start {
+                let pres_end = env_end + fl;
+                if pres_end < fields.env_end {
+                    zero_range(pid, pres_end, fields.env_end);
+                }
             }
-        } else {
-            // `--keep-env` with no names keeps the whole environment
-            // visible; the window stays where the kernel put it.
-            let _ = audit_end;
+            fields.env_start = arg_end;
+            fields.env_end = env_end;
         }
-        // `start_stack` must be a real address above `mmap_min_addr` and
-        // is otherwise unconstrained; pointing it at the block keeps a
-        // `[stack]` entry in `/proc/<pid>/maps` exactly as before.
-        fields.start_stack = block.base;
+        fields.arg_start = p.base;
+        fields.arg_end = arg_end;
+        // `start_stack` keeps the value the kernel set at exec.  Pointing
+        // it at the block made `/proc/<pid>/stat` report
+        // `start_stack == arg_start` and moved the `[stack]` label onto a
+        // 16 kB anonymous mapping; the real stack is still mapped, so
+        // leaving the field alone restores both invariants.
 
-        let auxv = crate::presetmm::read_auxv(pid).map(|a| (a, block.execfn));
+        // `PR_SET_MM_MAP` rewrites `mm->saved_auxv`, which is what
+        // `/proc/<pid>/auxv` serves.  The payload's own `getauxval` reads
+        // the copy on its initial stack, which the kernel built from the
+        // real exec.  Rewrite that copy here, before the tracee resumes,
+        // so the in-process answer agrees with the served one.
+        let execfn = if p.label_copy { env_end } else { p.base };
+        patch_stack_execfn(pid, auxv_at, execfn);
+        let auxv = crate::presetmm::read_auxv(pid).map(|a| (a, execfn));
+
         let scratch = crate::presetmm::Scratch {
             site,
             addr: block.scratch,
@@ -1467,21 +1590,6 @@ impl Tracer {
         }
         let comm_off = need;
         need += comm.len() + 1;
-        // `--keep-env=NAME`: a compact copy of only the kept variables.
-        // The kernel's environment window points at this span, so
-        // `/proc/<pid>/environ` reads back as `KEEP=value\0` with no
-        // leading NUL padding from the original extent.
-        let kept_start = need;
-        let mut kept_pos = Vec::new();
-        if !self.cfg.keep_env.is_empty() {
-            for (i, s) in envp.iter().enumerate() {
-                if self.is_kept_env(Some(s)) {
-                    kept_pos.push((i, need));
-                    need += s.len() + 1;
-                }
-            }
-        }
-        let kept_end = need;
         if need > MAX_HIDDEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1499,9 +1607,6 @@ impl Tracer {
             buf[eoff[i]..eoff[i] + s.len()].copy_from_slice(s);
         }
         buf[comm_off..comm_off + comm.len()].copy_from_slice(&comm);
-        for (i, off) in &kept_pos {
-            buf[*off..*off + envp[*i].len()].copy_from_slice(&envp[*i]);
-        }
 
         // The strings cannot be parked in the tracee stack: the block
         // would sit below `SP - 4096`, and the tracee's own runtime
@@ -1518,23 +1623,29 @@ impl Tracer {
         // NUL-terminated strings from `arg_start`, so one block serves
         // both readers.
         let label = self.cfg.label.clone();
-        let pres = label_presentation_len(label.len(), argv.len());
+        // The environment window starts at `arg_end` and holds one
+        // complete entry per name: the `--keep-env` variables when they
+        // were named, otherwise a fixed plausible decoy.  A real process
+        // has `arg_end == env_start`, a non-zero environment span, and no
+        // repetition, so the exact block keeps all three.
+        let env_pres = self.presentation_env(envp);
+        let fl = label.len();
+        let env_off = fl + 1;
+        let execfn = env_off + env_pres.len();
+        let mut pres_bytes = vec![0u8; execfn + fl];
+        pres_bytes[..fl].copy_from_slice(&label);
+        pres_bytes[env_off..env_off + env_pres.len()].copy_from_slice(&env_pres);
+        pres_bytes[execfn..execfn + fl].copy_from_slice(&label);
+        let pres = ((execfn + fl + 15) & !15) as u64;
         let strings = pres as usize + total;
         let map_len = (strings + SCRATCH_ROOM + 15) & !15usize;
         let site = crate::inject::find_syscall_site(pid, None, self.fault_no_vdso)
             .ok_or_else(|| io::Error::other("no syscall instruction for mmap"))?;
         let (base, _secretmem) = self.map_block(pid, map_len, site, pending_stop)?;
-        let mut front = vec![0u8; pres as usize];
-        let fl = label.len();
-        front[..fl].copy_from_slice(&label);
-        let execfn = 1 + fl + argv.len();
-        front[execfn..execfn + fl].copy_from_slice(&label);
-        write_block(pid, base, &front)?;
         write_block(pid, base + pres, &buf)?;
         // The tracee has its copy; the supervisor's staging buffer must
         // not keep the real strings.
         buf.zeroize();
-        front.zeroize();
         vlog!(
             self,
             "pid {}: hidden block in an anonymous mapping at {:#x} (presentation {} bytes)",
@@ -1547,21 +1658,56 @@ impl Tracer {
             comm_addr: base + pres + comm_off as u64,
             base,
             mapped: map_len as u64,
-            pres,
             scratch: base + pres + total as u64,
-            execfn: base + execfn as u64,
-            env_window: if kept_pos.is_empty() {
-                None
-            } else {
-                Some((
-                    base + pres + kept_start as u64,
-                    base + pres + kept_end as u64,
-                ))
-            },
+            pres_bytes,
         })
     }
 
-    /// Is the ELF image at `path` 32-bit (`EI_CLASS == ELFCLASS32`)?
+    /// The bytes `/proc/<pid>/environ` will serve: the `--keep-env`
+    /// entries when they were named, otherwise the fixed decoy.  Each
+    /// name appears once and every entry is complete.
+    fn presentation_env(&self, envp: &[Vec<u8>]) -> Vec<u8> {
+        if self.cfg.keep_env.is_empty() {
+            return DECOY_ENV.to_vec();
+        }
+        let mut v = Vec::new();
+        for s in envp {
+            if self.is_kept_env(Some(s)) && v.len() + s.len() < MAX_PRES_ENV {
+                v.extend_from_slice(s);
+                v.push(0);
+            }
+        }
+        if v.is_empty() {
+            DECOY_ENV.to_vec()
+        } else {
+            v
+        }
+    }
+
+    /// Length of [`Self::presentation_env`] for an exec whose environment
+    /// pointers are still in the tracee: read only the kept names, or
+    /// return the constant decoy length.
+    fn presentation_env_len(&self, pid: libc::pid_t, ptrs: &[u64]) -> usize {
+        if self.cfg.keep_env.is_empty() {
+            return DECOY_ENV.len();
+        }
+        let mut n = 0usize;
+        for &p in ptrs {
+            let Some(s) = read_cstr(pid, p, MAX_STRLEN) else {
+                continue;
+            };
+            if self.is_kept_env(Some(&s)) && n + s.len() < MAX_PRES_ENV {
+                n += s.len() + 1;
+            }
+        }
+        if n == 0 {
+            DECOY_ENV.len()
+        } else {
+            n
+        }
+    }
+
+    /// Is the ELF image at `path` 32-bit (`EI_CLASS == ELFCLASS32`)?    /// Is the ELF image at `path` 32-bit (`EI_CLASS == ELFCLASS32`)?
     fn elf_is_32(&self, pid: libc::pid_t, path: &[u8]) -> bool {
         let os = std::ffi::OsStr::from_bytes(path);
         let mut candidates: Vec<std::path::PathBuf> = Vec::with_capacity(2);
@@ -1701,6 +1847,19 @@ fn tracee_open_path(pid: libc::pid_t, path: &[u8]) -> io::Result<std::path::Path
         ));
     }
     if path[0] == b'/' {
+        // `/proc/self` and `/proc/thread-self` are resolved by the process
+        // that opens them, so prefixing them with `/proc/<pid>/root`
+        // makes them name the *tracer*: a payload that execs
+        // `/proc/self/exe` under `--exec-once` then caches the pmask
+        // binary (issue 006).  Rewrite the magic prefix to the tracee's
+        // pid before resolving anything.
+        for magic in [b"/proc/self/".as_slice(), b"/proc/thread-self/".as_slice()] {
+            if let Some(rest) = path.strip_prefix(magic) {
+                let mut p = std::path::PathBuf::from(format!("/proc/{}/", pid));
+                p.push(std::ffi::OsStr::from_bytes(rest));
+                return Ok(p);
+            }
+        }
         let rel: Vec<u8> = path.iter().skip_while(|&&b| b == b'/').copied().collect();
         let mut p = std::path::PathBuf::from(format!("/proc/{}/root", pid));
         p.push(std::ffi::OsStr::from_bytes(&rel));
@@ -1811,11 +1970,154 @@ fn fill_arg_window(pid: libc::pid_t, lo: u64, hi: u64, label: &[u8]) {
     let _ = write_mem(pid, hi - 1, &[0u8]);
 }
 
+/// Rewrite `AT_EXECFN` in the tracee's own stack auxiliary vector.
+///
+/// The kernel copies the auxiliary vector from the old stack to the new
+/// one at exec, and the payload's `getauxval` reads that copy.  A tracer
+/// stopped at `PTRACE_EVENT_EXEC` runs before the dynamic loader, so the
+/// rewrite is what the payload sees.  A missing entry or an unreadable
+/// stack is not an error: `/proc/<pid>/auxv` is still consistent.
+fn patch_stack_execfn(pid: libc::pid_t, auxv_at: u64, value: u64) {
+    const AT_EXECFN: u64 = 31;
+    // 256 pairs is far beyond any real vector and bounds a wild walk.
+    for i in 0..256u64 {
+        let addr = auxv_at + i * 16;
+        let mut pair = [0u8; 16];
+        if read_mem(pid, addr, &mut pair) != pair.len() as isize {
+            return;
+        }
+        let key = u64::from_le_bytes(match pair[..8].try_into() {
+            Ok(k) => k,
+            Err(_) => return,
+        });
+        if key == 0 {
+            return;
+        }
+        if key == AT_EXECFN {
+            let _ = write_mem(pid, addr + 8, &value.to_le_bytes());
+            return;
+        }
+    }
+}
+
+/// Where the presentation goes, and what it says.
+struct Presentation {
+    /// Address the bytes are written to.
+    base: u64,
+    /// `label`, one NUL, the environment window, the `AT_EXECFN` copy.
+    bytes: Vec<u8>,
+    /// Bytes of environment window after the label (`0` when the kernel's
+    /// environment window is left alone).
+    env_len: u64,
+    /// The kernel's environment window stays visible (`--keep-env`).
+    env_visible: bool,
+    /// `bytes` ends with the `AT_EXECFN` label copy.
+    label_copy: bool,
+}
+
+/// Decide where the presentation goes and what it contains.  `None` when
+/// the kernel reports no argv+environment region to write into.
+fn plan_presentation(
+    label: &[u8],
+    redact_environ: bool,
+    keep_env_empty: bool,
+    fields: &crate::presetmm::MmFields,
+    block_base: u64,
+    pres_bytes: &[u8],
+) -> Option<Presentation> {
+    let fl = label.len() as u64;
+    let full = pres_bytes.len() as u64;
+    let full_env = full - (fl + 1) - fl;
+    let region = if fields.arg_start != 0 && fields.env_end > fields.arg_start {
+        fields.env_end - fields.arg_start
+    } else {
+        0
+    };
+    let block = |env_visible: bool| Presentation {
+        base: block_base,
+        bytes: pres_bytes.to_vec(),
+        env_len: full_env,
+        env_visible,
+        label_copy: true,
+    };
+    if region == 0 {
+        return None;
+    }
+    if !redact_environ {
+        // The environment stays the kernel's.  Anchor the compact argv
+        // window just below it, so `arg_end == env_start` holds and both
+        // fields stay inside `[stack]`.
+        if region > fl && fields.env_start > fields.arg_start + fl {
+            let mut bytes = Vec::with_capacity((fl + 1) as usize);
+            bytes.extend_from_slice(label);
+            bytes.push(0);
+            return Some(Presentation {
+                base: fields.env_start - (fl + 1),
+                bytes,
+                env_len: 0,
+                env_visible: true,
+                label_copy: false,
+            });
+        }
+        return Some(block(true));
+    }
+    if region >= full {
+        return Some(Presentation {
+            base: fields.arg_start,
+            bytes: pres_bytes.to_vec(),
+            env_len: full_env,
+            env_visible: false,
+            label_copy: true,
+        });
+    }
+    if !keep_env_empty {
+        // A `--keep-env=NAME` value must appear complete, so only the
+        // fixed decoy may be shortened.
+        return Some(block(false));
+    }
+    let env = shrink_env(region.saturating_sub(2 * fl + 1));
+    if env.is_empty() {
+        return Some(block(false));
+    }
+    let mut bytes = Vec::with_capacity((fl + 1 + env.len() as u64 + fl) as usize);
+    bytes.extend_from_slice(label);
+    bytes.push(0);
+    bytes.extend_from_slice(&env);
+    bytes.extend_from_slice(label);
+    Some(Presentation {
+        base: fields.arg_start,
+        bytes,
+        env_len: env.len() as u64,
+        env_visible: false,
+        label_copy: true,
+    })
+}
+
+/// The decoy entries that fit `room` bytes, each complete and
+/// NUL-terminated, in the order they appear in [`DECOY_ENV`].  An entry
+/// too large for the remaining space is skipped, so a smaller one still
+/// fills the window.  An empty result means no complete entry fits and
+/// the caller falls back to the block.
+fn shrink_env(room: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    if room == 0 {
+        return out;
+    }
+    for entry in DECOY_ENV.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        if out.len() as u64 + entry.len() as u64 + 1 > room {
+            continue;
+        }
+        out.extend_from_slice(entry);
+        out.push(0);
+    }
+    out
+}
+
 /// Write the presentation of the environment window when the kernel
-/// keeps the original extent.  The kept variables (if any) come first,
-/// then a fixed decoy environment; the last byte is NUL.  The payload's
-/// `envp` points at the hidden block, so this is only what `/proc` and a
-/// `/proc/self/environ` reader see.
+/// keeps the original extent.  Each kept variable appears once, then
+/// each decoy entry once; the rest of the original extent is NUL.  A
+/// repeated `PATH=` run has no ordinary analogue, so the window never
+/// repeats an entry.
 fn fill_env_window(pid: libc::pid_t, lo: u64, hi: u64, kept: &[&[u8]]) {
     let span = (hi - lo) as usize;
     if span == 0 {
@@ -1824,22 +2126,19 @@ fn fill_env_window(pid: libc::pid_t, lo: u64, hi: u64, kept: &[&[u8]]) {
     let mut buf = vec![0u8; span];
     let mut off = 0usize;
     for s in kept {
-        if off + s.len() + 1 > span {
+        if off + s.len() + 1 > span - 1 {
             break;
         }
         buf[off..off + s.len()].copy_from_slice(s);
         off += s.len() + 1;
     }
-    const DECOY: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0\
-HOME=/tmp\0LANG=C.UTF-8\0";
-    let mut di = 0usize;
-    while off < span - 1 {
-        let b = DECOY[di % DECOY.len()];
-        buf[off] = b;
-        off += 1;
-        di += 1;
+    for entry in DECOY_ENV.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        if off + entry.len() + 1 > span - 1 {
+            break;
+        }
+        buf[off..off + entry.len()].copy_from_slice(entry);
+        off += entry.len() + 1;
     }
-    buf[span - 1] = 0;
     let _ = write_mem(pid, lo, &buf);
 }
 
@@ -1848,19 +2147,15 @@ HOME=/tmp\0LANG=C.UTF-8\0";
 /// of 16 bytes.
 const SCRATCH_ROOM: usize = 2048;
 
-/// Size of the presentation area at the front of a redaction block.
-///
-/// Layout: the label, its NUL, `argc` NULs, then a second copy of the
-/// label.  `get_mm_cmdline()` stops at the first NUL and
-/// `audit_log_execve_info()` walks `argc` NUL-terminated strings from
-/// `arg_start`, so it finds the label and `argc - 1` empty strings and
-/// never reads past the block.  The second copy sits at `env_end`, which
-/// is where the kernel puts the executed file name on a normal exec, and
-/// `AT_EXECFN` is repointed at it: `/proc/<pid>/auxv` then reports the
-/// label and keeps the `AT_EXECFN == env_end` relation a normal exec has.
-fn label_presentation_len(label_len: usize, argc: usize) -> u64 {
-    (2 * label_len + 2 + argc) as u64
-}
+/// The fixed environment exposed in exact mode when the caller did not
+/// name variables to keep.  It is complete, plausible and contains no
+/// value from the real environment.
+const DECOY_ENV: &[u8] = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0\
+HOME=/root\0LANG=C.UTF-8\0TERM=xterm-256color\0";
+
+/// Upper bound on the exposed `--keep-env` span.  A caller can name many
+/// variables; the presentation area is bounded so the block stays small.
+const MAX_PRES_ENV: usize = 4096;
 
 /// Absolute addresses of the argv and envp strings in a block at `base`.
 fn offsets_to_addrs(aoff: &[usize], eoff: &[usize], base: u64) -> Vec<u64> {
@@ -1879,4 +2174,178 @@ fn ptr_words_bytes(v: &[u64]) -> Vec<u8> {
         out.extend_from_slice(&w.to_le_bytes());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fields(
+        arg_start: u64,
+        arg_end: u64,
+        env_start: u64,
+        env_end: u64,
+    ) -> crate::presetmm::MmFields {
+        crate::presetmm::MmFields {
+            start_code: 0x1000,
+            end_code: 0x2000,
+            start_data: 0x3000,
+            end_data: 0x4000,
+            start_brk: 0x5000,
+            brk: 0x6000,
+            start_stack: 0x7fff_0000,
+            arg_start,
+            arg_end,
+            env_start,
+            env_end,
+        }
+    }
+
+    fn pres_bytes(label: &[u8]) -> Vec<u8> {
+        let mut v = label.to_vec();
+        v.push(0);
+        v.extend_from_slice(DECOY_ENV);
+        v.extend_from_slice(label);
+        v
+    }
+
+    fn entries(buf: &[u8]) -> Vec<&[u8]> {
+        assert_eq!(
+            *buf.last().expect("non-empty window"),
+            0,
+            "window ends with NUL"
+        );
+        buf.split(|b| *b == 0).filter(|e| !e.is_empty()).collect()
+    }
+
+    #[test]
+    fn fitting_presentation_stays_in_the_stack() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let region = pres.len() as u64 + 40;
+        let f = fields(0x7ffd_0000, 0x7ffd_0010, 0x7ffd_0010, 0x7ffd_0000 + region);
+        let p = plan_presentation(label, true, true, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base, f.arg_start, "the presentation stays in the stack");
+        assert!(!p.env_visible);
+        assert!(p.label_copy, "AT_EXECFN points at the trailing copy");
+        assert_eq!(p.env_len, DECOY_ENV.len() as u64);
+        assert_eq!(
+            p.bytes.len() as u64,
+            (label.len() as u64 + 1) + p.env_len + label.len() as u64,
+            "label, NUL, environment window, label copy"
+        );
+        assert!(p.bytes.ends_with(label));
+        assert!(p.bytes.len() as u64 <= region, "fits the kernel's region");
+    }
+
+    /// `--keep-env`: the kernel's environment window is left alone, so the
+    /// compact argv window is anchored directly below `env_start`.  The
+    /// caller then sets `arg_end == env_start`, which is the relation an
+    /// ordinary exec has.
+    #[test]
+    fn keep_env_anchors_argv_at_env_start() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let f = fields(0x7ffd_0000, 0x7ffd_0100, 0x7ffd_0100, 0x7ffd_0800);
+        let p = plan_presentation(label, false, true, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base + label.len() as u64 + 1, f.env_start);
+        assert_eq!(p.base, f.env_start - (label.len() as u64 + 1));
+        assert!(p.base >= f.arg_start, "stays inside the region");
+        let mut want = label.to_vec();
+        want.push(0);
+        assert_eq!(p.bytes, want);
+        assert!(p.env_visible);
+        assert!(!p.label_copy, "AT_EXECFN points at the argv window itself");
+        assert_eq!(p.env_len, 0);
+    }
+
+    /// A region too small for the full presentation keeps the label and the
+    /// decoy entries that fit whole.  `arg_end == env_start` still holds and
+    /// the window never repeats an entry.
+    #[test]
+    fn small_region_shrinks_to_complete_decoy_entries() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let region = 40u64;
+        let f = fields(0x7ffd_0000, 0x7ffd_0010, 0x7ffd_0010, 0x7ffd_0000 + region);
+        let p = plan_presentation(label, true, true, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base, f.arg_start);
+        assert!(p.bytes.len() as u64 <= region);
+        assert!(!p.env_visible);
+        assert!(p.label_copy);
+        assert!(p.env_len > 0, "the environment window is not empty");
+        assert_eq!(
+            p.bytes.len() as u64,
+            (label.len() as u64 + 1) + p.env_len + label.len() as u64
+        );
+        let start = label.len() + 1;
+        let end = start + p.env_len as usize;
+        let env = entries(&p.bytes[start..end]);
+        assert!(!env.is_empty());
+        let mut seen: Vec<&[u8]> = Vec::new();
+        for e in &env {
+            assert!(!seen.contains(e), "no repeated entry");
+            seen.push(e);
+        }
+    }
+
+    /// Nothing plausible fits: the presentation moves to the block, which
+    /// is the extent shape `--no-exact` also has.
+    #[test]
+    fn tiny_region_falls_back_to_the_block() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let f = fields(0x7ffd_0000, 0x7ffd_0004, 0x7ffd_0004, 0x7ffd_0008);
+        let p = plan_presentation(label, true, true, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base, 0x1000_0000);
+        assert_eq!(p.bytes, pres);
+        assert!(!p.env_visible);
+    }
+
+    /// A kept variable must appear whole, so `--keep-env=NAME` never
+    /// shortens the window.
+    #[test]
+    fn kept_variable_is_never_shortened() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let f = fields(0x7ffd_0000, 0x7ffd_0010, 0x7ffd_0010, 0x7ffd_0028);
+        let p = plan_presentation(label, true, false, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base, 0x1000_0000);
+        assert_eq!(p.bytes, pres);
+    }
+
+    /// `--keep-env` with a region too small for the label also falls back,
+    /// so the environment stays the kernel's either way.
+    #[test]
+    fn keep_env_tiny_region_falls_back_but_keeps_environ() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let f = fields(0x7ffd_0000, 0x7ffd_0002, 0x7ffd_0002, 0x7ffd_0004);
+        let p = plan_presentation(label, false, true, &f, 0x1000_0000, &pres).expect("plan");
+        assert_eq!(p.base, 0x1000_0000);
+        assert!(p.env_visible);
+    }
+
+    #[test]
+    fn hidden_fields_have_no_plan() {
+        let label = b"pmask";
+        let pres = pres_bytes(label);
+        let f = fields(0, 0, 0, 0);
+        assert!(plan_presentation(label, true, true, &f, 0x1000_0000, &pres).is_none());
+    }
+
+    #[test]
+    fn shrink_env_keeps_entries_whole() {
+        assert!(shrink_env(0).is_empty());
+        let out = shrink_env(24);
+        assert!(!out.is_empty());
+        assert!(out.len() as u64 <= 24);
+        for e in entries(&out) {
+            assert!(out.windows(e.len()).any(|w| w == e));
+        }
+        // Every entry came from the decoy list.
+        for e in entries(&out) {
+            assert!(DECOY_ENV.split(|b| *b == 0).any(|d| d == e));
+        }
+    }
 }

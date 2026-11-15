@@ -68,6 +68,7 @@ fn jump_eq(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
 /// Layout (index: instruction):
 /// 0 load arch, 1 jump if arch matches, 2 load nr, 3 jump if nr is prctl,
 /// 4 load args[0], 5 jump if PR_SET_NAME, 6 return TRACE, 7 return ALLOW.
+#[allow(dead_code)]
 pub fn prctl_watch_filter() -> Vec<libc::sock_filter> {
     let prctl_nr = libc::SYS_prctl as u32;
     vec![
@@ -83,6 +84,60 @@ pub fn prctl_watch_filter() -> Vec<libc::sock_filter> {
         stmt(BPF_RET_K, SECCOMP_RET_TRACE | TRACE_DATA),
         stmt(BPF_RET_K, SECCOMP_RET_ALLOW),
     ]
+}
+
+/// Build the filter `--watch-rename` installs: `prctl(PR_SET_NAME)` plus
+/// the open family, so the tracer can refuse a write-mode open of
+/// `/proc/.../comm` (the kernel's `comm_write` path never calls `prctl`,
+/// so the old filter missed it).
+///
+/// `strict` additionally traps the write family.  The open path is
+/// alias-prone (a symlink or a passed descriptor names no `comm`), so
+/// strict checks the descriptor target instead; it costs one stop per
+/// write and is therefore its own mode.
+pub fn rename_watch_filter(strict: bool) -> Vec<libc::sock_filter> {
+    let mut nrs = vec![
+        libc::SYS_prctl as u32,
+        crate::arch::SYS_OPEN as u32,
+        crate::arch::SYS_OPENAT as u32,
+        crate::arch::SYS_OPENAT2 as u32,
+    ];
+    if strict {
+        for nr in [
+            crate::arch::SYS_WRITE,
+            crate::arch::SYS_WRITEV,
+            crate::arch::SYS_PWRITE64,
+            crate::arch::SYS_PWRITEV,
+            crate::arch::SYS_PWRITEV2,
+        ] {
+            let nr = nr as u32;
+            if !nrs.contains(&nr) {
+                nrs.push(nr);
+            }
+        }
+    }
+    // Layout: 0 arch, 1 arch check, 2 nr, one compare per syscall, then
+    // ALLOW and TRACE.  Every compare jumps forward to TRACE; a miss
+    // falls through to the next compare and finally to ALLOW.
+    let n = nrs.len();
+    // Indices: 0 arch, 1 arch check, 2 nr, 3..3+n compares, then ALLOW
+    // and TRACE.
+    let allow_idx = 3 + n;
+    let trace_idx = allow_idx + 1;
+    let mut prog = vec![
+        stmt(BPF_LD_W_ABS, OFFSET_ARCH),
+        jump_eq(AUDIT_ARCH_CURRENT, 0, (allow_idx - 2) as u8), // mismatch -> allow
+        stmt(BPF_LD_W_ABS, OFFSET_NR),
+    ];
+    for (i, nr) in nrs.iter().enumerate() {
+        let at = 3 + i;
+        let jt = (trace_idx - (at + 1)) as u8;
+        prog.push(jump_eq(*nr, jt, 0));
+    }
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_TRACE | TRACE_DATA));
+    debug_assert_eq!(prog.len(), trace_idx + 1);
+    prog
 }
 
 /// Build the classic BPF program that traps only `execve` and `execveat`.
@@ -182,6 +237,36 @@ mod tests {
                 other => panic!("unsupported instruction code {:#x}", other),
             }
         }
+    }
+
+    #[test]
+    fn rename_filter_traces_prctl_and_open_but_not_unrelated_calls() {
+        let prog = rename_watch_filter(false);
+        for nr in [
+            libc::SYS_prctl as u32,
+            crate::arch::SYS_OPENAT as u32,
+            crate::arch::SYS_OPENAT2 as u32,
+        ] {
+            let d = data(nr, AUDIT_ARCH_CURRENT, 0);
+            assert_eq!(
+                run(&prog, &d),
+                SECCOMP_RET_TRACE | TRACE_DATA,
+                "nr {} must be traced",
+                nr
+            );
+        }
+        let d = data(libc::SYS_read as u32, AUDIT_ARCH_CURRENT, 0);
+        assert_eq!(run(&prog, &d), SECCOMP_RET_ALLOW);
+    }
+
+    #[test]
+    fn strict_filter_traces_writes_and_the_plain_filter_does_not() {
+        let d = data(crate::arch::SYS_WRITE as u32, AUDIT_ARCH_CURRENT, 0);
+        assert_eq!(
+            run(&rename_watch_filter(true), &d),
+            SECCOMP_RET_TRACE | TRACE_DATA
+        );
+        assert_eq!(run(&rename_watch_filter(false), &d), SECCOMP_RET_ALLOW);
     }
 
     // Mutation control: changing `jump_eq(PR_SET_NAME, 0, 1)` to compare

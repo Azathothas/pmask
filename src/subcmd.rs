@@ -692,6 +692,10 @@ fn open_or_create(path: &Path, pp: &Passphrase) -> io::Result<Store> {
 }
 
 fn resolve_passphrase(explicit: Option<&Path>, creating: bool) -> io::Result<Passphrase> {
+    // The passphrase is a secret, and its source can block (a FIFO, a
+    // terminal, a slow file).  Close the same-uid memory read before the
+    // first read, not after the value is in this process (issue 005).
+    let _ = crate::mem::harden_self();
     if let Some(p) = explicit {
         return Passphrase::from_file(p);
     }

@@ -114,6 +114,14 @@ mod imp {
     pub const SYS_BRK: u64 = 12;
     pub const SYS_CLOSE: u64 = 3;
     pub const SYS_MADVISE: u64 = 28;
+    pub const SYS_OPEN: u64 = 2;
+    pub const SYS_OPENAT: u64 = 257;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_WRITE: u64 = 1;
+    pub const SYS_WRITEV: u64 = 20;
+    pub const SYS_PWRITE64: u64 = 18;
+    pub const SYS_PWRITEV: u64 = 296;
+    pub const SYS_PWRITEV2: u64 = 328;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee
@@ -200,6 +208,11 @@ mod imp {
                 self.set_arg(i + 1, *a);
             }
         }
+        /// Skip the syscall and return `-errno` without executing it.
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.raw.orig_rax = u64::MAX;
+            self.raw.rax = (-(errno as i64)) as u64;
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.rip = ip;
         }
@@ -227,6 +240,14 @@ mod imp {
     pub const SYS_BRK: u64 = 45;
     pub const SYS_CLOSE: u64 = 6;
     pub const SYS_MADVISE: u64 = 219;
+    pub const SYS_OPEN: u64 = 5;
+    pub const SYS_OPENAT: u64 = 295;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_WRITE: u64 = 4;
+    pub const SYS_WRITEV: u64 = 146;
+    pub const SYS_PWRITE64: u64 = 181;
+    pub const SYS_PWRITEV: u64 = 334;
+    pub const SYS_PWRITEV2: u64 = 379;
 
     /// `struct user_regs_struct` of i386, all fields 32 bits.
     #[repr(C)]
@@ -296,6 +317,11 @@ mod imp {
                 self.set_arg(i + 1, *a);
             }
         }
+        /// Skip the syscall and return `-errno` without executing it.
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.raw.orig_eax = u32::MAX;
+            self.raw.eax = (-errno) as u32;
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.eip = ip as u32;
         }
@@ -318,6 +344,15 @@ mod imp {
     pub const SYS_BRK: u64 = 214;
     pub const SYS_CLOSE: u64 = 57;
     pub const SYS_MADVISE: u64 = 233;
+    /// aarch64 has no `open`; `u64::MAX` never matches a real call.
+    pub const SYS_OPEN: u64 = u64::MAX;
+    pub const SYS_OPENAT: u64 = 56;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_WRITE: u64 = 64;
+    pub const SYS_WRITEV: u64 = 66;
+    pub const SYS_PWRITE64: u64 = 68;
+    pub const SYS_PWRITEV: u64 = 70;
+    pub const SYS_PWRITEV2: u64 = 287;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee
@@ -370,6 +405,11 @@ mod imp {
             for (i, a) in args.iter().enumerate() {
                 self.set_arg(i + 1, *a);
             }
+        }
+        /// Skip the syscall and return `-errno` without executing it.
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.raw.x[8] = u64::MAX;
+            self.raw.x[0] = (-(errno as i64)) as u64;
         }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.pc = ip;

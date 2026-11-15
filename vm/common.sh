@@ -144,7 +144,7 @@ vm_fetch_parts() {
 # runs sixteen; the seven not staged here are store, isolation, lease,
 # secrets, compare, conformance and regressions, whose cases do not run in
 # the guest.
-VM_SUITES="validate suite stress edge daemon daemon_neg options core audit"
+VM_SUITES="${PMASK_VM_SUITES:-validate suite stress edge daemon daemon_neg options redteam core audit}"
 
 # vm_stage STAGE-DIR
 # Lays out the initramfs tree: busybox, binaries, suites.

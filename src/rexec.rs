@@ -631,10 +631,27 @@ pub fn relocate(image: &mut Image, min: RawFd) -> io::Result<()> {
     // SAFETY: duplicating our own descriptor.
     let hi = unsafe { libc::fcntl(image.fd, libc::F_DUPFD, min) };
     if hi < 0 {
-        return Err(with_context(
-            io::Error::last_os_error(),
-            "cannot move the image above the secret descriptors",
-        ));
+        let e = io::Error::last_os_error();
+        // `F_DUPFD` fails `EINVAL` when `min` is at or above the limit.
+        // Naming the limit and the required value is the difference
+        // between a usable diagnosis and "the secret descriptors".
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into our struct.
+        let have = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0;
+        let detail = if have && e.raw_os_error() == Some(libc::EINVAL) {
+            format!(
+                "cannot place the image at fd {}: RLIMIT_NOFILE is {}, need at least {}",
+                min,
+                lim.rlim_cur,
+                min as u64 + 1
+            )
+        } else {
+            "cannot move the image above the secret descriptors".to_string()
+        };
+        return Err(with_context(e, &detail));
     }
     // SAFETY: the duplicate is ours.
     let rc = unsafe { libc::fcntl(hi, libc::F_SETFD, libc::FD_CLOEXEC) };
@@ -746,6 +763,11 @@ impl Cache {
             memfd_name: opts.memfd_name.clone(),
         };
         if let Some(img) = self.temp_entries.get(&key) {
+            // The path is the identity a later exec uses, and a same-uid
+            // process can rename over it.  A cache hit that no longer
+            // names these bytes is a refusal, not a reason to run
+            // attacker bytes under the label (issue 001).
+            verify_carrier(img)?;
             return Ok(img.clone());
         }
         let c = CString::new(path.as_os_str().as_bytes())
@@ -784,6 +806,82 @@ impl Cache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// Refuse a carrier whose path no longer names the cached inode and
+/// bytes.
+///
+/// The check is deliberately two-part.  The inode comparison catches a
+/// `rename` of a different file over the path; the byte comparison
+/// catches a write through a descriptor that keeps the inode.  A missing
+/// path is the same refusal: the image the session promised is gone.
+fn verify_carrier(img: &Image) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(path) = &img.path else {
+        return Ok(());
+    };
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} is not readable: {}",
+                    path.display(),
+                    e
+                ),
+            )
+        })?;
+    let by_path = opened.metadata()?;
+    let by_fd = std::fs::metadata(format!("/proc/self/fd/{}", img.fd))?;
+    if by_path.dev() != by_fd.dev() || by_path.ino() != by_fd.ino() || by_path.len() != by_fd.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "--exec-once carrier {} was replaced; refusing to exec it",
+                path.display()
+            ),
+        ));
+    }
+    let mut a = std::fs::File::open(format!("/proc/self/fd/{}", img.fd))?;
+    let mut b = opened;
+    let mut ba = [0u8; 65536];
+    let mut bb = [0u8; 65536];
+    loop {
+        let na = read_full(&mut a, &mut ba)?;
+        let nb = read_full(&mut b, &mut bb)?;
+        if na != nb || ba[..na] != bb[..nb] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} changed its bytes; refusing to exec it",
+                    path.display()
+                ),
+            ));
+        }
+        if na == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// Read until the buffer is full or EOF.
+fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
+    use std::io::Read;
+    let mut done = 0;
+    while done < buf.len() {
+        match f.read(&mut buf[done..]) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(done)
 }
 
 /// A cache shared by a `Mask` and the tracer of its sessions.
@@ -872,7 +970,82 @@ fn fill_temp(
         path,
     };
     relocate(&mut img, IMAGE_FD_MIN + 10)?;
+    if let Some(p) = &img.path {
+        // A namespace init or a shell does not clean up after SIGKILL.
+        // The reaper holds only the path and a pipe, and it is
+        // double-forked so it is not a child of this process and cannot
+        // be mistaken for the payload by the session's `waitpid(-1)`.
+        let _ = spawn_carrier_reaper(p);
+    }
     Ok(img)
+}
+
+/// Unlink `path` when the supervisor's pipe closes.
+///
+/// The intermediate child exits immediately; the grandchild is
+/// reparented to init and holds the read end.  The supervisor keeps the
+/// write end (close-on-exec) for its lifetime, so SIGKILL or an abort
+/// closes it and the reaper removes the carrier.  A clean session removes
+/// the file first and the reaper's `unlink` is a harmless `ENOENT`.
+fn spawn_carrier_reaper(path: &Path) -> io::Result<()> {
+    let mut fds = [0i32; 2];
+    // SAFETY: pipe2 writes two descriptors into a two-element array.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (rd, wr) = (fds[0], fds[1]);
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
+    bytes.push(0);
+    // SAFETY: the child only calls async-signal-safe syscalls.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        unsafe {
+            libc::close(rd);
+            libc::close(wr);
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        unsafe {
+            libc::close(wr);
+            // The child must not keep the supervisor's descriptors: they
+            // can name secrets, the payload or the report.  Keep only
+            // stdio and the read end.
+            for fd in 3..4096 {
+                if fd != rd {
+                    libc::close(fd);
+                }
+            }
+            // Detach from the session's process group and lose the
+            // intermediate parent.
+            libc::setsid();
+            if libc::fork() != 0 {
+                libc::_exit(0);
+            }
+            let mut b = 0u8;
+            loop {
+                let n = libc::read(rd, (&mut b as *mut u8).cast(), 1);
+                if n <= 0 {
+                    break;
+                }
+            }
+            libc::unlink(bytes.as_ptr().cast());
+            libc::_exit(0);
+        }
+    }
+    unsafe { libc::close(rd) };
+    let mut status = 0i32;
+    loop {
+        let w = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if w == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
+    // `wr` is intentionally not stored: it must live as long as the
+    // session, and the process exit is the signal.  FD_CLOEXEC keeps it
+    // out of the payload.
+    Ok(())
 }
 
 /// Reopen `fd` read-only, through the procfs magic link or the name.
@@ -903,6 +1076,14 @@ fn reopen_readonly(fd: RawFd, path: &Option<PathBuf>) -> io::Result<RawFd> {
 fn temp_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("TMPDIR") {
+        if !d.is_empty() {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    // The per-user runtime directory is mode 0700 and is the least
+    // exposed place a carrier can live; `/dev/shm` is world-writable
+    // (sticky) and is the first place a same-uid scanner looks.
+    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
         if !d.is_empty() {
             dirs.push(PathBuf::from(d));
         }

@@ -2623,8 +2623,11 @@ fn run_job(
         // The daemon holds the job environment and the secret store for
         // its whole life.  Its own self-mask made it non-dumpable; a job
         // tracer that toggled the process back to dumpable at rest would
-        // undo that.
+        // undo that.  The job is non-dumpable for the same reason: it
+        // receives the secret descriptor and its own memory, and a
+        // same-uid peer must not read either (issue 004).
         .supervisor_non_dumpable(true)
+        .no_dumpable()
         .envs(cfg.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     // A job that degrades must say so on the daemon's stderr: invariant 13
     // applies to a daemon's jobs too.  `--quiet` is the operator asking for

@@ -10,7 +10,9 @@
 //! calls this module, then forks.  The child's exec therefore still
 //! sees the real values.
 
+use std::ffi::OsString;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 
 /// Locate `[arg_start, arg_end, env_start, env_end]` of this process via
 /// `/proc/self/stat` (fields 48-51; comm may contain spaces/parens, so
@@ -48,6 +50,38 @@ pub unsafe fn zero_own_argv() -> io::Result<()> {
     let (arg_start, arg_end, _, _) = self_arg_env_range()?;
     if arg_start < arg_end {
         std::ptr::write_bytes(arg_start as *mut u8, 0, (arg_end - arg_start) as usize);
+    }
+    Ok(())
+}
+
+/// Put the process's own argv back into the kernel's argv block.
+///
+/// A plain run promises not to mask itself.  `main` zeroes the block
+/// before parsing so no option can publish a secret, and a run that then
+/// selects plain mode would be left with an all-NUL `cmdline` and
+/// `comm=pmask`, a one-read signature that no ordinary process has.  The
+/// snapshot taken before the zeroing restores the original shape.
+///
+/// The restoration is lossy only when the original block was smaller
+/// than the stored strings, which cannot happen for a snapshot taken
+/// from that block.  A write failure leaves the block as it was, which is
+/// the old behaviour, not a new exposure.
+pub fn restore_own_argv(argv: &[OsString]) -> io::Result<()> {
+    let (arg_start, arg_end, _, _) = self_arg_env_range()?;
+    if arg_start >= arg_end {
+        return Ok(());
+    }
+    let room = (arg_end - arg_start) as usize;
+    let mut buf = Vec::new();
+    for a in argv {
+        buf.extend_from_slice(a.as_bytes());
+        buf.push(0);
+    }
+    let n = buf.len().min(room);
+    // SAFETY: the range is this process's own argv block, which `main`
+    // zeroed at startup and nothing reads concurrently.
+    unsafe {
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), arg_start as *mut u8, n);
     }
     Ok(())
 }

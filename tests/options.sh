@@ -281,8 +281,11 @@ sleep 0.8
 envtxt=""
 [ -n "$tr_pid" ] && envtxt=$(tr '\0' '\n' < "/proc/$tr_pid/environ" 2>/dev/null)
 reap "$SUP"
-if printf '%s\n' "$envtxt" | grep -q '^PATH='; then
-    fail "o10-control-default-redacts-path (PATH visible without --keep-env)"
+# The default window is a complete decoy environment now, so PATH is
+# present but the caller's value is not: the control asserts the caller's
+# exact value is hidden, not that the name is absent.
+if printf '%s\n' "$envtxt" | grep -qx 'PATH=/usr/bin:/bin'; then
+    fail "o10-control-default-redacts-path (caller PATH visible without --keep-env)"
 else
     pass o10-control-default-redacts-path
 fi
@@ -789,12 +792,17 @@ else
     fail "o27-refused-window-relocation-is-counted ($(head -c 300 "$T/rep2.json"))"
 fi
 
-# The child restores dumpability before its readiness byte, so a --secret
-# run is dumpable unless --no-dumpable is set.
+# A delivered secret closes the same-uid fd and memory reads by
+# default; --allow-dumpable is the explicit opt-out.
 out=$("$TOOL" --report=json --secret TOKEN=file:"$T/token" -- /bin/true 2>/dev/null)
 case "$out" in
-    *'"payload_dumpable": true'*) pass "o27-secret-run-is-dumpable" ;;
-    *) fail "o27-secret-run-is-dumpable ($(printf '%s' "$out" | head -c 300))" ;;
+    *'"payload_dumpable": false'*) pass "o27-secret-run-is-non-dumpable" ;;
+    *) fail "o27-secret-run-is-non-dumpable ($(printf '%s' "$out" | head -c 300))" ;;
+esac
+out=$("$TOOL" --report=json --allow-dumpable --secret TOKEN=file:"$T/token" -- /bin/true 2>/dev/null)
+case "$out" in
+    *'"payload_dumpable": true'*) pass "o27-allow-dumpable-is-honoured" ;;
+    *) fail "o27-allow-dumpable-is-honoured ($(printf '%s' "$out" | head -c 300))" ;;
 esac
 out=$("$TOOL" --report=json --secret TOKEN=file:"$T/token" --no-dumpable \
     -- /bin/true 2>/dev/null)
@@ -886,7 +894,7 @@ esac
 
 printf '#!/bin/sh\nexit 0\n' >"$T/notelf"
 err=$("$TOOL" -q --image "$T/notelf" 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q "not an ELF image"; then
+if [ "$rc" = 126 ] && printf '%s' "$err" | grep -q "not an ELF image"; then
     pass o30d-image-non-elf-refused
 else
     fail "o30d-image-non-elf-refused (rc=$rc err=[$err])"

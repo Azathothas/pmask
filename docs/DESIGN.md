@@ -461,7 +461,7 @@ Higher privileges buy more privacy in defined steps.
 | 0 + `--unshare` | kernel that allows unprivileged user namespaces | private PID namespace and private procfs; the payload sees only itself | unavailable on hosts that gate user namespaces; opportunistic by design |
 | 0 + `--watch-rename` | none | comm stays the label when a program renames itself, including with `--no-dumpable`, because the redirect needs no tracee memory write | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
 | 0 + `--scope-name` | a user session manager | one consistent name in `/proc/<pid>/cgroup` and `systemctl` | the unit name is world-readable; system-level scopes need root or polkit |
-| 0 (default; `--no-exact` turns it off) | none | `prctl(PR_SET_MM, PR_SET_MM_MAP)` moves `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` onto a compact block, rewrites `AT_EXECFN` in `saved_auxv`, and moves `start_stack`: `/proc/<pid>/cmdline` is exactly the label, `environ` is empty, fields 48 to 51 agree with the cmdline length, and the label's page reads `[stack]` in `maps` | a kernel without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` leaves the in-place redaction: the window is the label padded with spaces and one final NUL, and `environ` is a decoy environment (or the `--keep-env` variables), not a NUL block |
+| 0 (default; `--no-exact` turns it off) | none | `prctl(PR_SET_MM, PR_SET_MM_MAP)` points `mm->arg_start`/`arg_end` at the label in the kernel-copied stack region (`arg_end = arg_start + len(label) + 1`), `env_start` at the same address and `env_end` at the end of a complete decoy environment, and rewrites `AT_EXECFN` in both `saved_auxv` and the payload's stack vector. `start_stack` is left at the kernel value, so the real `[stack]` VMA keeps its 132 kB size and `gd` flag. | a kernel without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` leaves the original extent and fills it with the label padded by spaces and a complete decoy environment |
 | 0 + `--detach` | none | `PTRACE_DETACH` after each settled exec, so `TracerPid` is 0 for the payload | the detached process and its descendants run unredacted at every later exec, and the session summary counts each detach |
 | 2 | `CAP_SYS_RESOURCE` | the bare `PR_SET_MM_ARG_START`/`_ARG_END` operations, which resize the window without rewriting the rest of the map | not used; the one-shot map at rung 0 reaches the same result |
 | 3 | root on the host | `hidepid=2,gid=` on the system `/proc` removes the tree from every other account | polkit and distribution defaults; Yama scope needs `CAP_SYS_PTRACE` and scope 3 is irreversible until reboot |
@@ -495,9 +495,11 @@ sees.
   relocation has happened by then, so the record carries the label. It
   loops over the real `bprm->argc` and calls `send_sig(SIGKILL)` on
   `-EFAULT`, so the presentation block must satisfy two readers at once:
-  `get_mm_cmdline()` wants `arg_end` small, and the audit reader wants
-  `argc` NUL-terminated strings from `arg_start`. The block is the label
-  followed by `argc` NULs, which does both.
+  `get_mm_cmdline()` wants `arg_end` small, and the audit reader walks
+  `argc` NUL-terminated strings from `arg_start`. The completion writes
+  the label, one NUL, the decoy environment and the second label copy;
+  the audit reader sees the label and then the decoy entries (or zeros),
+  never a real argument.
 - An eBPF `sched_process_exec` program cannot see argv at all. The
   tracepoint carries `bprm->filename` and two pids, and it fires before
   the ptrace exec stop. A reader cannot recover the arguments there by

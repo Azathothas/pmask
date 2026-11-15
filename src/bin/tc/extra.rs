@@ -35,6 +35,7 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "show-seccomp" => Some(show_seccomp()),
         "renamer" => Some(renamer()),
         "evilrename" => Some(evilrename(rest)),
+        "commwrite" => Some(commwrite(rest)),
         "count-proc" => Some(count_proc()),
         "exe-id" => Some(exe_id()),
         "procviews" => Some(procviews(rest)),
@@ -44,6 +45,7 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "holdscan" => Some(holdscan(rest)),
         "forkexec" => Some(forkexec(rest)),
         "exec64" => Some(exec64()),
+        "selfexec" => Some(selfexec()),
         _ => None,
     }
 }
@@ -238,6 +240,91 @@ fn evilrename(args: &[String]) -> i32 {
     println!("comm={}", own_comm());
     let _ = std::io::stdout().flush();
     std::thread::sleep(std::time::Duration::from_secs(secs));
+    0
+}
+
+/// Wait briefly, then write a fixed hostile name through
+/// `/proc/self/comm` (the kernel's `comm_write` path, not `prctl`).
+/// Prints the syscall result and the comm the process can read itself.
+fn commwrite(args: &[String]) -> i32 {
+    let secs = args
+        .first()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5);
+    // `dirfd` names the comm through a descriptor, so the path the trap
+    // sees is `comm` with no `/proc/` in it.  The default mode is the
+    // literal path.
+    let by_dirfd = args.get(1).map(|a| a.as_str()) == Some("dirfd");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let path = b"/proc/self/comm\0";
+    let dir = b"/proc/self\0";
+    // SAFETY: both paths are NUL terminated; the descriptors are closed
+    // below.
+    let fd = unsafe {
+        if by_dirfd {
+            let d = libc::open(dir.as_ptr().cast(), libc::O_PATH | libc::O_DIRECTORY);
+            if d < 0 {
+                -1
+            } else {
+                let f = libc::openat(d, path.as_ptr().cast(), libc::O_WRONLY);
+                libc::close(d);
+                f
+            }
+        } else {
+            libc::open(path.as_ptr().cast(), libc::O_WRONLY)
+        }
+    };
+    if fd < 0 {
+        println!(
+            "commwrite-open-errno={}",
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        );
+    } else {
+        let name = b"evil-write";
+        // SAFETY: fd is open for writing and name is a valid buffer.
+        let n = unsafe { libc::write(fd, name.as_ptr().cast(), name.len()) };
+        println!(
+            "commwrite-write={} errno={}",
+            n,
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        );
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(fd) };
+    }
+    println!("comm={}", own_comm());
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    0
+}
+
+/// Fork and exec the literal path `/proc/self/exe` with a marker
+/// argument.  Under `--exec-once` the cache must copy the payload image,
+/// not the pmask supervisor; the child prints the marker, the parent
+/// prints the child's status.
+fn selfexec() -> i32 {
+    // SAFETY: fork and exec in the child; the parent waits.
+    unsafe {
+        let pid = libc::fork();
+        if pid == 0 {
+            let path = c"/proc/self/exe";
+            let arg0 = c"self-second";
+            let arg1 = c"selfchild";
+            let argv = [arg0.as_ptr(), arg1.as_ptr(), std::ptr::null()];
+            libc::execv(path.as_ptr(), argv.as_ptr());
+            libc::_exit(111);
+        }
+        if pid < 0 {
+            return 1;
+        }
+        let mut st = 0;
+        libc::waitpid(pid, &mut st, 0);
+        if libc::WIFEXITED(st) {
+            println!("selfexec-child={}", libc::WEXITSTATUS(st));
+            if libc::WEXITSTATUS(st) == 0 {
+                println!("SELF-SECOND");
+            }
+        }
+    }
     0
 }
 

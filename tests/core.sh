@@ -489,8 +489,8 @@ kill_comm "$L" KILL 2>/dev/null; kill_comm sleeper KILL 2>/dev/null; sleep 0.2
 # ------------------------------------------------- K13: documented claims
 out=$("$TOOL" -q -l "$L" "$CASES" execfn 2>&1)
 case "$out" in
-    "execfn=$CASES") pass "k13-at-execfn-is-the-real-path ($out)" ;;
-    *) fail "k13-at-execfn (got: $out, want execfn=$CASES)" ;;
+    "execfn=$L") pass "k13-at-execfn-is-the-label ($out)" ;;
+    *) fail "k13-at-execfn (got: $out, want execfn=$L)" ;;
 esac
 
 if [ "$(id -u)" = 0 ]; then
@@ -553,12 +553,10 @@ kill -9 "$k13b_pid" "$k13b_sup" 2>/dev/null
 wait "$k13b_sup" 2>/dev/null
 if [ -z "$k13b_pid" ] || [ -z "$k13b_aux" ]; then
     skip "k13b-at-execfn-diverges (pid=[$k13b_pid] auxv=[$k13b_aux])"
-elif [ "$k13b_own" = "$CASES" ] && [ "$k13b_aux" = "$L" ]; then
-    pass "k13b-at-execfn-diverges (payload=$k13b_own auxv=$k13b_aux)"
-elif [ "$k13b_own" = "$k13b_aux" ]; then
-    fail "k13b-at-execfn-diverges (both readings agree at [$k13b_own])"
+elif [ "$k13b_own" = "$L" ] && [ "$k13b_aux" = "$L" ]; then
+    pass "k13b-at-execfn-agrees (payload=$k13b_own auxv=$k13b_aux)"
 else
-    fail "k13b-at-execfn-diverges (payload=[$k13b_own] auxv=[$k13b_aux], want payload=$CASES auxv=$L)"
+    fail "k13b-at-execfn-agrees (payload=[$k13b_own] auxv=[$k13b_aux], want both $L)"
 fi
 
 # ------------------------------------------------ K16: failed redaction
