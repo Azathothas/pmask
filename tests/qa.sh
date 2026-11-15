@@ -131,9 +131,20 @@ for c in qa.d/*.sh; do
     # would hold the write end of a pipe open and block the dispatcher
     # before the sweep below could reap it.
     out="$QA_TMP/$N.out"
-    sh "$c" >"$out" 2>&1
+    # A fragment that never finishes would hold the whole batch, and a CI
+    # job that hangs reports nothing at all.  The limit turns that into a
+    # named FAIL instead, so the job fails in a readable way.
+    QA_TIMEOUT=${PMASK_QA_TIMEOUT:-300}
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$QA_TIMEOUT" sh "$c" >"$out" 2>&1
+    else
+        sh "$c" >"$out" 2>&1
+    fi
     rc=$?
     [ -s "$out" ] && cat "$out"
+    if [ "$rc" = 124 ]; then
+        echo "FAIL $c (exceeded ${QA_TIMEOUT}s: a fragment that does not finish decides nothing)"
+    fi
     fp=$(grep -c '^PASS ' "$out")
     ff=$(grep -c -E '^(FAIL( |:|$)|[[:space:]]+FAIL( |:|$))' "$out")
     fs=$(grep -c '^SKIP ' "$out")

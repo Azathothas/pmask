@@ -191,9 +191,9 @@ impl Tracer {
         // completion redacts the new image.
         if self.table.get(&pid).map(|t| t.vfork_child).unwrap_or(false) {
             if self.cfg.strict_exec {
-                self.warn(format_args!(
+                self.refuse(format_args!(
                     "pid {}: --strict-exec refuses a vfork child, which can only be redacted \
-                     after its exec",
+                     after its exec; the child is killed and the run stops",
                     pid
                 ));
                 // SAFETY: plain kill(2) of a stopped tracee.
@@ -334,9 +334,10 @@ impl Tracer {
             // The image would run with its real argv, environ and comm.
             // Refuse before the exec: kill the tracee at the entry stop.
             self.stats.foreign_refused += 1;
-            self.warn(format_args!(
+            self.refuse(format_args!(
                 "pid {}: 32-bit (foreign ABI) program refused; a 32-bit image cannot \
-                 be redacted, so it is not run unless --allow-foreign is set",
+                 be redacted, so it is not run unless --allow-foreign is set; the payload \
+                 is killed and the run stops",
                 pid
             ));
             self.set_state(pid, State::Foreign);
@@ -351,9 +352,9 @@ impl Tracer {
 
         if !elf {
             if self.cfg.strict_exec {
-                self.warn(format_args!(
+                self.refuse(format_args!(
                     "pid {}: --strict-exec refuses a non-ELF image, which can only be redacted \
-                     after its exec",
+                     after its exec; the payload is killed and the run stops",
                     pid
                 ));
                 // SAFETY: plain kill(2) of a stopped tracee.
@@ -389,7 +390,7 @@ impl Tracer {
                         // would be a silent posture change and could run
                         // the attacker's bytes under the label; refuse
                         // the exec.
-                        self.warn(format_args!(
+                        self.refuse(format_args!(
                             "pid {}: --exec-once carrier refused: {}; the exec is killed",
                             pid, e
                         ));
@@ -708,8 +709,8 @@ impl Tracer {
             // A later exec cannot be redacted; kill it before the new
             // image runs.
             self.stats.foreign_refused += 1;
-            self.warn(format_args!(
-                "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it",
+            self.refuse(format_args!(
+                "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it; the exec is killed",
                 pid
             ));
             // SAFETY: plain kill(2) of a stopped tracee.
@@ -752,9 +753,10 @@ impl Tracer {
             // image runs.  It is counted as refused, not as a foreign
             // exec that ran, so `account` is skipped.
             self.stats.foreign_refused += 1;
-            self.warn(format_args!(
+            self.refuse(format_args!(
                 "pid {}: 32-bit (foreign ABI) program refused at completion; a 32-bit \
-                 image cannot be redacted, so it is not run unless --allow-foreign is set",
+                 image cannot be redacted, so it is not run unless --allow-foreign is set; \
+                 the payload is killed and the run stops",
                 pid
             ));
             // SAFETY: plain kill(2) of a stopped tracee; the pending

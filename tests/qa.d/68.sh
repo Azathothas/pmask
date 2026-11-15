@@ -15,6 +15,8 @@ mkfifo "$T/fifo"
 sup=$!; sleep 0.7
 if [ "$(id -u)" = 0 ]; then
     echo "SKIP q68 (root reads a non-dumpable process)"
+elif ! kill -0 "$sup" 2>/dev/null; then
+    fail "q68-holder-is-non-dumpable-before-load (the supervisor is gone, so its /proc entry proves nothing)"
 else
     if [ -r "/proc/$sup/mem" ]; then
         fail q68-holder-is-non-dumpable-before-load
@@ -22,7 +24,9 @@ else
         pass q68-holder-is-non-dumpable-before-load
     fi
 fi
-printf 'q68-secret' > "$T/fifo" 2>/dev/null || true
+# The holder is blocked opening the fifo.  If it died first, a plain write
+# would block on a fifo nobody reads and hang the whole batch.
+printf 'q68-secret' | timeout 5 cat > "$T/fifo" 2>/dev/null || true
 kill -9 "$sup" 2>/dev/null; wait "$sup" 2>/dev/null
 echo "################ QA68: FAIL=$FAIL"
 [ "$FAIL" = 0 ]

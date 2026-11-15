@@ -761,7 +761,7 @@ fragment or suite row that fails if the property is removed.
 
 | issue | fix | test |
 |---|---|---|
-| 001 `--exec-once` carrier replaceable / cache metadata-only | the carrier is re-opened with `O_NOFOLLOW`, its dev/ino and bytes are compared with the cached descriptor before every reuse, a mismatch kills the exec instead of running it, the carrier prefers `$XDG_RUNTIME_DIR`, and a double-forked reaper unlinks it when the supervisor is SIGKILLed | `tests/qa.d/65.sh`, `tests/redteam.sh` R4 |
+| 001 `--exec-once` carrier replaceable / cache metadata-only | the carrier is re-opened with `O_NOFOLLOW`, its dev/ino and bytes are compared with the cached descriptor before every reuse, its status change time is compared with the one taken when the bytes were written, a mismatch kills the exec instead of running it, the carrier prefers `$XDG_RUNTIME_DIR`, and a double-forked reaper unlinks it when the supervisor is SIGKILLed | `src/rexec.rs` `carrier_tests`: untouched, replaced, rewritten in place, symlinked, and path-less carriers |
 | 002 `--no-dumpable` drops the fast path | `--exec-once` with `--no-dumpable` or `--hide-pid` is refused before the fork; the filter install runs before the dumpable injection at completion | `tests/qa.d/65.sh`, `options.sh` O39 |
 | 003 argv window on script / vfork / `--no-dumpable` / `--detach` | `--strict-exec` refuses the shapes that cannot be redacted at entry; the numbers and the default trade are documented | `tests/qa.d/66.sh` |
 | 004 same-uid memory, secret and image reads | a delivered secret makes the payload non-dumpable by default (`--allow-dumpable` opts out), the supervisor closes its image fds after the fork, and the daemon jobs are non-dumpable | `tests/qa.d/67.sh`, `options.sh` O27, `daemon.sh` d7b/d8 |

@@ -13,48 +13,65 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/qa70.XXXXXX") || exit 2
 trap 'rm -rf "$T"' EXIT
 "$TOOL" --report-file "$T/report.json" -q -l q70 -- /bin/sh -c '
   test -e '"$T"'/report.json && exit 9
-  for f in /proc/$PPID/fd/*; do cat "$f" >/dev/null 2>&1 || continue; done
+  # Listing an inherited descriptor proves the tree can reach the
+  # descriptor table of the supervisor.  Reading one would block on the
+  # console, which is what a payload fd of a serial-booted guest is.
+  n=0
+  for f in /proc/$PPID/fd/*; do [ -r "$f" ] && n=$((n + 1)); done
+  [ "$n" -gt 0 ] || exit 8
   exit 0' >/dev/null 2>&1; rc=$?
-[ "$rc" = 0 ] && pass q70-report-absent-during-run || fail "q70-report-absent-during-run (rc=$rc)"
+case "$rc" in
+    0) pass q70-report-absent-during-run ;;
+    8) fail "q70-report-absent-during-run (no descriptor of the supervisor was readable)" ;;
+    9) fail "q70-report-absent-during-run (the report existed during the run)" ;;
+    *) fail "q70-report-absent-during-run (payload rc=$rc)" ;;
+esac
 last=$(tr -d '\n' < "$T/report.json" 2>/dev/null | tail -c 1)
 [ "$last" = "}" ] && pass q70-report-is-complete || fail "q70-report-is-complete"
 # A report run waits for the tree unless the caller overrides the policy;
 # an explicit override names what it costs instead of paying it silently.
 out=$("$TOOL" --report-file "$T/detach.json" --on-exit detach -l q70 \
-    -- "$CASES" sleeper 1 2>&1)
+    -- /bin/sh -c 'sleep 0.2' 2>&1)
 printf '%s' "$out" | grep -q 'on-exit detach lets a descendant outlive' \
     && pass q70-detach-warning \
     || fail "q70-detach-warning ($(printf '%s' "$out" | grep -i 'pmask:' | head -1))"
 
-# The classifier must read what a descriptor *is*.  A delivered secret is
-# a sealed memfd, and a name without "pmask" in it does not make it less
-# of a live secret: the old rule matched that literal and missed this.
-printf 'q70-secret\n' > "$T/secret"
-out=$("$TOOL" -q --audit --secret TOK=file:"$T/secret" --secret-fd-name custom-name \
-    -l q70 -- "$CASES" sleeper 1 2>&1)
-row=$(printf '%s\n' "$out" | grep '^pmask audit: residue:' | head -n 1)
-list=$(printf '%s' "$row" | sed -n 's/.*(\(.*\))$/\1/p')
-case ",$list," in
-    *,fd,*) pass q70-audit-fd-identity ;;
-    *) fail "q70-audit-fd-identity (row: ${row:-none})" ;;
-esac
-printf '%s' "$row" | grep -q 'memfd:custom-name' \
-    && pass q70-audit-fd-named-descriptor \
-    || fail "q70-audit-fd-named-descriptor (row: ${row:-none})"
+# The classifier must read what a descriptor *is*, not what it is called.
+# The detail row proves the descriptor was visible; the residue line proves
+# how it was classified.  Both are needed, because a classifier that never
+# sees a descriptor agrees with one that judges it correctly.
+reasons() { printf '%s\n' "$1" | grep '^pmask audit: residue:' | head -n 1; }
+fdlist() { printf '%s\n' "$1" | grep '^pmask audit: pid=' | head -n 1; }
+list() { printf '%s' "$1" | sed -n 's/.*(\(.*\))$/\1/p' | tr -d ' '; }
 
-# The other direction: an inherited file whose path contains the program
-# name is not residue.  The old rule called it one.
-exec 9>"$T/pmask-looking-file"
-out=$("$TOOL" -q --audit -l q70 -- "$CASES" sleeper 1 2>&1)
+# A descriptor to a deleted file is residue, whatever it is called.  The
+# name here has nothing to do with the program, which is the case the old
+# literal match on "pmask" missed.
+exec 9>"$T/plain-name"
+rm -f "$T/plain-name"
+out=$("$TOOL" -q --audit -l q70 -- /bin/sh -c 'sleep 0.2' 2>&1)
 exec 9>&-
-row=$(printf '%s\n' "$out" | grep '^pmask audit: residue:' | head -n 1)
-list=$(printf '%s' "$row" | sed -n 's/.*(\(.*\))$/\1/p')
-case ",$list," in
-    *,fd,*) fail "q70-audit-plain-file-not-residue (row: ${row:-none})" ;;
-    *) pass q70-audit-plain-file-not-residue ;;
+det=$(fdlist "$out") ; row=$(reasons "$out") ; lst=$(list "$row")
+printf '%s' "$det" | grep -q '9:.*(deleted)' \
+    && pass q70-audit-deleted-fd-visible \
+    || fail "q70-audit-deleted-fd-visible (detail: ${det:-none})"
+case ",$lst," in
+    *,fd,*) pass q70-audit-deleted-fd-is-residue ;;
+    *) fail "q70-audit-deleted-fd-is-residue (row: ${row:-none})" ;;
 esac
-printf '%s' "$row" | grep -q 'pmask-looking-file' \
-    && pass q70-audit-plain-file-visible \
-    || fail "q70-audit-plain-file-visible (row: ${row:-none})"
+
+# The other direction: a live inherited file whose path contains the
+# program name is not residue.  The old rule called it one.
+exec 9>"$T/pmask-looking-file"
+out=$("$TOOL" -q --audit -l q70 -- /bin/sh -c 'sleep 0.2' 2>&1)
+exec 9>&-
+det=$(fdlist "$out") ; row=$(reasons "$out") ; lst=$(list "$row")
+printf '%s' "$det" | grep -q '9:.*pmask-looking-file' \
+    && pass q70-audit-live-file-visible \
+    || fail "q70-audit-live-file-visible (detail: ${det:-none})"
+case ",$lst," in
+    *,fd,*) fail "q70-audit-live-file-not-residue (row: ${row:-none})" ;;
+    *) pass q70-audit-live-file-not-residue ;;
+esac
 echo "################ QA70: FAIL=$FAIL"
 [ "$FAIL" = 0 ]

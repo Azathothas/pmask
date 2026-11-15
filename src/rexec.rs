@@ -75,6 +75,13 @@ pub struct Image {
     pub note: Option<String>,
     /// The named temporary file, when the carrier needed a name.
     pub path: Option<PathBuf>,
+    /// `(ctime, ctime_nsec)` of the carrier inode at the moment its bytes
+    /// were finished.  A same-uid writer can rewrite the named carrier in
+    /// place without changing its device, inode or length, and both readers
+    /// in `verify_carrier` then see the same modified bytes; the status
+    /// change time is the only record that the bytes moved.  An unprivileged
+    /// writer cannot set it back.
+    pub stamp: Option<(i64, i64)>,
 }
 
 impl Drop for Image {
@@ -501,6 +508,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         backing: Backing::Memfd,
         note: None,
         path: None,
+        stamp: None,
     })
 }
 
@@ -532,6 +540,7 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 cause
             )),
             path: None,
+            stamp: None,
         })
     };
     let huge = match huge_memfd(name) {
@@ -550,6 +559,7 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 },
                 note: None,
                 path: None,
+                stamp: None,
             })
         }
         Err(e) => {
@@ -569,6 +579,7 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             backing,
             note,
             path: None,
+            stamp: None,
         }),
         Err(e) if matches!(backing, Backing::HugeTlb { .. }) => {
             // A hugetlb memfd can be created while the pool is empty; the
@@ -591,6 +602,7 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
                 backing: Backing::Memfd,
                 note,
                 path: None,
+                stamp: None,
             })
         }
         Err(e) => {
@@ -815,6 +827,15 @@ impl Cache {
 /// `rename` of a different file over the path; the byte comparison
 /// catches a write through a descriptor that keeps the inode.  A missing
 /// path is the same refusal: the image the session promised is gone.
+/// The status change time of an open carrier descriptor, as `verify_carrier`
+/// compares it.  `None` when the descriptor cannot be stat'ed; the carrier
+/// is then verified by identity and bytes alone.
+fn stamp_of(fd: RawFd) -> Option<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(format!("/proc/self/fd/{fd}")).ok()?;
+    Some((m.ctime(), m.ctime_nsec()))
+}
+
 fn verify_carrier(img: &Image) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::OpenOptionsExt;
@@ -846,6 +867,23 @@ fn verify_carrier(img: &Image) -> io::Result<()> {
                 path.display()
             ),
         ));
+    }
+    // A writer that modifies this inode in place leaves the device, the
+    // inode and the length alone, and both reads below would then compare
+    // the same new bytes.  The status change time is written by the kernel
+    // on every modification and cannot be set back without privilege.  A
+    // filesystem with coarse timestamps can hide a rewrite inside one tick;
+    // the identity comparison above still catches every change of file.
+    if let Some((ctime, ctime_nsec)) = img.stamp {
+        if by_path.ctime() != ctime || by_path.ctime_nsec() != ctime_nsec {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} was modified after it was written; refusing to exec it",
+                    path.display()
+                ),
+            ));
+        }
     }
     let mut a = std::fs::File::open(format!("/proc/self/fd/{}", img.fd))?;
     let mut b = opened;
@@ -882,6 +920,132 @@ fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
         }
     }
     Ok(done)
+}
+
+/// The `--exec-once` carrier is refused when the file at its path is no
+/// longer the bytes the descriptor holds.  Issue 64: the old cache bound
+/// metadata, so a same-uid writer could rewrite the carrier's contents
+/// without changing the file's device, inode or length.
+#[cfg(test)]
+mod carrier_tests {
+    use super::{verify_carrier, Backing, Image};
+    use std::io::Write;
+    use std::os::fd::IntoRawFd;
+    use std::path::{Path, PathBuf};
+
+    /// A directory holding one carrier file, removed on drop.
+    struct Carrier {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Carrier {
+        fn new(tag: &str, bytes: &[u8]) -> Carrier {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "pmask-carrier-{}-{}-{}",
+                tag,
+                std::process::id(),
+                nanos
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let path = dir.join("carrier");
+            std::fs::write(&path, bytes).expect("write carrier");
+            Carrier { dir, path }
+        }
+
+        /// An `Image` naming this file.  It owns the descriptor and unlinks
+        /// the file when it drops.
+        fn image(&self) -> Image {
+            use std::os::fd::AsRawFd;
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .open(&self.path)
+                .expect("open carrier");
+            let stamp = super::stamp_of(f.as_raw_fd());
+            Image {
+                fd: f.into_raw_fd(),
+                backing: Backing::Memfd,
+                note: None,
+                path: Some(self.path.clone()),
+                stamp,
+            }
+        }
+    }
+
+    impl Drop for Carrier {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn an_untouched_carrier_verifies() {
+        let c = Carrier::new("ok", b"#!/bin/sh\necho carried\n");
+        let img = c.image();
+        verify_carrier(&img).expect("an unmodified carrier verifies");
+    }
+
+    #[test]
+    fn a_replaced_inode_is_refused() {
+        let c = Carrier::new("swap", b"payload-bytes");
+        let img = c.image();
+        // A new inode at the same path, with the same length.
+        std::fs::remove_file(&c.path).expect("unlink");
+        std::fs::write(&c.path, b"evil-bytes!!!").expect("write replacement");
+        let e = verify_carrier(&img).expect_err("a replaced carrier is refused");
+        assert!(format!("{e}").contains("replaced"), "{e}");
+    }
+
+    #[test]
+    fn a_carrier_rewritten_in_place_is_refused() {
+        let c = Carrier::new("inplace", b"payload-bytes");
+        let img = c.image();
+        // Same inode and same length: the device, inode and size all match,
+        // so only the byte comparison can tell this from the original.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&c.path)
+            .expect("reopen carrier");
+        f.write_all(b"evil-bytes!!!").expect("rewrite");
+        f.sync_all().expect("sync");
+        drop(f);
+        let e = verify_carrier(&img).expect_err("an in-place rewrite is refused");
+        assert!(
+            format!("{e}").contains("modified after it was written"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_carrier_is_refused() {
+        let c = Carrier::new("link", b"payload-bytes");
+        let img = c.image();
+        let other = c.dir.join("other");
+        std::fs::write(&other, b"payload-bytes").expect("write other");
+        std::fs::remove_file(&c.path).expect("unlink");
+        std::os::unix::fs::symlink(&other, &c.path).expect("symlink");
+        let e = verify_carrier(&img).expect_err("a symlinked carrier is refused");
+        // O_NOFOLLOW refuses the link itself rather than following it.
+        assert!(format!("{e}").contains("not readable"), "{e}");
+    }
+
+    /// The path is optional: a memfd carrier has no file to re-read.
+    #[test]
+    fn a_carrier_without_a_path_verifies() {
+        let f = std::fs::File::open(Path::new("/dev/null")).expect("open /dev/null");
+        let img = Image {
+            fd: f.into_raw_fd(),
+            backing: Backing::Memfd,
+            note: None,
+            path: None,
+            stamp: None,
+        };
+        verify_carrier(&img).expect("a carrier with no path verifies");
+    }
 }
 
 /// A cache shared by a `Mask` and the tracer of its sessions.
@@ -968,6 +1132,7 @@ fn fill_temp(
         backing: Backing::TempFile { dir, named },
         note: None,
         path,
+        stamp: stamp_of(ro),
     };
     relocate(&mut img, IMAGE_FD_MIN + 10)?;
     if let Some(p) = &img.path {

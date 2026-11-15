@@ -238,6 +238,55 @@ wait_comm_exe() {
     echo "$n"
 }
 
+# payload_pid COMM-PREFIX EXE-BASENAME [SECONDS]
+# Print the pid of the payload: comm starts with COMM-PREFIX *and*
+# /proc/<pid>/exe names EXE-BASENAME.  The supervisor applies the same
+# label to itself, so a scan for the comm alone returns the tracer first
+# (its pid is lower than the child's) and a fragment that measures that
+# pid asserts nothing about the payload.  Polls for up to SECONDS
+# (default 5); returns 1 when no such process appears.
+payload_pid() {
+    pp_comm="$1"; pp_exe="$2"; pp_wait="${3:-5}"
+    pp_end=$(( $(date +%s 2>/dev/null || echo 0) + pp_wait ))
+    while :; do
+        for pp_d in /proc/[0-9]*; do
+            case "$(cat "$pp_d/comm" 2>/dev/null)" in
+                "$pp_comm"*) ;;
+                *) continue ;;
+            esac
+            case "$(readlink "$pp_d/exe" 2>/dev/null)" in
+                */"$pp_exe") echo "${pp_d#/proc/}"; return 0 ;;
+            esac
+        done
+        pp_now=$(date +%s 2>/dev/null || echo 99999999999)
+        [ "$pp_now" -ge "$pp_end" ] && return 1
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+}
+
+# child_pid PARENT [SECONDS]
+# Print the pid of a direct child of PARENT.  `payload_pid` needs the
+# payload's exe, and a non-dumpable payload (one holding a secret) hides
+# /proc/<pid>/exe from a same-uid reader, so the parent relation is the
+# only way to name it.  Polls for up to SECONDS (default 5); returns 1
+# when the parent has no child.
+child_pid() {
+    cp_parent="$1"; cp_wait="${2:-5}"
+    cp_end=$(( $(date +%s 2>/dev/null || echo 0) + cp_wait ))
+    while :; do
+        for cp_d in /proc/[0-9]*; do
+            cp_stat=$(cat "$cp_d/stat" 2>/dev/null) || continue
+            # comm may contain spaces and parentheses, so split after the
+            # last ')' and take the field after state: ppid.
+            cp_ppid=$(printf '%s' "$cp_stat" | sed 's/.*) [A-Z] //' | cut -d' ' -f1)
+            [ "$cp_ppid" = "$cp_parent" ] && { echo "${cp_d#/proc/}"; return 0; }
+        done
+        cp_now=$(date +%s 2>/dev/null || echo 99999999999)
+        [ "$cp_now" -ge "$cp_end" ] && return 1
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+}
+
 # environ_hits MARKER
 # Count processes whose /proc environ contains MARKER (own shell excluded).
 environ_hits() {

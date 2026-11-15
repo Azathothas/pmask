@@ -520,6 +520,14 @@ impl Tracer {
         }
     }
 
+    /// A refusal is not chatter.  The tracee is killed and the run cannot
+    /// continue, so the line survives `-q`: an operator who asked for quiet
+    /// still has to be able to tell a refusal from a payload that died on
+    /// its own, and the exit status alone cannot say which happened.
+    pub(crate) fn refuse(&self, args: std::fmt::Arguments) {
+        eprintln!("pmask: refused: {}", args);
+    }
+
     pub fn new(cfg: Config) -> Tracer {
         let fault_poke_at = cfg.fault_poke_at;
         let fault_no_vdso = cfg.fault_no_vdso;

@@ -10,27 +10,34 @@ trap 'rm -rf "$T"' EXIT
 FAIL=0
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
-# comm_of_payload MODE: start the writer in MODE, then report the comm the
-# process presents.  The writer renames itself `evil-write`, so a comm of
-# q71 is the refusal and anything else is a bypass.
+# check MODE TAG: start the writer in MODE and report whether the rename
+# was refused.  The writer prints the comm it ends up with, so the verdict
+# is its own report, not a scan: a scan for the label matches the
+# supervisor, which carries the label from the start and would pass the
+# case no matter what the payload did.  The payload is then located by
+# comm plus exe, so a refused write is shown to leave a live process
+# presenting the label rather than merely no evidence of a rename.
 check() {
     ck_mode=$1; ck_tag=$2
     "$TOOL" -q --watch-rename -l q71 -- "$CASES" commwrite 3 "$ck_mode" \
         >"$T/q71.out" 2>/dev/null &
     sup=$!; sleep 1.2
-    pay=""
-    for d in /proc/[0-9]*; do
-        [ "$(cat "$d/comm" 2>/dev/null)" = q71 ] && { pay=${d#/proc/}; break; }
-    done
+    pay=$(payload_pid q71 testcases 5)
+    got=$(sed -n 's/^comm=//p' "$T/q71.out" | head -n 1)
+    wr=$(sed -n 's/^commwrite-write=\([0-9-]*\).*/\1/p' "$T/q71.out" | head -n 1)
+    op=$(sed -n 's/^commwrite-open-errno=//p' "$T/q71.out" | head -n 1)
     if [ "$ctl" = blocked ]; then
         echo "SKIP $ck_tag ($(tr -d '\n' <"$T/q71.ctl"))"
-    elif [ -n "$pay" ]; then
-        pass "$ck_tag"
+    elif [ -z "$got" ]; then
+        fail "$ck_tag (the writer printed no comm: $(tr '\n' ' ' <"$T/q71.out"))"
+    elif [ "$got" = q71 ] && [ -n "$pay" ]; then
+        pass "$ck_tag (comm=$got, payload=$pay; open_errno=${op:-none} wrote=${wr:-none})"
+    elif [ "$got" = q71 ]; then
+        fail "$ck_tag (comm=$got but no live payload presents it)"
     else
-        # The writer changed its comm, so no process presents the label.
-        fail "$ck_tag (no payload presents q71: $(grep -o 'commwrite-[a-z]*=[-0-9]*' "$T/q71.out" | tr '\n' ' '))"
+        fail "$ck_tag (comm=$got: the rename went through)"
     fi
-    kill -9 "$sup" "$pay" 2>/dev/null; wait "$sup" 2>/dev/null
+    kill -9 "$sup" $pay 2>/dev/null; wait "$sup" 2>/dev/null
     rm -f "$T/q71.out"
 }
 # Control: without pmask the writer renames itself.  On a host that
