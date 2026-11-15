@@ -252,12 +252,19 @@ fn commwrite(args: &[String]) -> i32 {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(5);
     // `dirfd` names the comm through a descriptor, so the path the trap
-    // sees is `comm` with no `/proc/` in it.  The default mode is the
-    // literal path.
-    let by_dirfd = args.get(1).map(|a| a.as_str()) == Some("dirfd");
+    // sees is `comm` with no `/proc/` in it.  `symlink` names it through a
+    // symlink whose path the trap also cannot resolve by shape; only the
+    // write-time descriptor check (`--watch-rename=strict`) reaches it.
+    // The default mode is the literal path.
+    let how = args.get(1).map(|a| a.as_str()).unwrap_or("");
+    let by_dirfd = how == "dirfd";
+    let by_symlink = how == "symlink";
     std::thread::sleep(std::time::Duration::from_millis(400));
     let path = b"/proc/self/comm\0";
     let dir = b"/proc/self\0";
+    let mut link = std::env::temp_dir();
+    link.push(format!("pmask-comm-link-{}", std::process::id()));
+    let link_c = std::ffi::CString::new(link.as_os_str().as_encoded_bytes()).unwrap_or_default();
     // SAFETY: both paths are NUL terminated; the descriptors are closed
     // below.
     let fd = unsafe {
@@ -270,6 +277,11 @@ fn commwrite(args: &[String]) -> i32 {
                 libc::close(d);
                 f
             }
+        } else if by_symlink {
+            libc::symlink(path.as_ptr().cast(), link_c.as_ptr());
+            let f = libc::open(link_c.as_ptr(), libc::O_WRONLY);
+            libc::unlink(link_c.as_ptr());
+            f
         } else {
             libc::open(path.as_ptr().cast(), libc::O_WRONLY)
         }

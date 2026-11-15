@@ -65,7 +65,7 @@ note named in the row carries the command that produced them.
 | the tracer thread is not identifiable (38) | A1, A2 | the thread takes the session `comm` first and the label second, cut to 15 bytes, and never the retired fixed string `pmask-tracer`; `TracerPid` still names a thread whose `Tgid` is the supervisor's pid | limit: the fixed name is gone, the `Tgid != Pid` shape and a nonzero `TracerPid` remain; `--isolate` and `--no-redact` have no tracer, and `--detach` zeroes each tracee's `TracerPid` but keeps the supervisor's thread for the session | `qa.d/38.sh` reads `/proc/<sup>/task/*/comm` and `Tgid`/`Pid`, with a negative control against a pre-fix binary; `research/bteam-38-50.md` has the measurement |
 | the supervisor's own entry carries no other fingerprint (39) | A1, A2, A3 | the self-mask of the row above; the process has two threads, and `PMASK_NO_SELFMASK=1` disables the treatment | partial: the label and the empty environment are enforced; `Threads: 2` and the escape are limits, and `--secret literal:` puts the value in the real argv for the debug window | `conformance.sh` supervisor-selfmask; the thread count and the escape are measured in `research/bteam-39-43.md` |
 | the cmdline length equals the `stat` span (40) | A1, A2, a detector | `PR_SET_MM_MAP` sets `arg_end = arg_start + len(label) + 1` and `env_start` to the same address, so the `argc` gap is gone and `start_stack` keeps the kernel value | enforced in exact mode; `--no-exact` writes the label over the arguments, pads with spaces and ends in one NUL, so the span is the original extent and the NUL run is 1; a cross-uid reader gets `0 0 0 0` | `compare.sh` span and NUL columns, `qa.d/40.sh` |
-| `environ` is a decoy (41) | A1, A2, A3 | the environment window is a complete decoy environment (or the kept entries) at `arg_end`; no real value is in it | partial: the window is a decoy, which is a shape a real `env -i` process does not have; `--no-exact` fills the original extent, and `--keep-env` publishes the values | `conformance.sh` environ-hidden, `options.sh` O9/O10; the four shapes are measured in `research/bteam-39-43.md` |
+| `environ` is a decoy (41) | A1, A2, A3 | the environment window is a complete decoy environment (or the kept entries) at `arg_end`; no real value is in it | partial: the window is a decoy, which is a shape a real `env -i` process does not have; `--no-exact` fills the original extent, and `--keep-env` publishes the values. The exposed length is pinned to the decoy's own length (110 bytes) when no variable is kept, so the size is as good a signature as the text | `conformance.sh` environ-hidden, `options.sh` O9/O10; the four shapes are measured in `research/bteam-39-43.md`, the fixed bytes in `tests/blueteam.sh` H7 |
 | the label hides which binary runs (42) | A1, A2 | nothing: `exe`, `maps`, `uid`, sockets, sessions, cgroup and the parent chain stay real | limit: `--rexec` moves `exe` to `/memfd:<label>`, and `--no-dumpable` refuses `exe` and `maps` to the same uid; the `comm`/`exe` split remains readable | `compare.sh` exe and maps columns; the masquerade matrix is in `research/bteam-39-43.md` |
 | `/proc/<pid>/auxv` and the payload agree on the label (43) | A1, A2 | the completion rewrites `AT_EXECFN` in `saved_auxv` and in the tracee's own stack vector, both pointing at the label copy at `env_end` | enforced where the window relocation runs; `--no-exact` and a refused `PR_SET_MM_MAP` leave the real exec path in both copies | `tests/qa.d/43.sh`; the relation is measured in `research/bteam-39-43.md` |
 | `--no-dumpable` closes same-uid reads (44) | A2 | `PR_SET_DUMPABLE=0` in every tracee, so `environ`, `maps`, `auxv`, `exe` and `fd/*` return `EACCES` to the same uid | partial: enforced where applied; the uniform `EACCES` shape is itself a fingerprint, and plain or isolate mode do not apply it | `conformance.sh` nodumpable-refuses, `compare.sh` supervisor column; `research/bteam-audit.md` |
@@ -83,6 +83,52 @@ note named in the row carries the command that produced them.
 | the kernel audit record carries the label (56, 59) | A3, an audit-based detector | the payload's record is read after the relocation and holds the label plus `argc - 1` empty strings; the supervisor's own record was written before any rewrite | partial: the payload record is enforced; the supervisor record carries the real argv, so a `literal:` secret is recoverable from `EXECVE` and `PROCTITLE` for the life of the log | `audit.sh` A1 to A7; the record shapes and the 11-launch capture (quoted) are in `research/bteam-audit.md` |
 | an eBPF exec sensor cannot see the arguments (57) | a kernel-side sensor | `sched_process_exec` carries the filename and two pids and fires before the ptrace stop; `sys_enter_execve` sees the swapped array | limit: the exec tracepoint cannot carry argv; the tracer's `ptrace` and `process_vm_writev` syscalls are the channel that does name the tracer and the target | none in the container (eBPF refused); the guest measurement is in `research/bteam-ebpf.md` |
 | the rootkit and hidden-pid detector family finds nothing (58) | a defender | nothing to hide: pmask keeps every pid, `readdir` entry and parent link, and rewrites the contents of three files | limit: the family is blind for `/proc`, but `chkproc` names a `--hide-pid` pid through `getpriority`, and `cgroup.procs`/`cgroup.threads` list it to any reader of the cgroup files; `pspy` prints the label, and `strace` is separated by `Tgid == Pid` | none; the tool matrix is in `research/bteam-detectors.md` |
+
+## What one command finds, per mode
+
+The sweep a defender runs first is one line, and it finds every run that
+installs the rename filter:
+
+```sh
+awk '$1=="Seccomp:" && $2!=0 {print FILENAME}' /proc/*/status
+```
+
+Measured in an Alpine 3.22 guest, kernel 6.12.115, release binary built
+from this tree, one `sleeping` payload per row, once as uid 0 and once as
+uid 1000. The two columns differ only where a same-uid reader is refused
+(`--no-dumpable`), which is the row `--stealth` buys.
+
+| mode | payload `Seccomp:` | payload `TracerPid` | supervisor `exe` | payload `exe` | payload `environ` |
+|---|---|---|---|---|---|
+| default | absent | the tracer | `/app/tests/pmask` | the real binary | the 110-byte decoy |
+| `--watch-rename` | 2 | the tracer | `/app/tests/pmask` | the real binary | the decoy |
+| `--watch-rename=strict` | 2 | the tracer | `/app/tests/pmask` | the real binary | the decoy |
+| `--stealth` | 2 | the tracer | unreadable to uid 1000, `/app/tests/pmask` to root | `/memfd:<label> (deleted)` to root, unreadable to uid 1000 | unreadable to uid 1000 |
+| `--on-exit detach` | absent | the tracer while the payload runs, 0 once it exits | `/app/tests/pmask` | the real binary | the decoy |
+| `--rexec` | absent | the tracer | `/app/tests/pmask` | `/memfd:<label> (deleted)` | the decoy |
+| `--no-exact` | absent | the tracer | `/app/tests/pmask` | the real binary | the decoy, at the original extent |
+
+The sweep counts 0 before any run and 1 for every mode that installs the
+filter, `--stealth` included: `--stealth` composes the default (non-strict)
+filter and makes the supervisor and the payload non-dumpable, and an
+unprivileged reader loses `exe`, `maps` and `environ` but not `Seccomp:`.
+That is the whole of what the flag buys, and it is why the last row of the
+`comm` claim above is written as a limit rather than a promise.
+
+One cell above is read rather than measured. Under `--stealth` a uid-1000
+reader got 0 bytes from the payload's `environ`, which is the measured
+refusal; `exe` is refused by the same `PTRACE_MODE_READ_FSCREDS` check
+behind the dumpable flag, so the cell says unreadable rather than quoting an
+empty `readlink`. The root column of the same row was measured.
+
+`tests/blueteam.sh` runs this grid in both passes and asserts the claims
+that follow from the docs: no filter in default mode, a filter in
+`--watch-rename`, `=strict` and `--stealth`, the tracer present while a
+payload runs under `--on-exit detach`, a memfd `exe` under `--rexec`, no
+padding in exact mode and the documented padding under `--no-exact`. A hit
+no claim covers is printed as a row and does not fail: the table above is
+the list of what a same-uid reader still learns, and it is measured, not
+claimed.
 
 ## Per-interface limits
 

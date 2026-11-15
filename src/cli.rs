@@ -91,6 +91,12 @@ Options:
                        where a non-dumpable process is a hidden pid.  Prints the
                        trade it chose.  The network identity is not part
                        of the mask; add --isolate=net for that.
+                       It is not
+                       the write-time variant: a symlink alias or an fd
+                       received over SCM_RIGHTS still reaches comm, and the
+                       filter shows in /proc/<pid>/status as Seccomp: 2.
+                       Add --watch-rename=strict to close the first; the
+                       second no flag can close.
       --hide-pid       Hide the tree's pids from same-uid /proc readers.
                        Opt in, never the default.  Needs /proc mounted
                        with hidepid=invisible or hidepid=ptraceable; the
@@ -131,7 +137,16 @@ Options:
                        (prctl PR_SET_NAME).  Uses a seccomp filter; implies
                        --no-new-privs.  If the filter cannot be installed,
                        the run exits 126 naming the failure instead of
-                       running without the promise.
+                       running without the promise.  The filter traps a
+                       write-mode open of /proc/.../comm; a symlink alias
+                       or a descriptor received over SCM_RIGHTS reaches
+                       comm without that path, so
+                       --watch-rename=strict also checks the descriptor
+                       target on every write at one stop per write.  The
+                       filter is kernel state: /proc/<pid>/status then
+                       reports Seccomp: 2 and NoNewPrivs: 1, which names
+                       the process as filtered.  Neither mode hides that,
+                       and no flag can.
       --rexec          Exec the program from a sealed memfd so that
                        /proc/<pid>/exe names the label, not the file.  The
                        child tries execveat(AT_EMPTY_PATH), then

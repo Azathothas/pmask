@@ -141,10 +141,10 @@ vm_fetch_parts() {
 # Suites copied into the initramfs, in run order.  The guest has no
 # python3, no C compiler and no session manager, and tests/run.sh prints
 # SKIP with a reason for every suite that is not staged.  The native gate
-# runs sixteen; the seven not staged here are store, isolation, lease,
+# runs eighteen; the seven not staged here are store, isolation, lease,
 # secrets, compare, conformance and regressions, whose cases do not run in
 # the guest.
-VM_SUITES="${PMASK_VM_SUITES:-validate suite stress edge daemon daemon_neg options redteam core audit}"
+VM_SUITES="${PMASK_VM_SUITES:-validate suite stress edge daemon daemon_neg options redteam blueteam core audit}"
 
 # vm_stage STAGE-DIR
 # Lays out the initramfs tree: busybox, binaries, suites.
@@ -187,6 +187,21 @@ vm_stage() {
     # which the guest has.  The native gate runs them; `tests/run.sh`
     # reads `.vm-staged` and prints one SKIP with that reason.
     chmod +x "$st"/app/tests/* 2>/dev/null
+    # PMASK_VM_FRAGS="71 72" stages those qa.d fragments plus qa.sh, so the
+    # gateway cases that need ptrace can be run in the guest on a host where
+    # ptrace is unavailable.  The native gate runs every fragment through
+    # qa.sh; this is the guest path for the subset under investigation.  A
+    # run with it set covers those fragments and not the rest, and says so.
+    mkdir -p "$st/app/tests/qa.d"
+    if [ -n "${PMASK_VM_FRAGS:-}" ]; then
+        echo "NOTE: staging qa fragments ${PMASK_VM_FRAGS} (this run covers that subset, not every fragment)"
+        cp "$ROOT/tests/qa.sh" "$st/app/tests/" 2>/dev/null || echo "NOTE: qa.sh absent"
+        cp "$ROOT/tests/lib.sh" "$st/app/tests/" 2>/dev/null || echo "NOTE: lib.sh absent"
+        for q in $PMASK_VM_FRAGS; do
+            cp "$ROOT/tests/qa.d/$q.sh" "$st/app/tests/qa.d/" 2>/dev/null || echo "NOTE: qa.d/$q.sh absent"
+        done
+    fi
+    chmod +x "$st"/app/tests/qa.d/* 2>/dev/null || true
 }
 
 # vm_pack STAGE-DIR OUT.cpio.gz

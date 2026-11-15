@@ -13,7 +13,10 @@
 #                          the same initramfs and the same two passes.
 #                          Not part of the default run.
 #
-# Environment: VM_TIMEOUT seconds per boot.
+# Environment: VM_TIMEOUT seconds per boot; PMASK_VM_FRAGS="71 72" to
+# stage named qa.d fragments alongside qa.sh (the guest path for the
+# ptrace cases on a host where ptrace is refused); PMASK_VM_SUITES to
+# replace the staged suite list.
 #
 # Cached under vm/cache/: pinned Alpine apks (name and sha256 in
 # common.sh), the unpacked kernel and busybox, the initramfs and the log.

@@ -33,6 +33,8 @@ read from the gate output, not estimated.
 | `AT_EXECFN` served as the label while `getauxval` returned the real path | fired | both copies are rewritten at the completion stop; they agree |
 | `environ` length 0 | fired | the window is a complete decoy with a non-zero span |
 | `write(2)` to `/proc/self/comm` | fired | refused by the opt-in filter (strict also covers aliases) |
+| a symlink to `/proc/<pid>/comm` opened for write | fired | refused by `--watch-rename=strict`; the default filter still admits it, which `README.md` and the `--help` text state |
+| `Seccomp: 2` on any process of the tree | fired only with a filter, which the default mode did not use | unchanged and unmaskable: the field is kernel state.  `--stealth` composes the filter, so it carries the field too |
 
 ## What still fires, and is now stated
 
@@ -45,6 +47,17 @@ read from the gate output, not estimated.
 - Root and anything with `CAP_SYS_PTRACE` read everything.  A same-uid
   peer reads a dumpable payload's memory, and the audit/eBPF channels
   still see the real exec image at exec time.
+- `Seccomp: 2` and `NoNewPrivs: 1` mark every run that installs the
+  rename filter, `--stealth` included, and one `awk` over `/proc/*/status`
+  finds it.  The field is kernel state, so no flag can hide it;
+  `docs/THREAT-MODEL.md` carries the per-mode measurement.
+- The supervisor's own `exe` is the pmask binary in every mode except
+  where `--no-dumpable` refuses the link to a same-uid reader, which is
+  what `--stealth` adds on top of the masks.  A `comm` that is the label
+  while `exe` is `pmask` is a one-glance signal in the default modes.
+- With no `--keep-env`, the payload's environment is a fixed 110-byte
+  decoy: an exact-match signature, and its size marks a process that
+  inherited nothing.  `--keep-env` is the plausible-environment path.
 - `--exec-once` leaves a readable named carrier; it is now
   authenticated and fails closed, but a same-uid process can still read
   the bytes before it is removed.
@@ -55,13 +68,18 @@ The micro-VM gate runs `tests/run.sh` as root and as uid 1000.  The
 counts are copied from the run that produced this tree:
 
 ```
-gate: 684 PASS, 0 FAIL, 32 SKIP (root and uid 1000; the count is
-read from vm/cache/vm-output.log for this tree)
+gate: 720 PASS, 0 FAIL, 32 SKIP (root and uid 1000; the count is
+read from vm/cache/vm-output.log for this tree, which stages
+`redteam` and `blueteam` among the eleven suites it copies)
 ```
 
 The native suites that need a full host (`qa.d`, `store`, `isolation`,
 `lease`, `secrets`, `compare`, `conformance`, `regressions`) are skipped
-inside the VM by design, so the count above does not include them.  The
+inside the VM by design, so the count above does not include them.  On a
+host where ptrace is refused, `PMASK_VM_FRAGS="71 72" sh vm/run.sh`
+stages those fragments with `qa.sh` so the guest decides them; the run
+prints a NOTE naming the subset, because a subset that reads as the whole
+set is the failure this harness exists to prevent.  The
 fragments for 65-77 are decided by the `native-suites` job, whose
 "per-issue QA fragments" step runs `tests/qa.sh` on the runner with
 ptrace enabled; that step requires a `QA: PASS` summary line with at

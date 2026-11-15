@@ -245,6 +245,37 @@ else
 fi
 kill -9 "$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; SUP=""; PAY=""
 
+# R7d/R7e: the same write through a symlink to /proc/self/comm.  The
+# default filter sees a path with no `/proc/` in it and cannot resolve it
+# by shape, so README documents the gap and names strict as the close.
+# The strict case must block; the default case records which of the two
+# states the build is in, and fails only when neither is observable.
+for m in strict default; do
+    case "$m" in
+        strict) flags="--watch-rename=strict"; tag=R7d-symlink-comm-guard-strict ;;
+        default) flags="--watch-rename"; tag=R7e-symlink-comm-guard-default ;;
+    esac
+    # shellcheck disable=SC2086
+    "$TOOL" -q $flags -l "rt-cl" -- "$CASES" commwrite 2 symlink >"$D/$m.out" 2>/dev/null &
+    SUP=$!
+    PAY=$(wait_child "$SUP") || true
+    sleep 1.2
+    if [ "$COMM_WRITE" = blocked ]; then
+        no_write "$tag"
+    elif [ -z "${PAY:-}" ]; then
+        fail "$tag (no child)"
+    else
+        c=$(cat "/proc/$PAY/comm" 2>/dev/null)
+        case "$m:$c" in
+            strict:rt-cl) pass "$tag (comm stayed the label)" ;;
+            strict:*) fail "$tag (comm=[$c])" ;;
+            default:rt-cl) pass "$tag (comm stayed the label: the README row is now stale)" ;;
+            *) pass "$tag (comm=[$c]; the documented default gap, closed by --watch-rename=strict)" ;;
+        esac
+    fi
+    kill -9 "$SUP" 2>/dev/null; wait "$SUP" 2>/dev/null; SUP=""; PAY=""
+done
+
 echo "################ REDTEAM: FAIL=$FAIL"
 [ "$FAIL" = 0 ] && exit 0
 exit 1
