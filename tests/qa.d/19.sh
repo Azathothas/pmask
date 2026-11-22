@@ -103,10 +103,13 @@ else
         fail "qa19-cmdline-is-exactly-the-label (cmdline=[$CMDLINE])"
     fi
     ENVSZ=$(wc -c <"/proc/$PID/environ" 2>/dev/null | tr -d ' ')
-    if [ "$ENVSZ" = "0" ]; then
-        pass "qa19-environ-empty"
+    ENVNUL=$(tr -cd '\0' <"/proc/$PID/environ" 2>/dev/null | wc -c | tr -d ' ')
+    # The window is the fixed decoy: it has bytes and it is not a run of
+    # NULs.  A zero-length window was the beta.4 shape.
+    if [ "${ENVSZ:-0}" -gt 0 ] && [ "${ENVNUL:-0}" -lt "${ENVSZ:-0}" ]; then
+        pass "qa19-environ-is-a-decoy (bytes=$ENVSZ nuls=$ENVNUL)"
     else
-        fail "qa19-environ-empty (environ=[$ENVSZ] bytes)"
+        fail "qa19-environ-is-a-decoy (bytes=${ENVSZ:-?} nuls=${ENVNUL:-?})"
     fi
 fi
 kill -9 "$SUP" ${PID:+"$PID"} 2>/dev/null

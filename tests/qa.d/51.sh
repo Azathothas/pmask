@@ -56,10 +56,12 @@ ROOTERR="$SOCKDIR/root.err"
 ROOTDIR=""
 RSOCK=""
 cleanup() {
-    [ -n "$DPID" ] && kill -9 "$DPID" 2>/dev/null
+    [ -n "$DPID" ] && { kill -9 "$DPID" 2>/dev/null || sudo -n kill -9 "$DPID" 2>/dev/null; }
     if [ -f "$ROOTPIDF" ]; then
         rp=$(cat "$ROOTPIDF" 2>/dev/null)
-        [ -n "$rp" ] && kill -9 "$rp" 2>/dev/null
+        # The root daemon is not ours to signal as the invoking uid; the
+        # sudo fallback is what keeps it from outliving the fragment.
+        [ -n "$rp" ] && { kill -9 "$rp" 2>/dev/null || sudo -n kill -9 "$rp" 2>/dev/null; }
     fi
     if [ -n "$ROOTDIR" ]; then
         if [ "$MY_UID" = 0 ]; then

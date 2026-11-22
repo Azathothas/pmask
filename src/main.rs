@@ -260,10 +260,10 @@ fn reexec_in_scope(name: &str, reexec_argv: &[std::ffi::OsString], quiet: bool) 
 /// handed to the session as-is, so `--secret` composes with `--comm`,
 /// `--rexec`, `--unshare`, `--no-dumpable` and the rest.  Options the
 /// selected mode cannot apply are named in the run report.
-fn run_with_secrets(cli: cli::Cli) -> i32 {
+fn run_with_secrets(mut cli: cli::Cli) -> i32 {
     use pmask::run::{Mode, Runner};
     let mut r = Runner::new()
-        .mask(cli.mask)
+        .mask(cli.mask.clone())
         .requested_options(&cli.mask_opts);
     for (name, src) in &cli.secrets {
         r = r.secret(name.clone(), src.clone());
@@ -305,8 +305,14 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     if cli.secret_close_on_exec {
         r = r.close_on_exec();
     }
-    if cli.no_dumpable {
+    if cli.no_dumpable || cli.hide_pid || cli.encrypt_memory {
         r = r.no_dumpable(true);
+    }
+    if cli.hide_pid {
+        r = r.hide_pid(true);
+    }
+    if cli.encrypt_memory {
+        r = r.encrypt_memory(true);
     }
     if cli.audit {
         r = r.audit();
@@ -326,7 +332,16 @@ fn run_with_secrets(cli: cli::Cli) -> i32 {
     } else {
         None
     };
-    match r.run(&cli.program, &cli.args) {
+    // Move the argument vector into the runner so it can zero the
+    // supervisor's copy as soon as the child has its own.  The other
+    // copies (the re-exec vector, the secret sources, the mask's env)
+    // are dropped before the run starts.
+    let args = std::mem::take(&mut cli.args);
+    cli.scrub_values();
+    cli.mask.scrub_env_values();
+    let result = r.run_owned(&cli.program, args);
+    r.scrub();
+    match result {
         Ok(outcome) => {
             if let Some(sink) = sink {
                 sink.write(&outcome.report_json());
@@ -361,7 +376,16 @@ sat in pmask's own argv or environ)"
         }
         Err(e) => {
             eprintln!("pmask: {}", e);
-            255
+            let text = e.to_string();
+            if text.starts_with("--rexec:") {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    127
+                } else {
+                    126
+                }
+            } else {
+                255
+            }
         }
     }
 }
@@ -369,9 +393,33 @@ sat in pmask's own argv or environ)"
 /// Where the `--report` document goes.  The target is opened before the
 /// payload runs, so a bad path or a closed descriptor is a usage error
 /// rather than a run whose result cannot be read.
+///
+/// A named report is staged in an unnamed `O_TMPFILE` inode (or a
+/// mode-0600 temporary name when the filesystem has no `O_TMPFILE`) and
+/// linked into place only after the session returns.  The payload has no
+/// descriptor to the document and no path to append to, so the file the
+/// consumer reads is the file pmask wrote (issue 007).
 enum ReportSink {
     Stdout,
-    File(std::fs::File, std::path::PathBuf),
+    File {
+        file: std::fs::File,
+        final_path: std::path::PathBuf,
+        /// A staged name, when the inode had to be named before the
+        /// report could be written (the `O_TMPFILE` fallback).
+        temp_path: Option<std::path::PathBuf>,
+        /// True when `file` is an unnamed `O_TMPFILE` inode; it has to
+        /// be linked before the rename.
+        unnamed: bool,
+    },
+}
+
+/// A unique temporary leaf in `dir` for the report staging.
+fn report_temp_name() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!(".pmask-report-{}-{:08x}", std::process::id(), nanos)
 }
 
 impl ReportSink {
@@ -380,35 +428,55 @@ impl ReportSink {
     fn open(file: Option<&std::path::Path>, fd: Option<libc::c_int>) -> Option<ReportSink> {
         if let Some(path) = file {
             use std::os::unix::fs::OpenOptionsExt;
-            // `O_NOFOLLOW`: a symlink planted at the path must not make
-            // pmask truncate its target, and a symlink is a usage error
-            // rather than something to follow.  `O_CLOEXEC` keeps the
-            // document out of the payload, and mode 0600 keeps the file
-            // private to this account.  The lease audit sink opens its
-            // file the same way.
+            use std::os::unix::io::AsRawFd;
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let temp_path = parent.join(report_temp_name());
+            // Prefer an unnamed inode.  `linkat` at write time makes the
+            // name, so the payload can neither open nor append while the
+            // tree is alive.
             match std::fs::OpenOptions::new()
+                .read(true)
                 .write(true)
-                .create(true)
-                .truncate(true)
                 .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(path)
+                .custom_flags(libc::O_TMPFILE | libc::O_CLOEXEC)
+                .open(parent)
             {
                 Ok(f) => {
-                    // `mode` applies only when the file is created.  An
-                    // existing report file kept whatever mode it had, so a
-                    // 0644 path handed the run's report to every local
-                    // account.  Narrow it to 0600 now that it is ours.
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Err(e) = f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
-                        eprintln!("pmask: --report-file {}: {}", path.display(), e);
-                        std::process::exit(255);
-                    }
-                    return Some(ReportSink::File(f, path.to_path_buf()));
+                    return Some(ReportSink::File {
+                        file: f,
+                        final_path: path.to_path_buf(),
+                        temp_path: Some(temp_path),
+                        unnamed: true,
+                    });
                 }
-                Err(e) => {
-                    eprintln!("pmask: --report-file {}: {}", path.display(), e);
-                    std::process::exit(255);
+                Err(_) => {
+                    // Filesystem without O_TMPFILE: a 0600 name is the
+                    // next best staging point, and the rename is still
+                    // atomic.
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                        .open(&temp_path)
+                    {
+                        Ok(f) => {
+                            let _ = f.as_raw_fd();
+                            return Some(ReportSink::File {
+                                file: f,
+                                final_path: path.to_path_buf(),
+                                temp_path: Some(temp_path),
+                                unnamed: false,
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                            std::process::exit(255);
+                        }
+                    }
                 }
             }
         }
@@ -432,12 +500,6 @@ impl ReportSink {
             // SAFETY: `dup` on a descriptor the operator passed open; the
             // original stays open, so a shell redirect the caller still
             // owns is not closed by us.
-            //
-            // `F_DUPFD_CLOEXEC`: the duplicate must not reach the payload.
-            // A payload that inherits it can write into the document a CI
-            // consumer is about to parse, which defeats the reason to use
-            // `--report-fd` instead of stdout.  `--report-file` is
-            // close-on-exec for the same reason.
             let dup = unsafe { libc::fcntl(n, libc::F_DUPFD_CLOEXEC, 3) };
             if dup < 0 {
                 eprintln!(
@@ -450,48 +512,107 @@ impl ReportSink {
             // The caller's own descriptor must not reach the payload
             // either: a `9>report.json` redirect in a shell is not
             // close-on-exec, so the payload would inherit fd 9 and could
-            // write into the document a consumer is about to parse.  The
-            // duplicate above is already close-on-exec and is what pmask
-            // writes through, so setting the flag on the original costs
-            // the caller nothing in this process and closes the channel.
-            // SAFETY: `fcntl` on a descriptor the operator passed open; a
-            // failure is not fatal (the report still lands), so the
-            // result is dropped.
+            // write into the document a consumer is about to parse.
+            // SAFETY: `fcntl` on a descriptor the operator passed open.
             unsafe { libc::fcntl(n, libc::F_SETFD, libc::FD_CLOEXEC) };
             let f = unsafe { <std::fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(dup) };
-            return Some(ReportSink::File(f, std::path::PathBuf::new()));
+            return Some(ReportSink::File {
+                file: f,
+                final_path: std::path::PathBuf::new(),
+                temp_path: None,
+                unnamed: false,
+            });
         }
         Some(ReportSink::Stdout)
     }
 
     /// Write the finished document.
-    ///
-    /// A file or descriptor the caller named must take the document, so a
-    /// failed write there is reported and exits 255.  Stdout is different:
-    /// the reader may have gone away (a closed pipe, `| head -1`), and
-    /// `print!` panics on that, which `panic = "abort"` turns into
-    /// SIGABRT and replaces the payload's exit status (issue 17's class).
-    /// A report nobody reads must not change the run's result, so the
-    /// stdout write takes the same drop-result treatment as the audit rows.
-    fn write(self, text: &str) {
+    fn write(mut self, text: &str) {
         use std::io::Write;
-        match self {
+        match &mut self {
             ReportSink::Stdout => {
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(text.as_bytes());
                 let _ = out.flush();
             }
-            ReportSink::File(mut f, path) => {
-                if let Err(e) = f.write_all(text.as_bytes()).and_then(|_| f.flush()) {
-                    if path.as_os_str().is_empty() {
+            ReportSink::File {
+                file,
+                final_path,
+                temp_path,
+                unnamed,
+            } => {
+                let wrote = file
+                    .write_all(text.as_bytes())
+                    .and_then(|_| file.flush())
+                    .and_then(|_| file.sync_all());
+                if let Err(e) = wrote {
+                    if !*unnamed {
+                        if let Some(tmp) = temp_path.take() {
+                            let _ = std::fs::remove_file(&tmp);
+                        }
+                    }
+                    if final_path.as_os_str().is_empty() {
                         eprintln!("pmask: --report-fd: {}", e);
                     } else {
-                        eprintln!("pmask: --report-file {}: {}", path.display(), e);
+                        eprintln!("pmask: --report-file {}: {}", final_path.display(), e);
                     }
                     std::process::exit(255);
                 }
+                if let Some(tmp) = temp_path.take() {
+                    let linked = if *unnamed {
+                        link_tmpfile(file, &tmp)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(e) = linked.and_then(|_| std::fs::rename(&tmp, &*final_path)) {
+                        let _ = std::fs::remove_file(&tmp);
+                        eprintln!("pmask: --report-file {}: {}", final_path.display(), e);
+                        std::process::exit(255);
+                    }
+                }
             }
         }
+    }
+}
+
+impl Drop for ReportSink {
+    fn drop(&mut self) {
+        if let ReportSink::File {
+            temp_path: Some(tmp),
+            unnamed: false,
+            ..
+        } = self
+        {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
+}
+
+/// Give an unnamed `O_TMPFILE` inode the staged name.
+fn link_tmpfile(file: &std::fs::File, temp: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+    let proc_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let from = std::ffi::CString::new(proc_path).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in report fd path")
+    })?;
+    let to = std::ffi::CString::new(temp.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in report path"))?;
+    // `AT_SYMLINK_FOLLOW` follows `/proc/self/fd/N` to the unnamed inode.
+    // SAFETY: both paths are valid NUL-terminated strings.
+    let rc = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -534,6 +655,7 @@ fn main() {
     // executable resolution, probes) runs with the secret already gone
     // from the process table.
     let mut argv = pmask::mask::snapshot_argv();
+    let mut original_argv = argv.clone();
     if std::env::var_os("PMASK_NO_SELFMASK").is_none() {
         let _ = pmask::mask::zero_argv_block();
     }
@@ -541,6 +663,10 @@ fn main() {
     // The secret-side subcommands (store, agent, read, probe, ...).  Each
     // one is a distinct verb; the default face of the program is the mask.
     if argv.len() >= 2 && pmask::subcmd::is_subcommand(&argv[1]) {
+        for a in &mut original_argv {
+            cli::scrub_os_string(a);
+        }
+        original_argv.clear();
         std::process::exit(pmask::subcmd::dispatch(&argv, &cli::help_text()));
     }
     // `pmask run ...` is the mask parser with the secret options; the
@@ -574,6 +700,16 @@ fn main() {
         }
         if cli.no_redact {
             local_only.push("--no-redact");
+        }
+        // The daemon owns the masking policy and has no report document to
+        // return.  These four change what the local runner does and cannot
+        // be honoured by a job sent to pmaskd; refusing is better than
+        // running the job locally while the operator asked for the daemon.
+        if cli.hide_pid {
+            local_only.push("--hide-pid");
+        }
+        if cli.encrypt_memory {
+            local_only.push("--encrypt-memory");
         }
         if cli.mask.has_image() {
             // Both spellings of the image family are refused; name both
@@ -623,47 +759,25 @@ fn main() {
         std::process::exit(255);
     }
 
-    // `--report=json` is produced by the secret-side runner.  The plain
-    // mask path and the `--daemon` client have no report to print, and a
-    // flag that is silently dropped is a degradation the operator cannot
-    // see (invariant 13), so name the mode and refuse.  This runs before
-    // the scope re-exec and `--args-from-fd`: neither can make the run
-    // produce a report, and the scope and the descriptor must not be
-    // consumed for a command that cannot work.
-    if cli.report_json && !cli.needs_runner() {
-        if cli.daemon.is_some() {
-            eprintln!(
-                "pmask: --report=json: a --daemon job does not produce a report; the \
-                 daemon owns the run, so drop --report"
-            );
+    // `--report=json` is produced by the local runner on every path,
+    // including plain redaction.  A `--daemon` job has no document to
+    // return: the daemon owns the run.  A flag that is silently dropped is
+    // a degradation the operator cannot see (invariant 13), so name it and
+    // refuse.  This runs before the scope re-exec and `--args-from-fd`:
+    // neither can make a daemon job produce a report.
+    if cli.report_json && cli.daemon.is_some() {
+        let which = if cli.report_file.is_some() {
+            "--report-file"
+        } else if cli.report_fd.is_some() {
+            "--report-fd"
         } else {
-            // Name the flag the operator wrote: `--report-file` and
-            // `--report-fd` imply the JSON report, so a message about
-            // `--report=json` alone reads as a flag they never passed.
-            let which = if cli.report_file.is_some() {
-                "--report-file"
-            } else if cli.report_fd.is_some() {
-                "--report-fd"
-            } else {
-                "--report=json"
-            };
-            eprintln!(
-                "pmask: {}: the plain mask path does not produce a report; the \
-                 report describes a secret-side run, so add --secret, --isolate or --no-redact, \
-                 or drop the report option",
-                which
-            );
-            // `--redact` changes nothing about the runner: it is the
-            // default mode spelled out.  Say so, because the old message
-            // told an operator to add a flag the line already carried
-            // (b-team finding against issue 19).
-            if cli.redact {
-                eprintln!(
-                    "pmask: note: --redact selects the same /proc treatment as the default \
-                     and does not produce a report; use --secret or --no-redact"
-                );
-            }
-        }
+            "--report=json"
+        };
+        eprintln!(
+            "pmask: {}: a --daemon job does not produce a report; the daemon owns the run, \
+             so drop the report option or run the job without --daemon",
+            which
+        );
         std::process::exit(255);
     }
 
@@ -687,6 +801,11 @@ fn main() {
     // itself.
     let no_selfmask = std::env::var_os("PMASK_NO_SELFMASK").is_some();
     check_no_selfmask(&cli, no_selfmask);
+    if no_selfmask {
+        // The supervisor's own /proc entry stays real, so it must stay
+        // non-dumpable.
+        cli.mask = cli.mask.clone().supervisor_non_dumpable(true);
+    }
     warn_keep_env_secret(&cli);
 
     // Read the command before every path that needs it: the runner path
@@ -694,7 +813,172 @@ fn main() {
     // `--args-from-fd` runs the program the descriptor names.
     cli.load_args_fd();
 
-    if cli.needs_runner() {
+    // A run that will not redact should not keep the zeroed argv block.
+    // `main` zeros it before the options are known; now that the mode is
+    // decided, put the caller's command line back so the supervisor is an
+    // ordinary process of the caller's uid.  A plain-sight `literal:` or
+    // `env:` secret keeps the zeroing: the plain path refuses that
+    // combination unless `--allow-argv-secret` accepts the exposure, and
+    // restoring the value would publish it.
+    let plain_mode = cli.no_redact || !pmask::caps::Caps::cached().ptrace;
+    if plain_mode
+        && std::env::var_os("PMASK_NO_SELFMASK").is_none()
+        && plain_sight_secrets(&cli).is_empty()
+    {
+        let _ = pmask::restore_own_argv(&original_argv);
+    }
+    // `original_argv` was kept only for the plain-mode restore above.
+    // Wipe every argument immediately so `--secret literal:...` and payload
+    // arguments never remain on `main`'s heap for the life of the session.
+    for a in &mut original_argv {
+        cli::scrub_os_string(a);
+    }
+    original_argv.clear();
+
+    // `--exec-once` caches a later exec as a named carrier and installs
+    // a seccomp exec filter.  Both need a dumpable tracee at the exec
+    // entry stop: a non-dumpable tracee refuses the tracer's writes, the
+    // filter install answers EIO, and the carrier is never used (issue
+    // 002).  Refuse the combination instead of silently running the
+    // on-disk program.  `--hide-pid` and `--stealth` (on non-hidepid
+    // hosts) pin the same flag for the same reason.
+    if cli.mask.exec_once_enabled()
+        && (cli.no_dumpable
+            || cli.hide_pid
+            || !cli.mask.payload_is_dumpable()
+            || (!cli.secrets.is_empty() && !cli.allow_dumpable))
+    {
+        eprintln!(
+            "pmask: --exec-once needs a dumpable tracee at its later exec's entry stop; \
+             --no-dumpable, --hide-pid and --stealth (on a non-hidepid host) make that write \
+             fail, so the cached carrier could not be used.  Drop one flag, or use --rexec \
+             without --exec-once."
+        );
+        std::process::exit(255);
+    }
+
+    // A delivered secret is the value `--secret` exists to keep out of
+    // `/proc`.  The same-uid descriptor read and the payload-memory read
+    // are open in the default mode, so a run that delivers one closes
+    // both unless the operator explicitly asks for a dumpable payload
+    // (issue 004).  The redaction mode applies the flag at each exec; the
+    // plain and isolate modes say they cannot.
+    if !cli.secrets.is_empty() && !cli.allow_dumpable && !cli.no_dumpable {
+        let no_tracer = plain_mode || (cli.isolate.is_some() && !cli.redact);
+        if no_tracer {
+            if !cli.quiet {
+                eprintln!(
+                    "pmask: --secret: this mode runs the payload without a tracer, so the \
+                     same-uid descriptor read stays open; use the redaction mode or \
+                     --allow-dumpable to accept it"
+                );
+            }
+        } else {
+            cli.mask = cli.mask.no_dumpable().supervisor_non_dumpable(true);
+            cli.no_dumpable = true;
+            if !cli.quiet {
+                eprintln!(
+                    "pmask: --secret: the payload is non-dumpable so a same-uid process \
+                     cannot read the delivered value or its memory; pass --allow-dumpable \
+                     to opt out"
+                );
+            }
+        }
+    }
+
+    // A seccomp filter cannot be removed.  `--watch-rename` (and the
+    // `--stealth` composition) refuses an explicit `--detach` for that
+    // reason, but the default policy reached the same orphan-filter state
+    // for a descendant: its `prctl(PR_SET_NAME)` then returned `ENOSYS`
+    // with no tracer to service the stop (issue 009).  Unless the caller
+    // chose a policy, keep the tracer; an explicit detach is refused.
+    if cli.mask.watch_rename_enabled() {
+        if cli.mask.session_end_explicit() {
+            if cli.mask.session_end_value() == pmask::SessionEnd::Detach {
+                eprintln!(
+                    "pmask: --watch-rename installs a seccomp filter that cannot be removed; \
+                     --on-exit detach would leave it in a descendant with no tracer to \
+                     service it.  Drop --detach, or use --on-exit wait or kill."
+                );
+                std::process::exit(255);
+            }
+        } else {
+            cli.mask = cli.mask.session_end(pmask::SessionEnd::WaitTree);
+            if !cli.quiet {
+                eprintln!(
+                    "pmask: --watch-rename: waiting for the tree so the filter keeps a tracer; \
+                     pass --on-exit detach to be refused, or wait/kill to choose"
+                );
+            }
+        }
+    }
+
+    if cli.mask.strict_exec_enabled() && cli.mask.detach_after_exec_enabled() {
+        eprintln!(
+            "pmask: --strict-exec and --detach cannot be combined: --detach releases each \
+             tracee after its first exec, so later execs run unredacted; drop --detach \
+             to keep strict exec enforcement"
+        );
+        std::process::exit(255);
+    }
+
+    // `--audit` rows and `--report=json` both write stdout.  A consumer
+    // that parses the stream as JSON would fail, so refuse the pair
+    // instead of documenting a contract the run cannot keep (issue 007).
+    if cli.audit && cli.report_json && cli.report_file.is_none() && cli.report_fd.is_none() {
+        eprintln!(
+            "pmask: --audit writes its residue rows to stdout, and --report writes the JSON \
+             document there too; use --report-file PATH or --report-fd N, or drop one flag"
+        );
+        std::process::exit(255);
+    }
+
+    // A report is an integrity record.  With the default detach policy a
+    // descendant can outlive pmask and append to the document after it
+    // was written (issue 007).  Unless the caller chose a policy, a
+    // report run waits for the tree before the document is linked into
+    // place.  An explicit `--on-exit detach` keeps the old behaviour and
+    // the warning says what it costs.
+    if cli.report_json && !plain_mode {
+        if !cli.mask.session_end_explicit() {
+            cli.mask = cli.mask.session_end(pmask::SessionEnd::WaitTree);
+            if !cli.quiet {
+                eprintln!(
+                    "pmask: --report: waiting for the tree so the document is written after \
+                     it; pass --on-exit detach to opt out"
+                );
+            }
+        } else if cli.mask.session_end_value() == pmask::SessionEnd::Detach && !cli.quiet {
+            // The caller asked for the policy this block exists to avoid,
+            // so the cost is named rather than silently paid: a
+            // descendant can outlive the supervisor and append to the
+            // document once it is linked into place.
+            eprintln!(
+                "pmask: warning: --on-exit detach lets a descendant outlive this process, \
+                 and the report is a file it can append to after it is written"
+            );
+        }
+        // A dumpable supervisor exposes the staged report descriptor
+        // through `/proc/<supervisor>/fd`.  A report run closes that
+        // route; the document is not the payload's to edit.
+        cli.mask = cli.mask.supervisor_non_dumpable(true);
+    }
+
+    // A report alone must not select the runner on a host that cannot
+    // redact: the runner would fall back to `mode=plain` and run the
+    // payload unredacted, while the same command without a report refuses
+    // it.  Refuse instead of weakening the run for a document.
+    if cli.report_json && !cli.needs_runner_without_report() && !pmask::caps::Caps::cached().ptrace
+    {
+        eprintln!(
+            "pmask: --report=json: the report needs the redaction mode, and this host \
+             refuses ptrace; the payload would run unredacted.  Run where ptrace is \
+             permitted, or drop the report option."
+        );
+        std::process::exit(255);
+    }
+
+    if cli.needs_runner() && cli.daemon.is_none() {
         std::process::exit(run_with_secrets(cli));
     }
 
@@ -742,12 +1026,28 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("pmask: {}: {}", cli.program.to_string_lossy(), e);
+            // The `--rexec` contract names the child status: 126 when the
+            // image cannot be placed, 127 when the source is missing.
+            // The preparation happens in the parent, so map it here.
+            let text = e.to_string();
+            if text.starts_with("--rexec:") {
+                let code = if e.kind() == std::io::ErrorKind::NotFound {
+                    127
+                } else {
+                    126
+                };
+                std::process::exit(code);
+            }
             std::process::exit(255);
         }
     };
+    // The child's exec plan has its own copy.  Drop the supervisor's
+    // copies before the session starts.
+    cli.scrub_values();
+    cli.mask.scrub_env_values();
 
     if !no_selfmask {
-        if let Err(e) = prepared.mask_self() {
+        if let Err(e) = prepared.mask_self_opts(cli.mask.supervisor_is_non_dumpable()) {
             if !cli.quiet {
                 eprintln!(
                     "pmask: warning: the supervisor's own /proc entry could not be fully \

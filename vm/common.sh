@@ -23,7 +23,7 @@ ALPINE_BASE="https://dl-cdn.alpinelinux.org/alpine"
 BB_REPO="v3.22/main"
 BB_APK_VERSION="busybox-static-1.37.0-r20.apk"
 KERNEL_REPO="v3.22/main"
-KERNEL_APK_VERSION="linux-virt-6.12.115-r0.apk"
+KERNEL_APK_VERSION="linux-virt-6.12.118-r0.apk"
 
 # Old-kernel boot (x86_64 only): Alpine v3.17 ships linux-virt 5.15.x.
 OLD_KERNEL_REPO="v3.17/main"
@@ -37,7 +37,7 @@ case "$ARCH" in
         CONSOLE=ttyS0
         ALPINE_ARCH=x86_64
         MUSL_TARGET=x86_64-unknown-linux-musl
-        KERNEL_SHA256="2c0146b71bb15b1dbfe3056d430ddcdb6f99ed937db51be0a2a7760db6a9b3fc"
+        KERNEL_SHA256="69e52c96189223c8f6c3e8409fd90ec918101055adcc491b069a7861f34c1a49"
         BB_SHA256="488ad6efd04b5a722719e79f8e0dcc2c24afd6758867af3ce41b04839e60c74b"
         VM_TIMEOUT="${VM_TIMEOUT:-2400}"
         ;;
@@ -51,7 +51,7 @@ case "$ARCH" in
         CONSOLE=ttyAMA0
         ALPINE_ARCH=aarch64
         MUSL_TARGET=aarch64-unknown-linux-musl
-        KERNEL_SHA256="445dd29708c1df38c6643e2d6e7b4ac86ff6ab1e26e14f6c512c1e64794b51ef"
+        KERNEL_SHA256="a78f4198dbdfa84a342f0146d9b8509ec89b76b760b6830a4374b98aead53949"
         BB_SHA256="ee469aee2958feffd7f64dd96655704025ff60af614f77a1d7323dc237c34da2"
         VM_TIMEOUT="${VM_TIMEOUT:-7200}"
         ;;
@@ -141,10 +141,10 @@ vm_fetch_parts() {
 # Suites copied into the initramfs, in run order.  The guest has no
 # python3, no C compiler and no session manager, and tests/run.sh prints
 # SKIP with a reason for every suite that is not staged.  The native gate
-# runs sixteen; the seven not staged here are store, isolation, lease,
+# runs eighteen; the seven not staged here are store, isolation, lease,
 # secrets, compare, conformance and regressions, whose cases do not run in
 # the guest.
-VM_SUITES="validate suite stress edge daemon daemon_neg options core audit"
+VM_SUITES="${PMASK_VM_SUITES:-validate suite stress edge daemon daemon_neg options redteam blueteam core audit}"
 
 # vm_stage STAGE-DIR
 # Lays out the initramfs tree: busybox, binaries, suites.
@@ -187,6 +187,21 @@ vm_stage() {
     # which the guest has.  The native gate runs them; `tests/run.sh`
     # reads `.vm-staged` and prints one SKIP with that reason.
     chmod +x "$st"/app/tests/* 2>/dev/null
+    # PMASK_VM_FRAGS="71 72" stages those qa.d fragments plus qa.sh, so the
+    # gateway cases that need ptrace can be run in the guest on a host where
+    # ptrace is unavailable.  The native gate runs every fragment through
+    # qa.sh; this is the guest path for the subset under investigation.  A
+    # run with it set covers those fragments and not the rest, and says so.
+    mkdir -p "$st/app/tests/qa.d"
+    if [ -n "${PMASK_VM_FRAGS:-}" ]; then
+        echo "NOTE: staging qa fragments ${PMASK_VM_FRAGS} (this run covers that subset, not every fragment)"
+        cp "$ROOT/tests/qa.sh" "$st/app/tests/" 2>/dev/null || echo "NOTE: qa.sh absent"
+        cp "$ROOT/tests/lib.sh" "$st/app/tests/" 2>/dev/null || echo "NOTE: lib.sh absent"
+        for q in $PMASK_VM_FRAGS; do
+            cp "$ROOT/tests/qa.d/$q.sh" "$st/app/tests/qa.d/" 2>/dev/null || echo "NOTE: qa.d/$q.sh absent"
+        done
+    fi
+    chmod +x "$st"/app/tests/qa.d/* 2>/dev/null || true
 }
 
 # vm_pack STAGE-DIR OUT.cpio.gz

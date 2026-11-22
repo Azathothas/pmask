@@ -5,7 +5,7 @@
 //! ```text
 //! pmask store init
 //! pmask store set DEPLOY_TOKEN < token.txt
-//! pmask run --secret DEPLOY_TOKEN=daemon:DEPLOY_TOKEN -- ./deploy.sh
+//! pmask run --secret DEPLOY_TOKEN=agent:DEPLOY_TOKEN -- ./deploy.sh
 //! ```
 //!
 //! At rest the file is XChaCha20-Poly1305 ciphertext under an Argon2id
@@ -746,6 +746,7 @@ impl Store {
     }
 
     /// Unlock an existing store under an explicit policy.
+    #[allow(deprecated)]
     pub fn open_with_policy(
         path: &Path,
         passphrase: &Passphrase,
@@ -857,6 +858,7 @@ impl Store {
         self.save_in(&dir, passphrase)
     }
 
+    #[allow(deprecated)]
     fn save_in(&self, dir: &Path, passphrase: &Passphrase) -> io::Result<()> {
         self.params.validate(&self.policy.kdf)?;
 

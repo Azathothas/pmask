@@ -1,18 +1,13 @@
 #!/bin/sh
 # Issue 43: AT_EXECFN in /proc/<pid>/auxv versus the payload's own getauxval.
 #
-# pmask rewrites AT_EXECFN in the kernel's saved auxv.  On this build the
-# rewritten pointer lands on the second label copy at `env_end`, so the
-# relation `/proc/<pid>/auxv` reports is the same one an ordinary exec
-# has: AT_EXECFN == env_end.  Measured three times with labels of 4, 8
-# and 12 bytes, and once more here with a 4th.  A rule written as
-# "AT_EXECFN == arg_start" produces no hit, which is the correction the
-# issue records.
-#
-# The payload's own `getauxval(AT_EXECFN)` is not served by that rewrite:
-# the kernel built the process stack from the real exec, so the payload
-# reads the real exec path.  The disagreement between the two is the
-# signal and it is the documented boundary, not a defect.
+# pmask rewrites AT_EXECFN in both the kernel's saved auxv and the
+# payload's initial stack auxv in exact mode.  Both `/proc/<pid>/auxv`
+# and the payload's own `getauxval(AT_EXECFN)` resolve to the second
+# label copy at `env_end`, so the relation matches an ordinary exec:
+# AT_EXECFN == env_end, `env_start == arg_end`, and both views agree on
+# the label.  Under `--no-exact`, neither view is rewritten and both
+# report the real exec path.
 #
 # The auxv pointer is resolved through /proc/<pid>/mem, which needs
 # CAP_SYS_PTRACE-equivalent access to a same-uid process.  That works
@@ -25,9 +20,9 @@
 #   A2 masked: /proc/<pid>/auxv resolves AT_EXECFN to the label
 #   A3 masked: AT_EXECFN == env_end (the relation the issue measures)
 #   A4 masked: AT_EXECFN != arg_start (the rule that does not fire)
-#   A5 masked: the payload's own getauxval returns the real path
-#   A6 the in-payload and served views disagree (the signal)
-#   A7 the second label copy sits at 1 + len(label) + argc from arg_start
+#   A5 masked: the payload's own getauxval returns the label
+#   A6 the in-payload and served views agree on the label
+#   A7 the second label copy sits at arg_span + env_span from arg_start
 #   A10 --no-exact does not rewrite the auxv at all: both views agree
 #   A11 --keep-env leaves AT_EXECFN in the block, so it != env_end
 set -u
@@ -188,36 +183,37 @@ EOT
         else
             fail "a4-execfn-differs-from-arg-start (ptr=[$ptr] arg_start=[$as])"
         fi
-        # A7: the offset of the second label copy from arg_start.  The
-        # formula is 1 + len(label) + argc, and this payload's argv is
-        # `testcases execfn 20`, so argc is 3.
-        want=$(( 1 + ${#L} + 3 ))
+        # A7: the second label copy sits directly after the contiguous
+        # argv and decoy-environ spans (`ptr == ee`, `es == ae`, `env_span > 0`).
         if [ -n "$ptr" ]; then
+            arg_span=$(( ae - as ))
+            env_span=$(( ee - es ))
+            want=$(( arg_span + env_span ))
             got=$(( ptr - as ))
-            if [ "$got" = "$want" ]; then
-                pass "a7-second-copy-offset (offset=$got = 1+label+argc)"
+            if [ "$es" = "$ae" ] && [ "$env_span" -gt 0 ] && [ "$got" = "$want" ]; then
+                pass "a7-second-copy-offset (offset=$got = arg_span($arg_span)+env_span($env_span))"
             else
-                fail "a7-second-copy-offset (offset=$got, want $want = 1+${#L}+3)"
+                fail "a7-second-copy-offset (offset=$got want=$want ae=$ae es=$es ee=$ee)"
             fi
         fi
     fi
 
     # A5: the payload's own view, printed on its stdout before it sleeps.
+    # Exact mode rewrites stack AT_EXECFN, so getauxval returns the label.
     real=$(sed -n 's/^execfn=//p' "$D/masked.out" 2>/dev/null | head -n 1)
-    case "$real" in
-        */testcases)
-            pass "a5-payload-getauxval-real-path ($real)" ;;
-        *)
-            fail "a5-payload-getauxval-real-path (got [${real}] out=$(tr '\n' '|' < "$D/masked.out"))" ;;
-    esac
-    # A6: the two views disagree.  Only decidable when the auxv pointer
-    # was resolvable.
-    if [ "$denied" = 1 ]; then
-        echo "SKIP a6-served-and-in-payload-disagree (a same-uid reader cannot open /proc/$PAY/mem here)"
-    elif [ -n "$served" ] && [ -n "$real" ] && [ "$served" != "$real" ]; then
-        pass "a6-served-and-in-payload-disagree (served=$served real=$real)"
+    if [ "$real" = "$L" ]; then
+        pass "a5-payload-getauxval-is-the-label ($real)"
     else
-        fail "a6-served-and-in-payload-disagree (served=[$served] real=[$real])"
+        fail "a5-payload-getauxval-is-the-label (got [${real}] want [$L] out=$(tr '\n' '|' < "$D/masked.out"))"
+    fi
+    # A6: the two views agree on the label.  Only decidable when the auxv
+    # pointer was resolvable.
+    if [ "$denied" = 1 ]; then
+        echo "SKIP a6-served-and-in-payload-agree (a same-uid reader cannot open /proc/$PAY/mem here)"
+    elif [ -n "$served" ] && [ -n "$real" ] && [ "$served" = "$real" ]; then
+        pass "a6-served-and-in-payload-agree (served=$served in_payload=$real)"
+    else
+        fail "a6-served-and-in-payload-agree (served=[$served] in_payload=[$real])"
     fi
     # The real binary is not the label: this is what makes "the label" a
     # signal rather than the program's own name.

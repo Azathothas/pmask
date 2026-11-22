@@ -7,8 +7,9 @@
 #   q50b  default mode: the served cmdline is the label, and the real argv
 #         is still recoverable from the payload's memory.  This is the
 #         documented residual, asserted so nobody reports it as closed
-#   q50c  the supervisor's own memory is refused to the same uid (it is
-#         non-dumpable), which is the half the mask does cover
+#   q50c  the supervisor's own memory is readable at rest but carries no
+#         marker: it scrubs the at-rest copies, so it can stay dumpable
+#         and out of the hidden-pid family on a hidepid=invisible host
 #   q50d  --no-dumpable: the same read is refused for the payload and the
 #         payload still runs and works
 #   q50e  the supervisor's maps are unreadable in both modes (control for
@@ -224,18 +225,18 @@ else
             fail "q50b-default-payload-memory-is-readable (rc=$d_rc no hit: $(printf '%s' "$OUT" | head -1))" ;;
     esac
 
-    # The supervisor is non-dumpable by design: its own memory must be
-    # refused to the same uid.
+    # The supervisor is dumpable at rest, but it has scrubbed the real
+    # argv and environment: the scan must find no marker.
     scan "$SUP" "$MARK"
     s_rc=$SCAN_RC
     echo "SUPERVISOR pid=$SUP rc=$s_rc $(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-160)"
     case "$OUT" in
-        *REFUSED*)
-            pass "q50c-supervisor-memory-is-refused (rc=$s_rc $(printf '%s' "$OUT" | head -1))" ;;
         *HIT*)
-            fail "q50c-supervisor-memory-is-refused (the supervisor's memory carried the marker)" ;;
+            fail "q50c-supervisor-memory-has-no-marker (the supervisor's memory carried the marker)" ;;
+        *REFUSED*)
+            fail "q50c-supervisor-memory-has-no-marker (refused: the supervisor is non-dumpable, so it is a hidden pid on hidepid=invisible)" ;;
         *)
-            fail "q50c-supervisor-memory-is-refused (rc=$s_rc no refusal and no hit: $(printf '%s' "$OUT" | head -1))" ;;
+            pass "q50c-supervisor-memory-has-no-marker (rc=$s_rc readable, no hit)" ;;
     esac
 fi
 kill -9 "$SUP" 2>/dev/null

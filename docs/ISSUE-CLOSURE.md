@@ -1,6 +1,11 @@
 # Issue closure
 
-One section per issue. The `fix commit` column names the commit whose change fixes the issue, as its diff shows; `none` means the issue is a measurement, design or record item with no code fix, and the test and note below are the closure. The `commits` column is provenance, not a fix list: it holds the commits that name the issue and the commits that carry its test, evidence or documentation. The test column names the fragment that would fail if the behaviour changed; the evidence column names the directory holding the raw logs.
+Each issue below has a provenance row and a detail section.
+The `fix commit` column names the commit or release that fixes the issue.
+A value of `none` marks a measurement, design boundary, or record item with no code fix, where the test and note form the closure.
+The `commits` column holds provenance commits that reference the issue or carry its test, evidence, or documentation.
+The `test` column names the automated check that fails if the behaviour regresses.
+The `evidence` column names the directory or report holding the recorded logs.
 
 | # | issue | fix commit | commits | test | evidence |
 |---|---|---|---|---|---|
@@ -39,16 +44,16 @@ One section per issue. The `fix commit` column names the commit whose change fix
 | 36 | Assorted small CLI/docs nitpicks (F17, F22, F25, F27, F28) | `03a4be6`, `b6822b1` | `2e1627b`, `03a4be6`, `fa0204a` | `tests/qa.d/36.sh` | `evidence/fix2`, `evidence/fix5` |
 | 38 | [b-team] The tracer thread is named `pmask-tracer`, and `TracerPid` points at a thread of the supervisor | `69cc3f8` | `5abd5e4`, `45e7683`, `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/38.sh` | `evidence/bteam2` |
 | 39 | [b-team] The supervisor's own `/proc` entry: the label, a zero argv window, two threads, and the `PMASK_NO_SELFMASK` escape | `fcec4b0`, `ee9e7e2` | `6ebbedd`, `36e134a`, `ee9e7e2`, `26aeb7a`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/39.sh` | `evidence/bteam1` |
-| 40 | [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero | none | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/40.sh` | `evidence/bteam1` |
+| 40 | [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero | `v0.1.0` | `a5c7708`, `bd8b77a`, `0e5b064`, `v0.1.0` | `tests/qa.d/40.sh`, `tests/redteam.sh` R1/R2 | `evidence/bteam1`, `docs/REDTEAM-RESULTS.md` |
 | 41 | [b-team] The `environ` file of a masked process: zero bytes, a NUL run, or the kept variables | `fcec4b0` | `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/41.sh` | `evidence/bteam1` |
-| 42 | [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade | none | `199580b`, `a5c7708`, `bd8b77a`, `0e5b064` | `tests/qa.d/42.sh` | `evidence/bteam1` |
-| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | none | `2cc6a62`, `babede3`, `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064` | `tests/qa.d/43.sh` | `evidence/bteam1` |
+| 42 | [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade | none (design boundary) | `199580b`, `a5c7708`, `bd8b77a`, `0e5b064`, `v0.1.0` | `tests/qa.d/42.sh` | `evidence/bteam1`, `docs/THREAT-MODEL.md` |
+| 43 | [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path | `v0.1.0` (exact mode) | `2cc6a62`, `babede3`, `149ee7c`, `a5c7708`, `bc2888f`, `bd8b77a`, `0e5b064`, `v0.1.0` | `tests/qa.d/43.sh`, `tests/redteam.sh` `R1-inprocess-auxv` | `evidence/bteam1`, `docs/REDTEAM-RESULTS.md` |
 | 44 | [b-team] `--no-dumpable` answers `EACCES` on five files and zeroes four `stat` fields | none | `ee9e7e2`, `66937c9`, `74fbe52`, `720873b`, `9ca47ad`, `8d1c552` | `tests/qa.d/44.sh` | `evidence/bteam3` |
 | 45 | [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem` | `812b15d` | `12d334a`, `ad77b37`, `0022762`, `20716d0` | `tests/qa.d/45.sh` | `evidence/bteam5` |
 | 46 | [b-team] `--watch-rename` leaves a second seccomp filter and `NoNewPrivs=1` | none | `5abd5e4`, `e77a5da`, `03720b3`, `c4b61fc`, `d155066`, `af95ff7` | `tests/qa.d/46.sh` | `evidence/bteam5` |
 | 47 | [b-team] End states: `--detach`, `--no-follow`, `--on-exit` and `PTRACE_O_EXITKILL` | `424d0e8`, `1063b67` | `3eb7ab2`, `7f80d21`, `e51b7bd`, `ecd419d`, `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/47.sh` | `evidence/bteam2`, `evidence/fix4` |
 | 48 | [b-team] The launch window and the statistical side channels of supervision | none | `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/48.sh` | `evidence/bteam2` |
-| 49 | [b-team] Modes that do not redact: 32-bit images, plain, `--isolate` and `--unshare` | none | `66937c9`, `9ca47ad`, `74b7b6a` | `tests/qa.d/49.sh` | `evidence/bteam3` |
+| 49 | [b-team] Modes that do not redact: 32-bit images, plain, `--isolate` and `--unshare` | `v0.1.0` (32-bit refused by default, plain and `--isolate` documented limits) | `66937c9`, `9ca47ad`, `74b7b6a`, `v0.1.0` | `tests/qa.d/49.sh` | `evidence/bteam3`, `docs/DETECTION-AUDIT.md` |
 | 50 | [b-team] The real argv stays in payload memory | none | `fbc4666`, `f1a3a3d`, `f0bd7e0` | `tests/qa.d/50.sh` | `evidence/bteam2` |
 | 51 | [b-team] `pmaskd` is discoverable: the socket table, the 0600 node and the PING oracle | `fc23d43` | `ef061ad`, `fc23d43` | `tests/qa.d/51.sh` | `evidence/bteam4` |
 | 52 | [b-team] `pmaskd`'s own entry, its workers and the job leaf | none | `997c22c` | `tests/qa.d/52.sh` | `evidence/bteam4` |
@@ -56,11 +61,25 @@ One section per issue. The `fix commit` column names the commit whose change fix
 | 54 | [b-team] The on-disk footprint: `store.enc`, the agent socket, the unit files, the tmpfiles entry and the release binary | none | `997c22c`, `032f78c` | `tests/qa.d/54.sh` | `evidence/bteam4`, `evidence/fix5` |
 | 55 | [b-team] Records outside the masked tree: report, audit, daemon log, `sudo` argv, shell history, systemd scope, `probe`/`doctor` | none | `997c22c` | `tests/qa.d/55.sh` | `evidence/bteam4` |
 | 56 | [b-team] auditd: the records a pmask launch leaves, and the rule forms that do and do not see them | none | `bc75077`, `9ca47ad`, `8031b41`, `07d7cc8` | `tests/qa.d/56.sh` | `evidence/bteam3` |
-| 57 | [b-team] eBPF sensors and the process connector: what each sees of a masked exec | none | `ee9e7e2`, `307491a`, `7d12efc`, `ca32ce6` | `tests/qa.d/57.sh` | `evidence/bteam5` |
-| 58 | [b-team] The detector family that does not see pmask, and what pmask genuinely hides | none | `da57ffa`, `5f996f6` | `tests/qa.d/58.sh` | `evidence/bteam5` |
+| 57 | [b-team] eBPF sensors and the process connector: what each sees of a masked exec | none (kernel/OS boundary) | `ee9e7e2`, `307491a`, `7d12efc`, `ca32ce6`, `v0.1.0` | `tests/qa.d/57.sh` | `evidence/bteam5`, `docs/THREAT-MODEL.md` |
+| 58 | [b-team] The detector family that does not see pmask, and what pmask genuinely hides | none (kernel/OS boundary + `--hide-pid` exception) | `da57ffa`, `5f996f6`, `v0.1.0` | `tests/qa.d/58.sh`, `tests/blueteam.sh` | `evidence/bteam5`, `docs/THREAT-MODEL.md` |
 | 59 | The supervisor's own exec writes the payload argv and any `literal:` secret into the kernel audit log | `34b20e3` | `9ca47ad`, `07d7cc8`, `6a1ba77`, `34b20e3` | `tests/qa.d/59.sh` | `evidence/bteam3` |
 | 60 | `--watch-rename` and `--no-dumpable` together cannot redirect a rename | `cd389fd`, `320c056` | `320c056`, `b48373f`, `398eda3` | `tests/qa.d/60.sh` | `evidence/fix1` |
-| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | `bb9d755` | `bb9d755` | the corrected text itself; `evidence/docs2/61-git-apply-check.log` | `evidence/docs2` |
+| 61 | Detection documentation contradicts its own measurements: a four-hunk patch | `bb9d755` | `bb9d755` | the corrected text itself, `evidence/docs2/61-git-apply-check.log` | `evidence/docs2` |
+| 64 | `--exec-once` carrier replacement, cache key, reaper cleanup, and `seal()` warning (001) | `v0.1.0` | `v0.1.0` | `src/rexec.rs::carrier_tests`, `tests/redteam.sh` (note: `tests/qa.d/64.sh` tests `--encrypt-memory`, not issue #64) | `docs/REDTEAM-RESULTS.md` |
+| 65 | `--exec-once` fast path fails under non-dumpable modes (002) | `v0.1.0` | `v0.1.0` | `tests/qa.d/65.sh`, `tests/options.sh` O39 | `docs/REDTEAM-RESULTS.md` |
+| 66 | Exposure window on `#!` scripts, `vfork`, fallbacks, re-exec bypasses, and `--detach` (003) | `v0.1.0` | `v0.1.0` | `tests/qa.d/66.sh` | `docs/REDTEAM-RESULTS.md` |
+| 67 | Same-uid memory, secret fd, and supervisor image fd reads (004) | `v0.1.0` | `v0.1.0` | `tests/qa.d/67.sh`, `tests/options.sh` O27, `tests/daemon.sh` d7b/d8 | `docs/REDTEAM-RESULTS.md` |
+| 68 | Secret holder dumpable during load window (005) | `v0.1.0` | `v0.1.0` | `tests/qa.d/68.sh` | `docs/REDTEAM-RESULTS.md` |
+| 69 | `/proc/self/exe` and `/proc/thread-self/` under `--exec-once` (006) | `v0.1.0` | `v0.1.0` | `tests/qa.d/69.sh`, `tests/redteam.sh` R4 | `docs/REDTEAM-RESULTS.md` |
+| 70 | Report staging, non-dumpable supervisor preservation, `--audit` + JSON refusal, and residue fd detection (007) | `v0.1.0` | `v0.1.0` | `tests/qa.d/70.sh`, `tests/redteam.sh` R6 | `docs/REDTEAM-RESULTS.md` |
+| 71 | `write(2)` to `/proc/self/comm` bypasses `--watch-rename` (008) | `v0.1.0` | `v0.1.0` | `tests/qa.d/71.sh`, `tests/redteam.sh` R7 | `docs/REDTEAM-RESULTS.md` |
+| 72 | `--watch-rename` leaves an orphaned seccomp filter after detach (009) | `v0.1.0` | `v0.1.0` | `tests/qa.d/72.sh` | `docs/REDTEAM-RESULTS.md` |
+| 73 | `--hide-pid` kernel/OS boundary against cgroupfs and non-`/proc` syscalls (010) | `v0.1.0` (boundary documented + notice) | `v0.1.0` | `tests/qa.d/73.sh` | `docs/REDTEAM-RESULTS.md`, `docs/THREAT-MODEL.md` |
+| 74 | `--no-exact` shortens argv extent and repeats decoy environment (011) | `v0.1.0` | `v0.1.0` | `tests/qa.d/74.sh`, `tests/redteam.sh` R2 | `docs/REDTEAM-RESULTS.md` |
+| 75 | Exact mode `stat` gap, `start_stack`, `[stack]` VMA, and `--encrypt-memory` `MADV_DONTDUMP` placement (012) | `v0.1.0` | `v0.1.0` | `tests/qa.d/75.sh`, `tests/qa.d/64.sh`, `tests/redteam.sh` R1 | `docs/REDTEAM-RESULTS.md` |
+| 76 | `--rexec` silent fallback to on-disk execution (013) | `v0.1.0` | `v0.1.0` | `tests/qa.d/76.sh`, `tests/options.sh` O32 | `docs/REDTEAM-RESULTS.md` |
+| 77 | Plain mode supervisor leaves an all-NUL `cmdline` (014) | `v0.1.0` | `v0.1.0` | `tests/qa.d/77.sh`, `tests/redteam.sh` R3 | `docs/REDTEAM-RESULTS.md` |
 
 ## Details
 
@@ -69,13 +88,13 @@ One section per issue. The `fix commit` column names the commit whose change fix
 - `b48373f` test: add fix1 evidence for issues 4 5 15 16 17 33 60
 - `398eda3` test: add QA fragments for issues 4 5 15 16 17 33 60
 - `74b7b6a` test: cover the mode table that does not redact
-  One row per mode: default, --no-redact, --isolate, --unshare, --redact --isolate and a 32-bit image. Each asserts the real or the label shape, the environ byte count, TracerPid, and the namespace fingerprints (`hidepid=invisible` in mountinfo, an NSpid chain of two). The --unshare row is decided by measurement: if the build serves the label the fragment asserts the fixed shape, and if it serves the real argv it prints SKIP naming the #4/qa-fix1 dependency instead of passing. Both branches were exercised, the release build against the first and the musl build against the second. Trees are walked by PPid, never `pgrep -x sleep`, because other suites run on this host. Refs #49
+  The fragment tests six modes: default, `--no-redact`, `--isolate`, `--unshare`, `--redact --isolate`, and a 32-bit image. Each row checks the command line shape, the `environ` byte count, `TracerPid`, and namespace fingerprints (`hidepid=invisible` in `mountinfo` and a two-entry `NSpid` chain). For `--unshare`, the fragment asserts the fixed shape when the build serves the label. When the build serves the real argv, the fragment prints `SKIP` naming the `#4/qa-fix1` dependency. Both branches ran, with the release build taking the fixed branch and the musl build taking the skip branch. The fragment walks process trees by `PPid` rather than `pgrep -x sleep` to stay isolated from concurrent suites. Refs #49.
 - Test: `tests/qa.d/4.sh`
 
 ### #5 `pmask read NAME` fails inside a masked payload
 
 - `0b01a4f` fix: snapshot argv from the runtime's own copy
-  A nested `pmask read NAME` failed because the supervisor re-read `/proc/self/cmdline`, which an outer exact mask had already moved onto the label. The snapshot now comes from the runtime's own argv, with `/proc/self/cmdline` only as the fallback for an empty runtime vector.
+  A nested `pmask read NAME` failed because the supervisor re-read `/proc/self/cmdline`, which an outer exact mask had replaced with the label. `pmask` now snapshots its runtime argv vector directly and falls back to `/proc/self/cmdline` only when the runtime vector is empty.
   Files: `src/mask.rs`
 - `b48373f` test: add fix1 evidence for issues 4 5 15 16 17 33 60
 - `398eda3` test: add QA fragments for issues 4 5 15 16 17 33 60
@@ -141,7 +160,9 @@ One section per issue. The `fix commit` column names the commit whose change fix
   Files: `man/pmask.1`, `src/cli.rs`, `src/main.rs`, `src/run.rs`, `tests/helpers/noptrace.c`
 - Test: `tests/qa.d/14.sh`
 
-### #15 The supervisor's `memfd_secret` buffer is not `MFD_CLOEXEC`, so the plaintext leaks into the tree
+### #15 The supervisor's `memfd_secret` buffer is not close-on-exec, so the plaintext leaks into the tree
+
+> Later correction (`0.1.0-beta.5` final): `memfd_secret(2)` accepts `O_CLOEXEC`, not `MFD_CLOEXEC`. Passing `0x1` returns `EINVAL` on that ABI. The code and unit test now pass `O_CLOEXEC`. The commit subjects below record the initial fix verbatim.
 
 - `b48373f` test: add fix1 evidence for issues 4 5 15 16 17 33 60
 - `398eda3` test: add QA fragments for issues 4 5 15 16 17 33 60
@@ -299,115 +320,112 @@ One section per issue. The `fix commit` column names the commit whose change fix
 ### #38 [b-team] The tracer thread is named `pmask-tracer`, and `TracerPid` points at a thread of the supervisor
 
 - `69cc3f8` fix: name the tracer thread after the session label
-  The fixed `pmask-tracer` comm is replaced by the session's own comm, so one read of `/proc/<supervisor>/task/*/comm` no longer names every supervised tree on the host.
+  The tracer thread uses the session `comm` instead of the fixed `pmask-tracer` string. Reading `/proc/<supervisor>/task/*/comm` no longer identifies every supervised tree on the host.
   Files: `src/mask.rs`
 - `5abd5e4` test: tighten the 38 and 46 controls for the fixed tree
 - `45e7683` docs: date the audit capture against #38
   Files: `docs/research/bteam-audit.md`
 - `fbc4666` test: report the launch-window spread instead of one sample
-  The window is a few hundred microseconds, and the sampler finds the payload by scanning /proc, so a scan under load can take longer than the interval it is measuring. A single sample therefore sometimes reports "no window", which is a property of the instrument rather than of the mask. The masked rows are now repeated, the median of the attempts that caught a window is quoted with its min and max, and a row that missed every attempt prints SKIP with the reason instead of a zero. The per-attempt lines stay in the output so the spread is visible. Two measurement errors are corrected in the note with the numbers that replace them: * the median is quoted, not the largest. Taking the largest across retries is a biased estimator: repeating until the number looks big is how a measurement stops meaning anything. * the spawn-latency plain row is marked UNSTABLE in the recorded run, and the note says so rather than quoting the quieter run as if it were the only one. The masked median is the same across runs; the ratio moves with the denominator.
+  The launch window lasts a few hundred microseconds, so a single `/proc` scan under load can miss the interval. Masked rows now repeat and report the median, minimum, and maximum across attempts that catch a window. A row that misses every attempt prints `SKIP` with the reason instead of zero. The note corrects two earlier errors: the harness reports the median rather than the biased maximum, and the plain spawn-latency row is marked `UNSTABLE`.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - `f1a3a3d` test: make every QA fragment clean up its own processes
-  A parked payload is not inert: `holdargs` and the labelled sleepers carry a real argv and a real comm, and the gate's world-wide sweeps attribute a stranger's process to whatever case is scanning at that moment. A fragment that exits through an assertion, a timeout or a signal therefore has to remove what it started, not only the happy path. Every fragment now records each pid it starts and kills the list in its trap, kills by its own labels (which is exhaustive for the payloads it cannot name ahead of time), and traps HUP and QUIT as well as EXIT, INT and TERM. Proved both ways on 50.sh: with the cleanup removed, an abort after the control starts leaves `testcases holdargs` parked; with the cleanup in place it does not.
+  Parked payloads such as `holdargs` carry real argv and `comm` values that can pollute concurrent sweeps. Every QA fragment now records spawned pids, traps `EXIT`, `INT`, `TERM`, `HUP`, and `QUIT`, and kills both recorded pids and labelled leftovers. Verification on `50.sh` confirmed that aborting a run leaves zero parked `testcases holdargs` processes.
 - `f0bd7e0` test: cover the tracer name, end states, launch window and memory
-  One QA fragment per b-team issue, plus the measurement harness, the research note that carries the numbers, and the evidence each claim points at. 38 the tracer thread is named after the session comm. The negative control runs the same observer against a pre-fix binary and finds the retired name, so the zero after the fix means the name is gone. The runner path (--secret) and the daemon path are both covered: the first because it calls spawn before the self-mask, the second because it is the only other caller of Mask::spawn. 47 the four documented end states, each with the control that stops it being vacuous, and the new --detach release warning. 48 measurements/launch-window.sh: spawn latency with per-round spread, a C /proc/<pid>/comm sampler for the launch window, and the syscall signature from a per-thread attach. Two findings beyond the issue: a shell sampler cannot see the window (one sample costs about 2 ms here), and strace -f kills a session because strace seizes the payload before pmask can. 50 /proc/<pid>/mem as the same uid recovers the real argv in default mode; --no-dumpable refuses it while the payload keeps working. The research note states every number with its kernel, uid and command, and names --args-from-fd as the launcher-argv mitigation for the launch window.
+  Commit `f0bd7e0` adds QA fragments, the measurement harness, the research note, and raw evidence for issues #38, #47, #48, and #50. Issue #38 verifies the tracer thread name on both the `--secret` runner and daemon paths against a pre-fix negative control. Issue #47 covers all four documented end states and the `--detach` warning. Issue #48 adds `measurements/launch-window.sh` with a C `/proc/<pid>/comm` sampler. The note records that a shell sampler (~2 ms per sample) misses the window and `strace -f` breaks seizure. Issue #50 confirms same-uid `/proc/<pid>/mem` recovery in default mode and refusal under `--no-dumpable`.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - Test: `tests/qa.d/38.sh`
 
 ### #39 [b-team] The supervisor's own `/proc` entry: the label, a zero argv window, two threads, and the `PMASK_NO_SELFMASK` escape
 
 - `fcec4b0` feat: warn when a documented escape publishes a secret
-  The `PMASK_NO_SELFMASK` warning, and the refusal of a plain-mode run that would put the supervisor's argv into the kernel audit log when the audit subsystem answers.
+  `pmask` warns on `PMASK_NO_SELFMASK` and refuses plain-mode runs that would write the supervisor argv into an active kernel audit log.
   Files: `src/caps.rs`, `src/cli.rs`, `src/main.rs`
 - `6ebbedd` test: reap a plain-mode payload before its supervisor
 - `36e134a` test: poll for the escape's argv instead of one sample
 - `ee9e7e2` fix: one warning for one exposure, and the thread names the label
   Files: `src/main.rs`, `src/subcmd.rs`
 - `26aeb7a` docs: record the refusal-before-warning ordering in the evidence
-  Two runs where a refusal makes the command impossible now print only the refusal, with no exposure warning for a run that will not happen.
+  Runs blocked by a refusal print only the refusal and suppress exposure warnings for commands that will not execute.
 - `a5c7708` docs: refresh the evidence logs and add the verification transcript
-  The five QA fragments were re-run against the final build and their output is stored beside the measurements. verification.log carries the exact fmt, clippy, lib-test and rename-check invocations with their exit codes.
+  All five QA fragments ran against the final build with outputs saved alongside `verification.log` (fmt, clippy, lib tests, and rename check).
 - `bc2888f` docs: measure the zero-argv startup window
-  The issue title names it and no log measured it. Twelve runs sampled the supervisor's own cmdline as fast as a POSIX shell loop can: five of them caught an all-NUL window of the original length before the label landed. It is not closable, because the label cannot be written before the block is zeroed without leaving the secret readable during the parse.
+  Twelve shell-loop runs sampled the supervisor `cmdline` at startup, and five caught an all-NUL window of the original length before the label landed. The window cannot close in userland because zeroing must precede parsing to avoid exposing secrets.
   Files: `docs/research/bteam-39-43.md`
 - `bd8b77a` docs: record the b-team 39-43 residue measurements
-  New research note plus one evidence directory per issue. The note carries each detector rule, the measured output, why the channel cannot be closed in userland, and the trade of every alternative. It also records four corrections to the issue reports, each backed by a log: - PMASK_NO_SELFMASK is honoured on the plain path and overridden after the fork in redact and isolate mode (issue 39) - --no-exact does not keep the original extent on the ELF entry path; it keeps one NUL per argument slot (issue 40) - a literal: secret never reaches the payload's environ, so the keep-env warning must be scoped to env: (issue 41) - --no-exact does not rewrite the auxv at all, and AT_EXECFN == env_end only holds when the environment is redacted (issue 43)
+  The research note and evidence directories document each detector rule, measured output, userland limit, and design trade for issues #39 through #43. Four log-backed corrections appear in the note. First, `PMASK_NO_SELFMASK` applies on the plain path and is overridden after fork in redact and isolate modes (#39). Second, pre-`v0.1.0` `--no-exact` kept one NUL per argument slot on ELF entry (#40). Third, `literal:` secrets never enter payload `environ`, so the `--keep-env` warning scopes to `env:` (#41). Fourth, `--no-exact` leaves `auxv` unchanged, and `AT_EXECFN == env_end` held only when `environ` was redacted (#43).
   Files: `docs/research/bteam-39-43.md`
 - `0e5b064` test: cover the self-mask, windows, environ and auxv channels
-  Five QA fragments, one per b-team issue: 39 the supervisor's own entry: comm/cmdline/tracer task, the non-dumpable zeros for a same-uid reader, the relocated window as root, and the PMASK_NO_SELFMASK warning and audit refusal 40 the argv window arithmetic: label+NUL, arg span == cmdline bytes, env_start == env_end, the label cuts, and the --no-exact count rule 41 the environ shapes: 0 bytes, a NUL run, --keep-env and --keep-env=NAME, plus the env: warning and that the kept variables stay kept 42 the label limits and the comm/cmdline/exe split, with the --comm LF and CR behaviour recorded against fix1's issue 33 43 AT_EXECFN: the served label, AT_EXECFN == env_end, the in-payload getauxval dissent, and the two modes where each fails Each has a negative control and a liveness check. The fragments set BIN_DIR themselves because lib.sh derives it from the cwd, which is tests/qa.d for a fragment.
+  Five QA fragments cover issues #39 through #43 with negative controls, liveness checks, and explicit `BIN_DIR` setup. Fragment `39.sh` tests supervisor `comm`/`cmdline`/tracer task, non-dumpable zeros, root-relocated window, and `PMASK_NO_SELFMASK` handling.
 - Test: `tests/qa.d/39.sh`
 
 ### #40 [b-team] The argv window arithmetic of a masked process: `cmdline` is the label, its byte count equals the `stat` span, and the environment span is zero
 
+- `v0.1.0` fix: stack-region presentation block and `--no-exact` extent preservation
+  Exact mode places the presentation block inside `[stack]` with `arg_end == env_start`, plausible decoy `environ`, and `start_stack < arg_start`. The real `[stack]` VMA remains intact. `--no-exact` preserves the original argv extent, fills `cmdline` with spaces plus one NUL, and writes complete non-repeating decoy `environ` entries (see #74 and #75).
 - `a5c7708` docs: refresh the evidence logs and add the verification transcript
-  The five QA fragments were re-run against the final build and their output is stored beside the measurements. verification.log carries the exact fmt, clippy, lib-test and rename-check invocations with their exit codes.
 - `bd8b77a` docs: record the b-team 39-43 residue measurements
-  New research note plus one evidence directory per issue. The note carries each detector rule, the measured output, why the channel cannot be closed in userland, and the trade of every alternative. It also records four corrections to the issue reports, each backed by a log: - PMASK_NO_SELFMASK is honoured on the plain path and overridden after the fork in redact and isolate mode (issue 39) - --no-exact does not keep the original extent on the ELF entry path; it keeps one NUL per argument slot (issue 40) - a literal: secret never reaches the payload's environ, so the keep-env warning must be scoped to env: (issue 41) - --no-exact does not rewrite the auxv at all, and AT_EXECFN == env_end only holds when the environment is redacted (issue 43)
   Files: `docs/research/bteam-39-43.md`
 - `0e5b064` test: cover the self-mask, windows, environ and auxv channels
-  Five QA fragments, one per b-team issue: 39 the supervisor's own entry: comm/cmdline/tracer task, the non-dumpable zeros for a same-uid reader, the relocated window as root, and the PMASK_NO_SELFMASK warning and audit refusal 40 the argv window arithmetic: label+NUL, arg span == cmdline bytes, env_start == env_end, the label cuts, and the --no-exact count rule 41 the environ shapes: 0 bytes, a NUL run, --keep-env and --keep-env=NAME, plus the env: warning and that the kept variables stay kept 42 the label limits and the comm/cmdline/exe split, with the --comm LF and CR behaviour recorded against fix1's issue 33 43 AT_EXECFN: the served label, AT_EXECFN == env_end, the in-payload getauxval dissent, and the two modes where each fails Each has a negative control and a liveness check. The fragments set BIN_DIR themselves because lib.sh derives it from the cwd, which is tests/qa.d for a fragment.
-- Test: `tests/qa.d/40.sh`
+  Fragment `40.sh` checks argv window arithmetic, label length cuts, `env_start == arg_end`, decoy `environ`, and `--no-exact` formatting.
+- Test: `tests/qa.d/40.sh`, `tests/redteam.sh` R1/R2
 
 ### #41 [b-team] The `environ` file of a masked process: zero bytes, a NUL run, or the kept variables
 
 - `fcec4b0` feat: warn when a documented escape publishes a secret
-  The `--keep-env` warning fires only for an `env:` source the run keeps; a `literal:` value never reaches the payload's environ, so warning on it would be false.
+  The `--keep-env` warning fires only for an `env:` source that the run keeps. A `literal:` value never enters payload `environ`, so warning on `literal:` would be false.
   Files: `src/caps.rs`, `src/cli.rs`, `src/main.rs`
 - `a5c7708` docs: refresh the evidence logs and add the verification transcript
-  The five QA fragments were re-run against the final build and their output is stored beside the measurements. verification.log carries the exact fmt, clippy, lib-test and rename-check invocations with their exit codes.
 - `bd8b77a` docs: record the b-team 39-43 residue measurements
-  New research note plus one evidence directory per issue. The note carries each detector rule, the measured output, why the channel cannot be closed in userland, and the trade of every alternative. It also records four corrections to the issue reports, each backed by a log: - PMASK_NO_SELFMASK is honoured on the plain path and overridden after the fork in redact and isolate mode (issue 39) - --no-exact does not keep the original extent on the ELF entry path; it keeps one NUL per argument slot (issue 40) - a literal: secret never reaches the payload's environ, so the keep-env warning must be scoped to env: (issue 41) - --no-exact does not rewrite the auxv at all, and AT_EXECFN == env_end only holds when the environment is redacted (issue 43)
   Files: `docs/research/bteam-39-43.md`
 - `0e5b064` test: cover the self-mask, windows, environ and auxv channels
-  Five QA fragments, one per b-team issue: 39 the supervisor's own entry: comm/cmdline/tracer task, the non-dumpable zeros for a same-uid reader, the relocated window as root, and the PMASK_NO_SELFMASK warning and audit refusal 40 the argv window arithmetic: label+NUL, arg span == cmdline bytes, env_start == env_end, the label cuts, and the --no-exact count rule 41 the environ shapes: 0 bytes, a NUL run, --keep-env and --keep-env=NAME, plus the env: warning and that the kept variables stay kept 42 the label limits and the comm/cmdline/exe split, with the --comm LF and CR behaviour recorded against fix1's issue 33 43 AT_EXECFN: the served label, AT_EXECFN == env_end, the in-payload getauxval dissent, and the two modes where each fails Each has a negative control and a liveness check. The fragments set BIN_DIR themselves because lib.sh derives it from the cwd, which is tests/qa.d for a fragment.
+  Fragment `41.sh` verifies the decoy window, NUL handling, `--keep-env`, `--keep-env=NAME`, and the `env:` warning.
 - Test: `tests/qa.d/41.sh`
 
 ### #42 [b-team] `comm`, `cmdline` and `exe` disagree: label limits, blank labels and the masquerade
 
+- `v0.1.0` note: documented design boundary
+  `comm` stays within the 15-byte kernel limit, `cmdline` carries the label, and `exe` stays the real binary unless `--rexec` runs. `docs/THREAT-MODEL.md` records this design boundary.
 - `199580b` test: update the suites for the fixed behaviours
   Files: `completions/_pmask`, `completions/pmask.bash`, `completions/pmask.fish`, `tests/options.sh`
 - `a5c7708` docs: refresh the evidence logs and add the verification transcript
-  The five QA fragments were re-run against the final build and their output is stored beside the measurements. verification.log carries the exact fmt, clippy, lib-test and rename-check invocations with their exit codes.
 - `bd8b77a` docs: record the b-team 39-43 residue measurements
-  New research note plus one evidence directory per issue. The note carries each detector rule, the measured output, why the channel cannot be closed in userland, and the trade of every alternative. It also records four corrections to the issue reports, each backed by a log: - PMASK_NO_SELFMASK is honoured on the plain path and overridden after the fork in redact and isolate mode (issue 39) - --no-exact does not keep the original extent on the ELF entry path; it keeps one NUL per argument slot (issue 40) - a literal: secret never reaches the payload's environ, so the keep-env warning must be scoped to env: (issue 41) - --no-exact does not rewrite the auxv at all, and AT_EXECFN == env_end only holds when the environment is redacted (issue 43)
   Files: `docs/research/bteam-39-43.md`
 - `0e5b064` test: cover the self-mask, windows, environ and auxv channels
-  Five QA fragments, one per b-team issue: 39 the supervisor's own entry: comm/cmdline/tracer task, the non-dumpable zeros for a same-uid reader, the relocated window as root, and the PMASK_NO_SELFMASK warning and audit refusal 40 the argv window arithmetic: label+NUL, arg span == cmdline bytes, env_start == env_end, the label cuts, and the --no-exact count rule 41 the environ shapes: 0 bytes, a NUL run, --keep-env and --keep-env=NAME, plus the env: warning and that the kept variables stay kept 42 the label limits and the comm/cmdline/exe split, with the --comm LF and CR behaviour recorded against fix1's issue 33 43 AT_EXECFN: the served label, AT_EXECFN == env_end, the in-payload getauxval dissent, and the two modes where each fails Each has a negative control and a liveness check. The fragments set BIN_DIR themselves because lib.sh derives it from the cwd, which is tests/qa.d for a fragment.
+  Fragment `42.sh` verifies label length limits, the `comm`/`cmdline`/`exe` split, and `--comm` LF/CR rejection (issue #33).
 - Test: `tests/qa.d/42.sh`
 
 ### #43 [b-team] `AT_EXECFN` serves a second label copy at `env_end`, while the payload's own `getauxval` keeps the real path
 
+- `v0.1.0` fix: rewrite stack `AT_EXECFN` in exact mode
+  In exact mode, `patch_stack_execfn` rewrites stack `AT_EXECFN` so in-process `getauxval(AT_EXECFN)` matches `/proc/<pid>/auxv`, and `pres_bytes` fixes the trailing NUL. Under `--no-exact`, both `getauxval(AT_EXECFN)` and `/proc/<pid>/auxv` stay the real path.
 - `2cc6a62` docs: elide the worktree path from a research capture
   Files: `docs/research/bteam-39-43.md`
 - `babede3` docs: date the pre-38 tracer captures
   Files: `docs/research/bteam-39-43.md`, `docs/research/bteam-ebpf.md`
 - `149ee7c` docs: point every claim in the residue note at its source
-  Each measured statement now names the function that produces it, so a reader can check the note against the tree instead of trusting it. Also replaces one rounded figure with the number the log carries.
+  Each measured claim names the producing source function and replaces one rounded figure with the exact logged value.
   Files: `docs/research/bteam-39-43.md`
 - `a5c7708` docs: refresh the evidence logs and add the verification transcript
-  The five QA fragments were re-run against the final build and their output is stored beside the measurements. verification.log carries the exact fmt, clippy, lib-test and rename-check invocations with their exit codes.
 - `bc2888f` docs: measure the zero-argv startup window
-  The issue title names it and no log measured it. Twelve runs sampled the supervisor's own cmdline as fast as a POSIX shell loop can: five of them caught an all-NUL window of the original length before the label landed. It is not closable, because the label cannot be written before the block is zeroed without leaving the secret readable during the parse.
   Files: `docs/research/bteam-39-43.md`
 - `bd8b77a` docs: record the b-team 39-43 residue measurements
-  New research note plus one evidence directory per issue. The note carries each detector rule, the measured output, why the channel cannot be closed in userland, and the trade of every alternative. It also records four corrections to the issue reports, each backed by a log: - PMASK_NO_SELFMASK is honoured on the plain path and overridden after the fork in redact and isolate mode (issue 39) - --no-exact does not keep the original extent on the ELF entry path; it keeps one NUL per argument slot (issue 40) - a literal: secret never reaches the payload's environ, so the keep-env warning must be scoped to env: (issue 41) - --no-exact does not rewrite the auxv at all, and AT_EXECFN == env_end only holds when the environment is redacted (issue 43)
   Files: `docs/research/bteam-39-43.md`
 - `0e5b064` test: cover the self-mask, windows, environ and auxv channels
-  Five QA fragments, one per b-team issue: 39 the supervisor's own entry: comm/cmdline/tracer task, the non-dumpable zeros for a same-uid reader, the relocated window as root, and the PMASK_NO_SELFMASK warning and audit refusal 40 the argv window arithmetic: label+NUL, arg span == cmdline bytes, env_start == env_end, the label cuts, and the --no-exact count rule 41 the environ shapes: 0 bytes, a NUL run, --keep-env and --keep-env=NAME, plus the env: warning and that the kept variables stay kept 42 the label limits and the comm/cmdline/exe split, with the --comm LF and CR behaviour recorded against fix1's issue 33 43 AT_EXECFN: the served label, AT_EXECFN == env_end, the in-payload getauxval dissent, and the two modes where each fails Each has a negative control and a liveness check. The fragments set BIN_DIR themselves because lib.sh derives it from the cwd, which is tests/qa.d for a fragment.
-- Test: `tests/qa.d/43.sh`
+  Fragment `43.sh` checks `/proc/<pid>/auxv` `AT_EXECFN`, in-process `getauxval(AT_EXECFN)`, and `--no-exact` behaviour.
+- Test: `tests/qa.d/43.sh`, `tests/redteam.sh` `R1-inprocess-auxv`
 
 ### #44 [b-team] `--no-dumpable` answers `EACCES` on five files and zeroes four `stat` fields
 
 - `ee9e7e2` fix: one warning for one exposure, and the thread names the label
   Files: `src/main.rs`, `src/subcmd.rs`
 - `66937c9` docs: correct which process is the isolate namespace init
-  The earlier note read the nsenter shell's own Pid as if it were the payload's and concluded the leaf was not the namespace init. It is: the host-side NSpid of the leaf is "<hostpid> 1", and an in-namespace /proc/1/comm names the leaf's program. Under --isolate that means the namespace init is the process carrying the real argv, which is exactly why a one-level check reads clean. Adds the four-run transcript.
+  Under `--isolate`, the leaf payload has host-side `NSpid` `<hostpid> 1` and serves as the namespace init carrying the real argv. The commit adds the four-run transcript confirming this correction.
 - `74fbe52` test: drop the exit-0 claim from the 44 liveness row
 - `720873b` test: correct the liveness comment in the 44 fragment
 - `9ca47ad` docs: add the bteam3 evidence bundles
-  One directory per issue: what was run, on what host, and the raw output. Issue 56's bundle carries the exact refusals that blocked the audit measurement, the fixture the fragment was exercised against, and the two gate branches. Issue 44's carries the new --unshare/--no-dumpable defect with its four controls.
+  The bundles store the commands, host metadata, and raw outputs for bteam3. The bundles include the LXC audit refusals for issue #56 and the `--unshare`/`--no-dumpable` controls for issue #44.
 - `8d1c552` test: measure the no-dumpable EACCES set with open
-  The five files are measured with a redirection, which is open(2), not with `test -r`, which is access(2) and answers differently for a non-dumpable process: on this host `maps` says readable to access() and refused to open(). The fragment records which of the five disagree rather than assuming. The control is the same payload without the flag, readable on all five and with non-zero stat fields 48-51. Liveness, the supervisor's own refused set, the pmask-tracer thread, and the note a mode that cannot apply the flag prints are asserted too. `payload_dumpable` is left to issue 21; only the note and the measured PR_GET_DUMPABLE are asserted. Refs #44
+  Fragment `44.sh` tests `open(2)` via shell redirection rather than `test -r` (`access(2)`), because `maps` can answer readable to `access(2)` while refusing `open(2)`. The control payload without `--no-dumpable` stays readable on all tested files with non-zero `stat` fields 48-51. The fragment also asserts liveness, supervisor refusals, the tracer thread, and `PR_GET_DUMPABLE`. Refs #44.
 - Test: `tests/qa.d/44.sh`
 
 ### #45 [b-team] Named kernel objects: `/memfd:<label>`, `/memfd:pmask-secret` and `/secretmem`
@@ -433,7 +451,7 @@ One section per issue. The `fix commit` column names the commit whose change fix
 - `424d0e8` fix: warn when --detach releases a tracee untraced
   Files: `src/tracer.rs`
 - `1063b67` fix: warn when --detach releases a tracee untraced
-  The same warning on the exec-image release path.
+  The same warning runs on the exec-image release path.
   Files: `src/execimg.rs`
 - `3eb7ab2` test: scope the no-follow grandchild and reap QA leftovers
   Files: `tests/qa.sh`
@@ -442,46 +460,42 @@ One section per issue. The `fix commit` column names the commit whose change fix
   Files: `src/isolate.rs`, `src/rexec.rs`, `src/tracer.rs`, `tests/isolation.sh`
 - `ecd419d` test: add QA fragments for issues 25, 28, 31 and 47
 - `fbc4666` test: report the launch-window spread instead of one sample
-  The window is a few hundred microseconds, and the sampler finds the payload by scanning /proc, so a scan under load can take longer than the interval it is measuring. A single sample therefore sometimes reports "no window", which is a property of the instrument rather than of the mask. The masked rows are now repeated, the median of the attempts that caught a window is quoted with its min and max, and a row that missed every attempt prints SKIP with the reason instead of a zero. The per-attempt lines stay in the output so the spread is visible. Two measurement errors are corrected in the note with the numbers that replace them: * the median is quoted, not the largest. Taking the largest across retries is a biased estimator: repeating until the number looks big is how a measurement stops meaning anything. * the spawn-latency plain row is marked UNSTABLE in the recorded run, and the note says so rather than quoting the quieter run as if it were the only one. The masked median is the same across runs; the ratio moves with the denominator.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - `f1a3a3d` test: make every QA fragment clean up its own processes
-  A parked payload is not inert: `holdargs` and the labelled sleepers carry a real argv and a real comm, and the gate's world-wide sweeps attribute a stranger's process to whatever case is scanning at that moment. A fragment that exits through an assertion, a timeout or a signal therefore has to remove what it started, not only the happy path. Every fragment now records each pid it starts and kills the list in its trap, kills by its own labels (which is exhaustive for the payloads it cannot name ahead of time), and traps HUP and QUIT as well as EXIT, INT and TERM. Proved both ways on 50.sh: with the cleanup removed, an abort after the control starts leaves `testcases holdargs` parked; with the cleanup in place it does not.
 - `f0bd7e0` test: cover the tracer name, end states, launch window and memory
-  One QA fragment per b-team issue, plus the measurement harness, the research note that carries the numbers, and the evidence each claim points at. 38 the tracer thread is named after the session comm. The negative control runs the same observer against a pre-fix binary and finds the retired name, so the zero after the fix means the name is gone. The runner path (--secret) and the daemon path are both covered: the first because it calls spawn before the self-mask, the second because it is the only other caller of Mask::spawn. 47 the four documented end states, each with the control that stops it being vacuous, and the new --detach release warning. 48 measurements/launch-window.sh: spawn latency with per-round spread, a C /proc/<pid>/comm sampler for the launch window, and the syscall signature from a per-thread attach. Two findings beyond the issue: a shell sampler cannot see the window (one sample costs about 2 ms here), and strace -f kills a session because strace seizes the payload before pmask can. 50 /proc/<pid>/mem as the same uid recovers the real argv in default mode; --no-dumpable refuses it while the payload keeps working. The research note states every number with its kernel, uid and command, and names --args-from-fd as the launcher-argv mitigation for the launch window.
+  Fragment `47.sh` verifies all four documented end states with non-vacuous controls and asserts the `--detach` release warning.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - Test: `tests/qa.d/47.sh`
 
 ### #48 [b-team] The launch window and the statistical side channels of supervision
 
 - `fbc4666` test: report the launch-window spread instead of one sample
-  The window is a few hundred microseconds, and the sampler finds the payload by scanning /proc, so a scan under load can take longer than the interval it is measuring. A single sample therefore sometimes reports "no window", which is a property of the instrument rather than of the mask. The masked rows are now repeated, the median of the attempts that caught a window is quoted with its min and max, and a row that missed every attempt prints SKIP with the reason instead of a zero. The per-attempt lines stay in the output so the spread is visible. Two measurement errors are corrected in the note with the numbers that replace them: * the median is quoted, not the largest. Taking the largest across retries is a biased estimator: repeating until the number looks big is how a measurement stops meaning anything. * the spawn-latency plain row is marked UNSTABLE in the recorded run, and the note says so rather than quoting the quieter run as if it were the only one. The masked median is the same across runs; the ratio moves with the denominator.
+  The harness repeats masked rows and reports median, min, and max instead of a biased maximum, and marks the plain spawn-latency row `UNSTABLE`.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - `f1a3a3d` test: make every QA fragment clean up its own processes
-  A parked payload is not inert: `holdargs` and the labelled sleepers carry a real argv and a real comm, and the gate's world-wide sweeps attribute a stranger's process to whatever case is scanning at that moment. A fragment that exits through an assertion, a timeout or a signal therefore has to remove what it started, not only the happy path. Every fragment now records each pid it starts and kills the list in its trap, kills by its own labels (which is exhaustive for the payloads it cannot name ahead of time), and traps HUP and QUIT as well as EXIT, INT and TERM. Proved both ways on 50.sh: with the cleanup removed, an abort after the control starts leaves `testcases holdargs` parked; with the cleanup in place it does not.
 - `f0bd7e0` test: cover the tracer name, end states, launch window and memory
-  One QA fragment per b-team issue, plus the measurement harness, the research note that carries the numbers, and the evidence each claim points at. 38 the tracer thread is named after the session comm. The negative control runs the same observer against a pre-fix binary and finds the retired name, so the zero after the fix means the name is gone. The runner path (--secret) and the daemon path are both covered: the first because it calls spawn before the self-mask, the second because it is the only other caller of Mask::spawn. 47 the four documented end states, each with the control that stops it being vacuous, and the new --detach release warning. 48 measurements/launch-window.sh: spawn latency with per-round spread, a C /proc/<pid>/comm sampler for the launch window, and the syscall signature from a per-thread attach. Two findings beyond the issue: a shell sampler cannot see the window (one sample costs about 2 ms here), and strace -f kills a session because strace seizes the payload before pmask can. 50 /proc/<pid>/mem as the same uid recovers the real argv in default mode; --no-dumpable refuses it while the payload keeps working. The research note states every number with its kernel, uid and command, and names --args-from-fd as the launcher-argv mitigation for the launch window.
+  `measurements/launch-window.sh` measures spawn latency, runs a C `/proc/<pid>/comm` sampler for the launch window, and captures the syscall signature. The note records that a shell sampler (~2 ms per sample) misses the window and that `strace -f` kills a session by seizing before `pmask`.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - Test: `tests/qa.d/48.sh`
 
 ### #49 [b-team] Modes that do not redact: 32-bit images, plain, `--isolate` and `--unshare`
 
+- `v0.1.0` update: 32-bit refusal by default and documented non-redacting modes
+  `pmask` refuses 32-bit images by default with `SIGKILL`, with `--allow-foreign` as the explicit opt-in. `--unshare` redacts, while plain mode and `--isolate` remain documented limits.
 - `66937c9` docs: correct which process is the isolate namespace init
-  The earlier note read the nsenter shell's own Pid as if it were the payload's and concluded the leaf was not the namespace init. It is: the host-side NSpid of the leaf is "<hostpid> 1", and an in-namespace /proc/1/comm names the leaf's program. Under --isolate that means the namespace init is the process carrying the real argv, which is exactly why a one-level check reads clean. Adds the four-run transcript.
+  Under `--isolate`, the leaf payload has host-side `NSpid` `<hostpid> 1` and acts as the namespace init carrying the real argv.
 - `9ca47ad` docs: add the bteam3 evidence bundles
-  One directory per issue: what was run, on what host, and the raw output. Issue 56's bundle carries the exact refusals that blocked the audit measurement, the fixture the fragment was exercised against, and the two gate branches. Issue 44's carries the new --unshare/--no-dumpable defect with its four controls.
 - `74b7b6a` test: cover the mode table that does not redact
-  One row per mode: default, --no-redact, --isolate, --unshare, --redact --isolate and a 32-bit image. Each asserts the real or the label shape, the environ byte count, TracerPid, and the namespace fingerprints (`hidepid=invisible` in mountinfo, an NSpid chain of two). The --unshare row is decided by measurement: if the build serves the label the fragment asserts the fixed shape, and if it serves the real argv it prints SKIP naming the #4/qa-fix1 dependency instead of passing. Both branches were exercised, the release build against the first and the musl build against the second. Trees are walked by PPid, never `pgrep -x sleep`, because other suites run on this host. Refs #49
+  Fragment `49.sh` tests default, `--no-redact`, `--isolate`, `--unshare`, `--redact --isolate`, and 32-bit image behaviour, walking process trees by `PPid`. Refs #49.
 - Test: `tests/qa.d/49.sh`
 
 ### #50 [b-team] The real argv stays in payload memory
 
 - `fbc4666` test: report the launch-window spread instead of one sample
-  The window is a few hundred microseconds, and the sampler finds the payload by scanning /proc, so a scan under load can take longer than the interval it is measuring. A single sample therefore sometimes reports "no window", which is a property of the instrument rather than of the mask. The masked rows are now repeated, the median of the attempts that caught a window is quoted with its min and max, and a row that missed every attempt prints SKIP with the reason instead of a zero. The per-attempt lines stay in the output so the spread is visible. Two measurement errors are corrected in the note with the numbers that replace them: * the median is quoted, not the largest. Taking the largest across retries is a biased estimator: repeating until the number looks big is how a measurement stops meaning anything. * the spawn-latency plain row is marked UNSTABLE in the recorded run, and the note says so rather than quoting the quieter run as if it were the only one. The masked median is the same across runs; the ratio moves with the denominator.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - `f1a3a3d` test: make every QA fragment clean up its own processes
-  A parked payload is not inert: `holdargs` and the labelled sleepers carry a real argv and a real comm, and the gate's world-wide sweeps attribute a stranger's process to whatever case is scanning at that moment. A fragment that exits through an assertion, a timeout or a signal therefore has to remove what it started, not only the happy path. Every fragment now records each pid it starts and kills the list in its trap, kills by its own labels (which is exhaustive for the payloads it cannot name ahead of time), and traps HUP and QUIT as well as EXIT, INT and TERM. Proved both ways on 50.sh: with the cleanup removed, an abort after the control starts leaves `testcases holdargs` parked; with the cleanup in place it does not.
 - `f0bd7e0` test: cover the tracer name, end states, launch window and memory
-  One QA fragment per b-team issue, plus the measurement harness, the research note that carries the numbers, and the evidence each claim points at. 38 the tracer thread is named after the session comm. The negative control runs the same observer against a pre-fix binary and finds the retired name, so the zero after the fix means the name is gone. The runner path (--secret) and the daemon path are both covered: the first because it calls spawn before the self-mask, the second because it is the only other caller of Mask::spawn. 47 the four documented end states, each with the control that stops it being vacuous, and the new --detach release warning. 48 measurements/launch-window.sh: spawn latency with per-round spread, a C /proc/<pid>/comm sampler for the launch window, and the syscall signature from a per-thread attach. Two findings beyond the issue: a shell sampler cannot see the window (one sample costs about 2 ms here), and strace -f kills a session because strace seizes the payload before pmask can. 50 /proc/<pid>/mem as the same uid recovers the real argv in default mode; --no-dumpable refuses it while the payload keeps working. The research note states every number with its kernel, uid and command, and names --args-from-fd as the launcher-argv mitigation for the launch window.
+  Fragment `50.sh` confirms that same-uid `/proc/<pid>/mem` reads recover real argv in default mode and fail under `--no-dumpable` while the payload runs normally.
   Files: `docs/research/bteam-38-50.md`, `measurements/launch-window.sh`
 - Test: `tests/qa.d/50.sh`
 
@@ -523,16 +537,17 @@ One section per issue. The `fix commit` column names the commit whose change fix
 
 - `bc75077` docs: drop the duplicate auditctl capture
 - `9ca47ad` docs: add the bteam3 evidence bundles
-  One directory per issue: what was run, on what host, and the raw output. Issue 56's bundle carries the exact refusals that blocked the audit measurement, the fixture the fragment was exercised against, and the two gate branches. Issue 44's carries the new --unshare/--no-dumpable defect with its four controls.
 - `8031b41` test: gate the audit checks on a host that can answer
-  The fragment asks `auditctl -s` and `auditctl -l` and requires ausearch, then prints SKIP with the reason when any of them is missing or the subsystem is off. On this container `-s` prints nothing because LXC answers ECONNREFUSED, and `-l` is what explains it, so both are read. Nine record cases: the control exec record, the supervisor's argv including the literal secret, the payload's empty-string tail, the tracer ptrace and OBJ_PID records, the watch-versus-exit-rule counts run one after the other, and the 32-bit arch row. Refs #56
+  Fragment `56.sh` queries `auditctl -s`, `auditctl -l`, and `ausearch`, printing `SKIP` with the reason when audit is unavailable or LXC returns `ECONNREFUSED`. When active, `56.sh` checks nine audit record cases for control execs, supervisor argv, payload tail, and tracer `ptrace`/`OBJ_PID`. The fragment also checks watch versus exit rules and 32-bit arch rows. Refs #56.
 - `07d7cc8` docs: record the audit records and the rule forms that see them
-  The five record shapes a pmask launch leaves, the rule forms that do and do not see them, and the exact LXC refusal that stopped every audit measurement on this host. Guest records are tagged and not presented as measurements of the container. Two findings worth acting on: a `-w PATH -p x` watch produces no exec record (its single hit is the auditctl that installed it), and a rule filtered on arch=b32 cannot see a 32-bit payload's exec because the record carries the exec'ing syscall's ABI. Refs #56, #59
+  `docs/research/bteam-audit.md` documents the five audit record shapes, rule coverage, and the LXC refusal, tagging guest records separately. A `-w PATH -p x` watch produces no exec record. An `arch=b32` filter misses a 32-bit payload exec because the record carries the calling ABI. Refs #56, #59.
   Files: `docs/research/bteam-audit.md`
 - Test: `tests/qa.d/56.sh`
 
 ### #57 [b-team] eBPF sensors and the process connector: what each sees of a masked exec
 
+- `v0.1.0` note: kernel and OS boundary
+  eBPF sensors and the netlink process connector observe exec events at the kernel boundary. `docs/THREAT-MODEL.md` and `docs/research/bteam-ebpf.md` document this boundary.
 - `ee9e7e2` fix: one warning for one exposure, and the thread names the label
   Files: `src/main.rs`, `src/subcmd.rs`
 - `307491a` docs: isolate the second-tracer refusal in evidence
@@ -543,23 +558,23 @@ One section per issue. The `fix commit` column names the commit whose change fix
 
 ### #58 [b-team] The detector family that does not see pmask, and what pmask genuinely hides
 
+- `v0.1.0` note: kernel and OS boundary plus `--hide-pid` exception
+  Default redaction hides no pids, while `--hide-pid` hides `/proc/<pid>` under `hidepid=invisible|ptraceable` and leaves `chkproc`, `getpriority`, and `cgroup.procs` visible. `docs/THREAT-MODEL.md` documents these channels.
 - `da57ffa` test: prove the hidden-pid sweep can fire
   Files: `docs/research/bteam-detectors.md`
 - `5f996f6` docs: record the hidden-pid detector measurements
   Files: `docs/research/bteam-detectors.md`
-- Test: `tests/qa.d/58.sh`
+- Test: `tests/qa.d/58.sh`, `tests/blueteam.sh`
 
 ### #59 The supervisor's own exec writes the payload argv and any `literal:` secret into the kernel audit log
 
 - `9ca47ad` docs: add the bteam3 evidence bundles
-  One directory per issue: what was run, on what host, and the raw output. Issue 56's bundle carries the exact refusals that blocked the audit measurement, the fixture the fragment was exercised against, and the two gate branches. Issue 44's carries the new --unshare/--no-dumpable defect with its four controls.
 - `07d7cc8` docs: record the audit records and the rule forms that see them
-  The five record shapes a pmask launch leaves, the rule forms that do and do not see them, and the exact LXC refusal that stopped every audit measurement on this host. Guest records are tagged and not presented as measurements of the container. Two findings worth acting on: a `-w PATH -p x` watch produces no exec record (its single hit is the auditctl that installed it), and a rule filtered on arch=b32 cannot see a 32-bit payload's exec because the record carries the exec'ing syscall's ABI. Refs #56, #59
   Files: `docs/research/bteam-audit.md`
 - `6a1ba77` test: cover the argv-secret audit warning
-  Fourteen cases: the warning appears once and names the audit log, the shell history, a wrapper's argv, --args-from-fd and the three non-argv sources; it never contains the value; -q still suppresses it; the secret still arrives on fd 3; a file: source is quiet; an env: source makes no exec-record claim; both audit wordings; --args-from-fd still warns while a literal secret remains; the JSON report carries it and does not leak the value. The rows that assert "nothing leaks" have the pairing the protocol asks for: 59b checks the warning text and 59i checks the report, both against a canary the run really carries. Refs #59
+  Fragment `59.sh` tests fourteen cases covering the warning text, zero secret leakage in stderr or JSON reports, `-q` suppression, and fd 3 delivery. The fragment also checks `file:` and `env:` behaviour, audit wording variants, and `--args-from-fd`. Refs #59.
 - `34b20e3` fix: warn that argv secrets reach the kernel audit log
-  A `literal:` or `env:` secret source puts the value in pmask's own argv or environment. pmask already masks its own /proc entry, but three other copies are out of reach and none of them was named anywhere in the output: the kernel's exec record (written before pmask runs), the shell history, and any wrapper's argv. The run now prints one warning at the default verbosity, before it starts, naming all three, `--args-from-fd` and the non-argv sources. `run::audit_state()` asks the kernel the question `auditctl -s` asks, over NETLINK_AUDIT with AUDIT_GET, because auditctl refuses a non-root caller before it asks anything; an enabled subsystem makes the wording claim the record exists rather than that it would. A probe that cannot answer never turns the warning into a refusal. The JSON report carries a shorter form of the same fact, so a CI job that asserts on the report sees it without scraping stderr. `literal:` stays: the record is written before pmask exists, so a refusal at parse time would be a refusal after the exposure. Refs #59
+  `pmask` prints one warning before launch when a `literal:` or `env:` source exposes secrets via kernel exec records, shell history, or wrapper argv. `run::audit_state()` queries `NETLINK_AUDIT` with `AUDIT_GET` to adjust the wording without blocking on unavailable audit probes. The warning recommends `--args-from-fd` and non-argv sources, and the JSON report includes the same fact. Refs #59.
   Files: `src/cli.rs`, `src/run.rs`
 - Test: `tests/qa.d/59.sh`
 
@@ -576,35 +591,133 @@ One section per issue. The `fix commit` column names the commit whose change fix
 - `bb9d755` docs: apply the four-hunk detection correction
   Files: `docs/research/detection-measured.md`, `docs/research/detection-residue.md`, `docs/research/detection-techniques.md`
 
+### #64 `--exec-once` carrier replacement, cache key, reaper cleanup, and `seal()` warning (001)
+
+- `v0.1.0` fix: carrier verification, `$XDG_RUNTIME_DIR` preference, reaper cleanup, and `Cache` key hardening
+  `verify_carrier` re-opens the carrier with `O_NOFOLLOW` and checks `dev`, `ino`, `ctime`, and content bytes against the cached descriptor before reuse. `pmask` prefers `$XDG_RUNTIME_DIR` for carriers, keys `Cache` entries on `dev`, `ino`, and `ctime`, and warns visibly when `seal()` fails. The carrier reaper cleans up fds and stdio on `Image::drop`. Residual TOCTOU when `$XDG_RUNTIME_DIR` is unset is documented. Note that `tests/qa.d/64.sh` tests `--encrypt-memory`, not issue #64.
+  Files: `src/rexec.rs`
+- Test: `src/rexec.rs::carrier_tests`, `tests/redteam.sh`
+
+### #65 `--exec-once` fast path fails under non-dumpable modes (002)
+
+- `v0.1.0` fix: refuse incompatible non-dumpable `--exec-once` combinations and reorder filter installation
+  Both the CLI (`src/main.rs`) and library (`src/mask.rs`) refuse `--exec-once` combined with `--no-dumpable`, `--hide-pid`, `--stealth` on non-`hidepid` hosts, and default non-dumpable `--secret` sessions. `install_exec_filter` runs before `PR_SET_DUMPABLE=0`.
+  Files: `src/main.rs`, `src/mask.rs`, `src/tracer.rs`
+- Test: `tests/qa.d/65.sh`, `tests/options.sh` O39
+
+### #66 Exposure window on `#!` scripts, `vfork`, fallbacks, re-exec bypasses, and `--detach` (003)
+
+- `v0.1.0` fix: add `--strict-exec` to refuse post-exec exposure shapes
+  `--strict-exec` refuses `#!` scripts, `vfork` children, entry-redaction fallbacks (`write_mem`, scratch, overflow), settled re-exec bypasses, and `--detach`.
+  Files: `src/cli.rs`, `src/execimg.rs`, `src/tracer.rs`
+- Test: `tests/qa.d/66.sh`
+
+### #67 Same-uid memory, secret fd, and supervisor image fd reads (004)
+
+- `v0.1.0` fix: default `--secret` sessions to non-dumpable and close supervisor image fds
+  `--secret` sessions default to `--no-dumpable` and a non-dumpable supervisor, with `--allow-dumpable` as the explicit opt-out. `close_parent_image_fds` closes supervisor fds 200 and 210 after fork, including under `--exec-once`. Non-secret default dumpability remains a documented trade.
+  Files: `src/cli.rs`, `src/main.rs`, `src/mask.rs`, `src/run.rs`
+- Test: `tests/qa.d/67.sh`, `tests/options.sh` O27, `tests/daemon.sh` d7b/d8
+
+### #68 Secret holder dumpable during load window (005)
+
+- `v0.1.0` fix: call `harden_self()` before loading secrets, passphrases, or `--env-file`
+  `harden_self()` now runs before secret, passphrase, and `--env-file` reads in `src/run.rs`, `src/bin/pmaskd.rs`, `src/subcmd.rs`, and `src/agent.rs`. `pmask` prints a visible warning if `harden_self()` fails.
+  Files: `src/run.rs`, `src/bin/pmaskd.rs`, `src/subcmd.rs`, `src/agent.rs`
+- Test: `tests/qa.d/68.sh`
+
+### #69 `/proc/self/exe` and `/proc/thread-self/` under `--exec-once` (006)
+
+- `v0.1.0` fix: rewrite tracee self-links before resolving exec images
+  `tracee_open_path`, `path_is_elf`, and `elf_is_32` rewrite `/proc/self/` and `/proc/thread-self/` to `/proc/{pid}/` so `--exec-once` resolves the tracee binary instead of `pmask`.
+  Files: `src/execimg.rs`, `src/tracer.rs`
+- Test: `tests/qa.d/69.sh`, `tests/redteam.sh` R4
+
+### #70 Report staging, non-dumpable supervisor preservation, `--audit` + JSON refusal, and residue fd detection (007)
+
+- `v0.1.0` fix: harden report writing and audit fd classification
+  `ReportSink` stages reports in `O_TMPFILE` or a 0600 file with `Drop` cleanup, and `src/run.rs` preserves `supervisor_non_dumpable(true)`. `--audit` plus stdout `--report=json` is refused, and report runs default to `WaitTree`. `fd_is_residue` checks `/memfd:`, `(deleted)`, and `.pmask-rexec-`.
+  Files: `src/main.rs`, `src/run.rs`, `src/tracer.rs`
+- Test: `tests/qa.d/70.sh`, `tests/redteam.sh` R6
+
+### #71 `write(2)` to `/proc/self/comm` bypasses `--watch-rename` (008)
+
+- `v0.1.0` fix: trap comm-file opens and add `--watch-rename=strict`
+  `--watch-rename` traps `prctl(PR_SET_NAME)` plus `open`, `openat`, `openat2`, and `creat` with lexical path normalization, and `--watch-rename=strict` traps write syscalls. The `aarch64` `NT_ARM_SYSTEM_CALL` denial path is fixed, and non-dumpable `EACCES` prints a visible warning.
+  Files: `src/arch.rs`, `src/cli.rs`, `src/seccomp.rs`, `src/tracer.rs`
+- Test: `tests/qa.d/71.sh`, `tests/redteam.sh` R7
+
+### #72 `--watch-rename` leaves an orphaned seccomp filter after detach (009)
+
+- `v0.1.0` fix: refuse `--on-exit detach` with `--watch-rename`
+  `--watch-rename` refuses `--on-exit detach` in both the CLI and the `Mask` library API, and defaults to `WaitTree` in the CLI.
+  Files: `src/cli.rs`, `src/main.rs`, `src/mask.rs`
+- Test: `tests/qa.d/72.sh`
+
+### #73 `--hide-pid` kernel/OS boundary against cgroupfs and non-`/proc` syscalls (010)
+
+- `v0.1.0` note: documented kernel and OS boundary plus runtime notice
+  Documentation and runtime notices state that `--hide-pid` does not hide pids from cgroupfs (`cgroup.procs`, `cgroup.threads`) or non-`/proc` syscalls (`getpriority`, `sched_getaffinity`, `prlimit`).
+  Files: `README.md`, `docs/THREAT-MODEL.md`, `src/cli.rs`, `src/main.rs`
+- Test: `tests/qa.d/73.sh`
+
+### #74 `--no-exact` shortens argv extent and repeats decoy environment (011)
+
+- `v0.1.0` fix: preserve original extents and write unique decoy entries under `--no-exact`
+  `--no-exact` preserves the original `arg_lo..arg_hi` and `env_lo..env_hi` extents, pads `cmdline` with spaces plus one NUL, and writes complete non-repeating decoy `environ` entries.
+  Files: `src/execimg.rs`
+- Test: `tests/qa.d/74.sh`, `tests/redteam.sh` R2
+
+### #75 Exact mode `stat` gap, `start_stack`, `[stack]` VMA, and `--encrypt-memory` `MADV_DONTDUMP` placement (012)
+
+- `v0.1.0` fix: place presentation block in `[stack]` and keep `--encrypt-memory` `MADV_DONTDUMP` on the anonymous block
+  Exact mode writes the presentation block inside `[stack]` with `arg_end == env_start`, a plausible decoy `environ`, `start_stack < arg_start`, and the `[stack]` VMA intact. `--encrypt-memory` marks the separate anonymous block `MADV_DONTDUMP`, not `[stack]`.
+  Files: `src/execimg.rs`, `src/presetmm.rs`
+- Test: `tests/qa.d/75.sh`, `tests/qa.d/64.sh`, `tests/redteam.sh` R1
+
+### #76 `--rexec` silent fallback to on-disk execution (013)
+
+- `v0.1.0` fix: fail closed on `--rexec` placement failure unless `--rexec-allow-disk` is set
+  `--rexec` exits 126 (or 127 when the source is missing) with an actionable `RLIMIT_NOFILE` error unless `--rexec-allow-disk` is passed.
+  Files: `src/cli.rs`, `src/main.rs`, `src/rexec.rs`
+- Test: `tests/qa.d/76.sh`, `tests/options.sh` O32
+
+### #77 Plain mode supervisor leaves an all-NUL `cmdline` (014)
+
+- `v0.1.0` fix: restore caller argv in plain mode and zeroize `original_argv` in non-plain modes
+  Plain mode restores caller argv via `restore_own_argv` when no plain-sight secret is present. Non-plain modes zeroize `original_argv` immediately.
+  Files: `src/main.rs`, `src/selfmask.rs`
+- Test: `tests/qa.d/77.sh`, `tests/redteam.sh` R3
+
 ## Corrections made after 0.1.0-beta.2
 
-The 0.1.0-beta.2 documentation made claims the code or a test contradicted.
-0.1.0-beta.3 corrects them. None of these changes a redaction mechanism; two
-of them change behaviour the old text described wrongly.
+The `0.1.0-beta.2` documentation made claims that the code or tests contradicted.
+`0.1.0-beta.3` corrected those claims.
+None of the corrections changed a redaction mechanism, and two fixed behaviour that earlier text described inaccurately.
 
 | claim in 0.1.0-beta.2 | what the artefact said | fixed in |
 |---|---|---|
-| `README.md` installed from `releases/latest/download/...` | every pmask tag is a prerelease, which `releases/latest` skips, so the URL returned 404 | the README names the tag |
-| `--detach`, `--isolate` and `--no-redact` have no tracer | `Mask::spawn_prepared` spawns the tracer thread for every mode; `--detach` detaches each tracee, not the thread | `README.md`, `docs/THREAT-MODEL.md` |
+| `README.md` installed from `releases/latest/download/...` | Every beta tag was a prerelease, which `releases/latest` skipped and returned 404 (in `v0.1.0`, the release is a non-prerelease GitHub Latest release) | `README.md` pinned the tag for beta releases and targets `v0.1.0` |
+| `--detach`, `--isolate`, and `--no-redact` have no tracer | `Mask::spawn_prepared` spawns the tracer thread for every mode. `--detach` detaches each tracee rather than omitting the thread | `README.md`, `docs/THREAT-MODEL.md` |
 | `compare.sh` `mem_canary_readable` is "yes in every row" | `evidence/fix5/12/compare-conformance.log` records `SKIP` in `redacted-nodumpable` | `docs/THREAT-MODEL.md` (two rows) |
-| `AT_EXECFN` is rewritten in `saved_auxv` | only when the window relocation runs; `--no-exact` and a refused map leave the auxv alone, which `tests/qa.d/43.sh` asserts | `README.md`, `docs/THREAT-MODEL.md` |
-| the `--no-exact` span is the label plus one NUL per argument | a script payload keeps the original extent on its post-exec path, as `README.md` already said in the same table | `docs/THREAT-MODEL.md` |
-| `--secret-fd-name` is 1 to 200 printable bytes | `validate_memfd_name` refuses `/`, every C0 control byte and DEL, and accepts bytes above 0x7e | `README.md` |
+| `AT_EXECFN` is rewritten in `saved_auxv` | Rewrite ran only when window relocation ran. `--no-exact` and a refused map leave `auxv` unchanged, asserted by `tests/qa.d/43.sh` | `README.md`, `docs/THREAT-MODEL.md` |
+| The `--no-exact` span is the label plus one NUL per argument | A script payload keeps the original extent on its post-exec path, as `README.md` stated | `docs/THREAT-MODEL.md` |
+| `--secret-fd-name` is 1 to 200 printable bytes | `validate_memfd_name` refuses `/`, every C0 control byte, and DEL, and accepts bytes above `0x7e` | `README.md` |
 | `map_files` resolves to `/memfd:<label> (deleted)`, asserted by `compare.sh` | `tests/compare.sh` asserts a `*/memfd:*` target only | `README.md` |
-| the units use `ExecStart=/usr/bin/pmask` | `pmaskd@.service` uses `/usr/bin/pmaskd` | `README.md` |
-| the micro-VM gate runs "the full suite" | `vm/common.sh` stages nine suites and names the seven it does not stage | `README.md`, the 0.1.0-beta.2 notes |
-| `--memfd-name` uses the same name on every carrier | the memfd carriers use it as given; the temporary-file tag is sanitised and cut to 64 bytes | the notes, `src/rexec.rs` |
-| `hardening=heap` when `mlock` is unavailable | the tier is `secret_mem` where `memfd_secret` alone carried the value | `docs/THREAT-MODEL.md` |
-| `--report-file` creates a 0600 file | the mode applied only on creation, so an existing 0644 file kept its mode | `src/main.rs` narrows it, `tests/qa.d/9.sh` asserts it |
-| `--exec-once` is disabled under a mount namespace | a namespace set cleared the cache with no line; `--redact --isolate` dropped it silently | `src/mask.rs` names the reason, `tests/qa.d/61.sh` covers it |
+| The units use `ExecStart=/usr/bin/pmask` | `pmaskd@.service` uses `/usr/bin/pmaskd` | `README.md` |
+| The micro-VM gate runs "the full suite" | `vm/common.sh` stages a subset of suites and names the suites it does not stage | `README.md`, `0.1.0-beta.2` notes |
+| `--memfd-name` uses the same name on every carrier | Memfd carriers use the name as given. The temporary-file tag is sanitised and cut to 64 bytes | release notes, `src/rexec.rs` |
+| `hardening=heap` when `mlock` is unavailable | The tier is `secret_mem` when `memfd_secret` alone carries the value | `docs/THREAT-MODEL.md` |
+| `--report-file` creates a `0600` file | The mode applied only on creation, so an existing `0644` file kept its mode | `src/main.rs` narrows permissions, `tests/qa.d/9.sh` asserts it |
+| `--exec-once` is disabled under a mount namespace | A namespace set cleared the cache silently, and `--redact --isolate` dropped the cache without notice | `src/mask.rs` reports the reason, `tests/qa.d/61.sh` covers it |
 
-`evidence/bteam4/51/README.md` also says which of its two logs is the
-pre-fix run, so the `VERDICT: FAIL=2` line is not read as the state of the
-fragment at this tag.
+`evidence/bteam4/51/README.md` identifies which log is the pre-fix run so its `VERDICT: FAIL=2` line is not read as the current state.
 
 ## Commits whose message has no `#N` reference
 
-No entry below matches `#N` in its subject or body; that is not the same as naming no issue. `b6822b1` names its issues as a bare `19:` list, and `0b01a4f`, `9e1de9d` and `69cc3f8` name theirs only in a diff comment (#5, #17, #38). The `fix commit` column in the table above is the mapping.
+None of the commits below match `#N` in their subject or body, though several still address numbered issues.
+Commit `b6822b1` lists issues with a bare `19:` prefix, and commits `0b01a4f`, `9e1de9d`, and `69cc3f8` name issues #5, #17, and #38 only in diff comments.
+The `fix commit` column in the main table records the exact mapping.
 
 - `d28a822` test: decide the wait policy by the child, not the clock
 - `45ad062` docs: drop the worktree name from the changelog
@@ -748,3 +861,27 @@ No entry below matches `#N` in its subject or body; that is not the same as nami
 - `c9ed635` fix: warn about the escapes only for a run that happens
 - `fcec4b0` feat: warn when a documented escape publishes a secret
 
+
+## beta.5 review (PR #63) and `v0.1.0` closure: issues 001-014 (#64-#77) and b-team records
+
+The `v0.1.0` release carries the PR #63 red-team fixes and final hardening updates below.
+The `test` column names the fragment or suite case that fails if a fix regresses.
+
+| issue | fix (`v0.1.0`) | test |
+|---|---|---|
+| 001 (#64) `--exec-once` carrier replaceable and cache metadata-only | `verify_carrier` re-opens the carrier with `O_NOFOLLOW` and compares `dev`, `ino`, `ctime`, and content bytes with the cached descriptor before reuse. A mismatch kills the exec. `pmask` prefers `$XDG_RUNTIME_DIR`, keys `Cache` on `dev`/`ino`/`ctime`, warns visibly on `seal()` failure, and runs a double-forked reaper with fd and stdio cleanup on `Image::drop`. Residual TOCTOU when `$XDG_RUNTIME_DIR` is unset is documented. | `src/rexec.rs::carrier_tests`, `tests/redteam.sh` (note: `tests/qa.d/64.sh` tests `--encrypt-memory`, not issue #64) |
+| 002 (#65) `--no-dumpable` drops the fast path | Both the CLI (`src/main.rs`) and library (`src/mask.rs`) refuse `--exec-once` with `--no-dumpable`, `--hide-pid`, `--stealth` on non-`hidepid` hosts, and default non-dumpable `--secret` sessions before fork. `install_exec_filter` runs before `PR_SET_DUMPABLE=0`. | `tests/qa.d/65.sh`, `tests/options.sh` O39 |
+| 003 (#66) argv window on script, `vfork`, `--no-dumpable`, and `--detach` | `--strict-exec` refuses `#!` scripts, `vfork` children, entry-redaction fallbacks (`write_mem`, scratch, overflow), settled re-exec bypasses, and `--detach`. Docs state the default trade and residual window. | `tests/qa.d/66.sh` |
+| 004 (#67) same-uid memory, secret, and image reads | `--secret` sessions default to `--no-dumpable` and a non-dumpable supervisor (`--allow-dumpable` opts out). `close_parent_image_fds` closes supervisor fds 200 and 210 after fork, including under `--exec-once`. Daemon jobs stay non-dumpable. Non-secret default dumpability remains a documented trade. | `tests/qa.d/67.sh`, `tests/options.sh` O27, `tests/daemon.sh` d7b/d8 |
+| 005 (#68) secret load window | `harden_self()` (`PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0`) runs before secret, passphrase, or `--env-file` load in `src/run.rs`, `src/bin/pmaskd.rs`, `src/subcmd.rs`, and `src/agent.rs`, with a visible warning on failure. | `tests/qa.d/68.sh` |
+| 006 (#69) `/proc/self/exe` later exec runs `pmask` | `tracee_open_path`, `path_is_elf`, and `elf_is_32` rewrite `/proc/self/` and `/proc/thread-self/` to `/proc/{pid}/` before resolving the cache key. | `tests/qa.d/69.sh`, `tests/redteam.sh` R4 |
+| 007 (#70) report and audit writable, audit fd name-keyed | `ReportSink` stages reports in `O_TMPFILE` or a 0600 file with `Drop` cleanup and links after the tree exits. `src/run.rs` preserves `supervisor_non_dumpable(true)`, reports default to `WaitTree`, `--audit` plus stdout `--report=json` is refused, and `fd_is_residue` checks `/memfd:`, `(deleted)`, and `.pmask-rexec-`. | `tests/qa.d/70.sh`, `tests/redteam.sh` R6 |
+| 008 (#71) `write(2)` to `/proc/self/comm` | `--watch-rename` traps `prctl(PR_SET_NAME)` plus `open`, `openat`, `openat2`, and `creat` with lexical path normalization. `--watch-rename=strict` traps write syscalls. `aarch64` `NT_ARM_SYSTEM_CALL` denial is fixed, and non-dumpable `EACCES` prints a visible warning. | `tests/qa.d/71.sh`, `tests/redteam.sh` R7 |
+| 009 (#72) orphan filter after detach | `--watch-rename` refuses `--on-exit detach` in both the CLI and `Mask` library API and defaults to `WaitTree` in the CLI. | `tests/qa.d/72.sh` |
+| 010 (#73) `--hide-pid` cgroup and syscall channels | `README.md`, help text, runtime notices, and `docs/THREAT-MODEL.md` document the kernel boundary for cgroupfs (`cgroup.procs`, `cgroup.threads`) and non-`/proc` syscalls (`getpriority`, `sched_getaffinity`, `prlimit`). | `tests/qa.d/73.sh` |
+| 011 (#74) `--no-exact` extent and repeated decoy | `--no-exact` skips entry transformation, preserves original `arg_lo..arg_hi` and `env_lo..env_hi`, pads `cmdline` with spaces plus one NUL, and writes complete non-repeating decoy `environ` entries. | `tests/qa.d/74.sh`, `tests/redteam.sh` R2 |
+| 012 (#75) exact `stat` gap, `start_stack`, `[stack]`, and `dd` | Exact mode writes the presentation block inside `[stack]` with `arg_end == env_start`, plausible decoy `environ`, `start_stack < arg_start`, and the `[stack]` VMA intact. `--encrypt-memory` marks the separate anonymous block `MADV_DONTDUMP`, not `[stack]`. | `tests/qa.d/75.sh`, `tests/qa.d/64.sh`, `tests/redteam.sh` R1 |
+| 013 (#76) `--rexec` silent disk fallback | `--rexec` fails closed with exit 126 (or 127 when the source is missing) and an actionable `RLIMIT_NOFILE` error unless `--rexec-allow-disk` is passed. | `tests/qa.d/76.sh`, `tests/options.sh` O32 |
+| 014 (#77) plain supervisor NUL `cmdline` | Plain mode restores caller argv via `restore_own_argv` when no plain-sight secret is present. Non-plain modes zeroize `original_argv` immediately. | `tests/qa.d/77.sh`, `tests/redteam.sh` R3 |
+| #40 / #42 / #43 b-team measurements | Exact mode keeps `arg_end == env_start`, plausible decoy `environ`, `start_stack < arg_start`, `[stack]` intact, and matching `AT_EXECFN` via `patch_stack_execfn` plus trailing NUL fix in `pres_bytes`. Under `--no-exact`, `AT_EXECFN` stays the real path. The `comm`/`cmdline`/`exe` split remains a documented design boundary. | `tests/redteam.sh` R1 (`R1-inprocess-auxv`), `tests/core.sh` k13/k13b, `tests/qa.d/40.sh`, `tests/qa.d/42.sh`, `tests/qa.d/43.sh` |
+| #49 / #57 / #58 b-team modes and kernel observers | 32-bit images are refused by default with `SIGKILL` (`--allow-foreign` opts in), `--unshare` redacts, and plain/`--isolate` remain documented limits. eBPF/process connector and hidden-pid kernel boundaries (plus the `--hide-pid` exception) are documented in `docs/THREAT-MODEL.md`. | `tests/qa.d/49.sh`, `tests/qa.d/57.sh`, `tests/qa.d/58.sh`, `tests/blueteam.sh` |

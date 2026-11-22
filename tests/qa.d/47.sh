@@ -111,8 +111,12 @@ if [ -n "$PAY" ]; then
     tr=$(status_field "$PAY" TracerPid)
     comm=$(cat "/proc/$PAY/comm" 2>/dev/null)
     env=$(wc -c < "/proc/$PAY/environ" 2>/dev/null | tr -d ' ')
+    envn=$(tr -cd '\0' < "/proc/$PAY/environ" 2>/dev/null | wc -c | tr -d ' ')
     cmd=$(tr '\0' '|' < "/proc/$PAY/cmdline" 2>/dev/null)
-    if [ "$tr" = 0 ] && [ "$comm" = "$BASE-b" ] && [ "$env" = 0 ] \
+    # Detach leaves no tracer; the label stays in comm and cmdline, and the
+    # environment is the fixed decoy (non-zero, not a run of NULs).
+    if [ "$tr" = 0 ] && [ "$comm" = "$BASE-b" ] \
+        && [ "${env:-0}" -gt 0 ] && [ "${envn:-0}" -lt "${env:-0}" ] \
         && [ "$cmd" = "$BASE-b|" ]; then
         pass "q47b-detach-zeroes-tracerpid-and-keeps-the-label"
     else

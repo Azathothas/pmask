@@ -10,9 +10,10 @@
 # kept its real cmdline, environ and comm.
 #
 # This fragment asserts, from the host, that a `--unshare` payload shows
-# the label in cmdline and comm, zero bytes of environ, is still alive, and
-# is init of a private pid namespace.  `--redact --isolate` is the
-# composed spelling and gets the same assertions.
+# the label in cmdline and comm, an environment that is the fixed decoy and
+# not the caller's, is still alive, and is init of a private pid namespace.
+# `--redact --isolate` is the composed spelling and gets the same
+# assertions.
 #
 # A SKIP is printed when the kernel refuses user namespaces; the run then
 # falls back to a plain fork and the case is undecidable here.
@@ -94,16 +95,21 @@ check_payload() {
     cp_cmd=$(tr '\0' '|' < "/proc/$cp_pid/cmdline" 2>/dev/null)
     cp_com=$(cat "/proc/$cp_pid/comm" 2>/dev/null)
     cp_envsz=$(wc -c < "/proc/$cp_pid/environ" 2>/dev/null | tr -d ' ')
+    cp_envnul=$(tr -cd '\0' < "/proc/$cp_pid/environ" 2>/dev/null | wc -c | tr -d ' ')
 
     if [ "$cp_cmd" = "$cp_label|" ]; then
         pass "$cp_name-cmdline-is-label"
     else
         fail "$cp_name-cmdline-is-label (cmdline=[$cp_cmd] want=[$cp_label|])"
     fi
-    if [ "$cp_envsz" = "0" ]; then
-        pass "$cp_name-environ-empty"
+    # The window holds the fixed decoy, so it has bytes and it is not a
+    # run of NULs.  A zero-length window was the beta.4 shape and is not
+    # what the run presents now; a NUL run has no ordinary analogue and is
+    # the fingerprint this asserts against.
+    if [ "${cp_envsz:-0}" -gt 0 ] && [ "${cp_envnul:-0}" -lt "${cp_envsz:-0}" ]; then
+        pass "$cp_name-environ-is-a-decoy (bytes=$cp_envsz nuls=$cp_envnul)"
     else
-        fail "$cp_name-environ-empty (environ=[$cp_envsz] bytes)"
+        fail "$cp_name-environ-is-a-decoy (bytes=${cp_envsz:-?} nuls=${cp_envnul:-?})"
     fi
     if [ "$cp_com" = "$cp_label" ]; then
         pass "$cp_name-comm-is-label"
@@ -128,7 +134,10 @@ run_case() {
     rc_name="$1"
     rc_label="$2"
     shift 2
-    ( "$TOOL" -l "$rc_label" "$@" -- /bin/sh -c "sleep 30" "$MARK" \
+    # The payload carries the marker in its own argv.  A shell here would
+    # exec the last command and drop the marker, which made the "marker is
+    # not in cmdline" case below pass without looking at anything.
+    ( "$TOOL" -l "$rc_label" "$@" -- "$CASES" sleeper "$MARK" \
         >"$T/$rc_name.out" 2>"$T/$rc_name.err" ) &
     rc_sup=$!
     rc_pid=$(payload_pid "$rc_label")
@@ -158,7 +167,7 @@ run_case() {
 # ---- control: the plain mask path redacts the same payload.  Without it
 # ---- a "label visible" result above could come from the observer, not
 # ---- from the handshake.
-( "$TOOL" -q -l qa4ctl -- /bin/sh -c 'sleep 30' "$MARK" \
+( "$TOOL" -q -l qa4ctl -- "$CASES" sleeper "$MARK" \
     >"$T/ctl.out" 2>"$T/ctl.err" ) &
 CTL_SUP=$!
 CTL_PID=$(payload_pid qa4ctl)
@@ -168,7 +177,7 @@ wait "$CTL_SUP" 2>/dev/null
 
 # ---- negative control: without any mask the marker IS visible.  A run
 # ---- that never saw the marker would make every absence vacuous.
-MARK_OUT=$("$TOOL" -q --no-redact -- /bin/sh -c 'tr "\0" "|" < /proc/$$/cmdline' "$MARK" 2>/dev/null)
+MARK_OUT=$("$TOOL" -q --no-redact -- "$CASES" echoargs "$MARK" 2>/dev/null)
 case "$MARK_OUT" in
     *"$MARK"*) pass qa4-negative-control-marker-visible ;;
     *) fail "qa4-negative-control-marker-visible (no-redact cmdline=[$MARK_OUT])" ;;

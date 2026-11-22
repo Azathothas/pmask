@@ -1,0 +1,183 @@
+
+===== MASKED RUN --no-dumpable label=r2-nodump =====
+started pmask pgid=544876
+544876 1 r2-nodump ? 0
+544882 544876 r2-nodump ? 544880
+supervisor=544876 payload=544882
+-- same-uid opens on payload 544882 --
+### procdump tag=sameuid-r2-nodump pid=544882 uid=1000
+cmdline.len=10
+cmdline.hex=72322d6e6f64756d7000
+cmdline.text='r2-nodump|'
+comm='r2-nodump'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/544882/environ'
+environ=ERR:[Errno 13] Permission denied: '/proc/544882/environ'
+stat.48_arg_start=0
+stat.49_arg_end=0
+stat.50_env_start=0
+stat.51_env_end=0
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/544882/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/544882/mem'
+auxv=ERR:[Errno 13] Permission denied: '/proc/544882/auxv'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/544882/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/544882/exe'
+maps=ERR:[Errno 13] Permission denied: '/proc/544882/maps'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/544882/maps'
+status.TracerPid:	544880
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=ERR:[Errno 13] Permission denied: '/proc/544882/fd'
+fd.list=ERR:[Errno 13] Permission denied: '/proc/544882/fd'
+### end tag=sameuid-r2-nodump pid=544882
+-- same-uid opens on supervisor 544876 --
+### procdump tag=sup-r2-nodump pid=544876 uid=1000
+cmdline.text='r2-nodump|'
+comm='r2-nodump'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/544876/environ'
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/544876/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/544876/mem'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/544876/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/544876/exe'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/544876/maps'
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=ERR:[Errno 13] Permission denied: '/proc/544876/fd'
+### end tag=sup-r2-nodump pid=544876
+-- root opens on payload 544882 (contrast) --
+### procdump tag=root-r2-nodump pid=544882 uid=0
+cmdline.text='r2-nodump|'
+comm='r2-nodump'
+environ.open=OK
+environ.len=0
+auxv.open=OK
+mem.open=OK
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.open=OK
+status.TracerPid:	544880
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+### end tag=root-r2-nodump pid=544882
+STOP verified: 0 label processes remain
+
+===== MASKED RUN --no-dumpable label=r2-nodump-b =====
+started pmask pgid=545573
+545573 1 r2-nodump-b ? 0
+545578 545573 r2-nodump-b ? 545577
+supervisor=545573 payload=545578
+-- same-uid opens on payload 545578 --
+### procdump tag=sameuid-r2-nodump-b pid=545578 uid=1000
+cmdline.len=12
+cmdline.hex=72322d6e6f64756d702d6200
+cmdline.text='r2-nodump-b|'
+comm='r2-nodump-b'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/545578/environ'
+environ=ERR:[Errno 13] Permission denied: '/proc/545578/environ'
+stat.48_arg_start=0
+stat.49_arg_end=0
+stat.50_env_start=0
+stat.51_env_end=0
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/545578/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/545578/mem'
+auxv=ERR:[Errno 13] Permission denied: '/proc/545578/auxv'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/545578/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/545578/exe'
+maps=ERR:[Errno 13] Permission denied: '/proc/545578/maps'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/545578/maps'
+status.TracerPid:	545577
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=ERR:[Errno 13] Permission denied: '/proc/545578/fd'
+fd.list=ERR:[Errno 13] Permission denied: '/proc/545578/fd'
+### end tag=sameuid-r2-nodump-b pid=545578
+-- same-uid opens on supervisor 545573 --
+### procdump tag=sup-r2-nodump-b pid=545573 uid=1000
+cmdline.text='r2-nodump-b|'
+comm='r2-nodump-b'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/545573/environ'
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/545573/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/545573/mem'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/545573/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/545573/exe'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/545573/maps'
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=ERR:[Errno 13] Permission denied: '/proc/545573/fd'
+### end tag=sup-r2-nodump-b pid=545573
+-- root opens on payload 545578 (contrast) --
+### procdump tag=root-r2-nodump-b pid=545578 uid=0
+cmdline.text='r2-nodump-b|'
+comm='r2-nodump-b'
+environ.open=OK
+environ.len=0
+auxv.open=OK
+mem.open=OK
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.open=OK
+status.TracerPid:	545577
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+### end tag=root-r2-nodump-b pid=545578
+STOP verified: 0 label processes remain
+
+===== CONTROL RUN 1 (no pmask) =====
+### procdump tag=control1 pid=546269 uid=1000
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_NODUMP_5c21|'
+comm='pmask-testcases'
+environ.open=OK
+environ.len=2321
+auxv.open=OK
+mem.open=OK
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+### end tag=control1 pid=546269
+
+===== CONTROL RUN 2 (no pmask) =====
+### procdump tag=control2 pid=546273 uid=1000
+cmdline.text='/workspace/pmask-work/target/release/pmask-testcases|sleeper|CANARY_R2_NODUMP_5c21|'
+comm='pmask-testcases'
+environ.open=OK
+environ.len=2321
+auxv.open=OK
+mem.open=OK
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.open=OK
+status.TracerPid:	0
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=3
+### end tag=control2 pid=546273
+
+===== RESIDUE CHECK =====
+none

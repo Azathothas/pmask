@@ -126,9 +126,9 @@ What it does not buy:
 - The guest shares the host's page cache, scheduler and CPU caches, so a
   side channel between tenants survives `[inferred]`.
 - The host still sees that a process exists, its memory footprint, its
-  CPU time and its network traffic, which is the same limit
-  `docs/research/ALTERNATIVES-honest-limits.md` names as the first one
-  that cannot move.
+  CPU time and its network traffic, which is the same limit the
+  "Honest limits" section of `README.md` names as the first one that
+  cannot move.
 - A micro-VM does not redact anything: the payload's own `/proc` entry
   inside the guest is whatever the guest's kernel says, so a secret in
   the guest's argv is still visible to another process in the guest
@@ -184,6 +184,5 @@ capabilities; the root-only rows (`/proc/<pid>/stack`, `/proc/kcore`,
 host, `userfaultfd` on a permissive host) were measured as refusals
 here, not as successes on a host that permits them. `sudo -n` was not
 used. No eBPF program was loaded, no seccomp filter denying `ptrace` was
-installed, and no second tenant was run: the two-tenant test that
-`ALTERNATIVES-honest-limits.md` names as what would settle limit 1 is
-not built.
+installed, and no second tenant was run: a two-tenant test would settle
+limit 1, and it is not built.

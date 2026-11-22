@@ -32,6 +32,7 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "spinthreads" => spinthreads(rest),
         "proctitle" => proctitle(),
         "execfn" => execfn(rest),
+        "auxvserved" => auxvserved(rest),
         "dropto" => dropto(rest),
         "suidprobe" => suidprobe(),
         "manyargs" => manyargs(rest),
@@ -322,6 +323,52 @@ fn execfn(rest: &[String]) -> i32 {
     if let Some(secs) = rest.first().and_then(|s| s.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs(secs));
     }
+    0
+}
+
+/// Print the `AT_EXECFN` string that `/proc/self/auxv` serves.
+///
+/// The pointer is in this process's own address space, so the value the
+/// kernel published can be read directly.  Comparing this with
+/// `execfn` (the libc `getauxval` answer) decides whether the served
+/// vector and the payload's own copy agree.
+fn auxvserved(rest: &[String]) -> i32 {
+    let data = match std::fs::read("/proc/self/auxv") {
+        Ok(d) => d,
+        Err(e) => {
+            println!("auxvserved=<error:{}>", e.kind() as i32);
+            return 1;
+        }
+    };
+    let mut off = 0;
+    while off + 16 <= data.len() {
+        let key = u64::from_le_bytes(match data[off..off + 8].try_into() {
+            Ok(k) => k,
+            Err(_) => break,
+        });
+        let val = u64::from_le_bytes(match data[off + 8..off + 16].try_into() {
+            Ok(v) => v,
+            Err(_) => break,
+        });
+        if key == 0 {
+            break;
+        }
+        if key == 31 {
+            // SAFETY: a live process's AT_EXECFN is a valid C string.
+            let s = unsafe { std::ffi::CStr::from_ptr(val as *const libc::c_char) };
+            println!("auxvserved={}", s.to_string_lossy());
+            let secs = rest
+                .first()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            if secs > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+            }
+            return 0;
+        }
+        off += 16;
+    }
+    println!("auxvserved=<none>");
     0
 }
 

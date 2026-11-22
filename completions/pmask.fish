@@ -4,7 +4,7 @@ complete -c pmask -s l -l label -d 'Presentation label' -x
 complete -c pmask -l label-empty -d 'Empty label'
 complete -c pmask -l argv0 -d 'argv[0] of the program' -x
 complete -c pmask -l comm -d 'Process name for top' -x
-complete -c pmask -l keep-env -d 'Leave environ visible'
+complete -c pmask -l keep-env -d 'Leave environ visible (or --keep-env=NAME[,NAME...])'
 complete -c pmask -l env -d 'Add or replace one variable' -x
 complete -c pmask -l env-file -d 'Read variables from a file' -r
 complete -c pmask -l args-from-fd -d 'Read the command from a descriptor' -x
@@ -13,10 +13,16 @@ complete -c pmask -l no-follow -d 'Redact only the direct child'
 complete -c pmask -l no-exit-kill -d 'Do not set PTRACE_O_EXITKILL'
 complete -c pmask -l no-exitkill -d 'Alias for --no-exit-kill'
 complete -c pmask -l no-dumpable -d 'Set PR_SET_DUMPABLE=0'
+complete -c pmask -l allow-dumpable -d 'Keep the payload dumpable when a secret is delivered'
+complete -c pmask -l strict-exec -d 'Refuse exec shapes that cannot be redacted at entry'
+complete -c pmask -l allow-foreign -d 'Run a 32-bit image unredacted'
+complete -c pmask -l stealth -d 'Compose the strongest shape and print the trade'
+complete -c pmask -l hide-pid -d 'Hide the tree from same-uid /proc readers'
+complete -c pmask -l encrypt-memory -d 'Seal at-rest copies (memfd_secret key) and mark block MADV_DONTDUMP'
 complete -c pmask -l no-new-privs -d 'Set no_new_privs'
 complete -c pmask -l no-exact -d 'Keep the original cmdline byte extent'
 complete -c pmask -l detach -d 'Detach each tracee after its exec; TracerPid reads 0'
-complete -c pmask -l watch-rename -d 'Revert later renames to the label'
+complete -c pmask -l watch-rename -d 'Revert later renames (use --watch-rename=strict for write traps)' -a 'strict'
 complete -c pmask -l rexec -d 'Exec from a sealed memfd'
 complete -c pmask -l image -d 'Read the program bytes from PATH' -r
 complete -c pmask -l image-from-fd -d 'Read the program bytes from a descriptor' -x

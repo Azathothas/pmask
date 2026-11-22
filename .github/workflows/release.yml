@@ -157,9 +157,10 @@ jobs:
           cp man/pmask.1 man/pmaskd.8 dist/
           mkdir -p stage
           for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            chmod 0755 "dist/pmask-$t" "dist/pmaskd-$t"
             d="pmask-${{ needs.preflight.outputs.version }}-$t"
             mkdir -p "stage/$d/completions" "stage/$d/contrib"
-            cp "dist/pmask-$t" "dist/pmaskd-$t" "stage/$d/"
+            cp -p "dist/pmask-$t" "dist/pmaskd-$t" "stage/$d/"
             cp man/pmask.1 man/pmaskd.8 LICENSE README.md dist/THIRD_PARTY_NOTICES.md "stage/$d/"
             cp completions/* "stage/$d/completions/"
             cp -r contrib/systemd contrib/sysusers.d contrib/tmpfiles.d "stage/$d/contrib/"

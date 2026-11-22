@@ -55,6 +55,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+use zeroize::Zeroize;
 
 static SESSION: Mutex<()> = Mutex::new(());
 
@@ -105,10 +106,13 @@ fn split_cmdline(raw: &[u8]) -> Vec<OsString> {
 /// session starts; this only removes the bytes.
 ///
 /// # Safety of the effect
-/// Nothing may read the original argv after this call.  Rust's `std`
-/// copies the argument vector at startup, so `std::env::args_os()` keeps
-/// working, but it then returns empty strings.  Use
-/// [`snapshot_argv`] before this call.
+/// Nothing may read the original argv after this call.  `std` saves the
+/// argument count and the `argv` pointer at startup, not the strings, so
+/// every later `std::env::args_os()` call reads the zeroed block and
+/// returns empty strings (or label suffixes after `mask_self`).  Use
+/// [`snapshot_argv`] before this call.  `snapshot_argv` after the call
+/// returns the degraded vector, not `/proc/self/cmdline`, because
+/// `args_os()` is still non-empty.
 pub fn zero_argv_block() -> io::Result<()> {
     // SAFETY: the caller promises not to read the process's original argv.
     unsafe { crate::selfmask::zero_own_argv() }
@@ -168,8 +172,36 @@ pub struct Mask {
     env_overrides: Vec<(OsString, OsString)>,
     keep_env_names: Vec<Vec<u8>>,
     session_end: SessionEnd,
+    /// True when the caller named the session-end policy; a report run
+    /// that did not choose one gets `WaitTree` so the document is linked
+    /// only after the tree is gone.
+    session_end_explicit: bool,
     no_dumpable: bool,
+    /// Keep the supervisor non-dumpable for the whole session.  The
+    /// default is false: the supervisor scrubs its at-rest copies, stays
+    /// dumpable, and is therefore not a hidden pid on a host whose
+    /// `/proc` uses `hidepid=invisible`.
+    supervisor_non_dumpable: bool,
+    /// Run a 32-bit (foreign-ABI) image unredacted.  False by default:
+    /// the exec is refused.
+    allow_foreign: bool,
+    /// Hide the tree's pids from same-uid `/proc` readers.  Opt in, never
+    /// the default.  Requires a `/proc` mount with `hidepid=invisible`
+    /// or `hidepid=ptraceable` and `PR_SET_DUMPABLE=0`.  The flag is
+    /// injected at every traced exec, so `--no-follow` and `--detach` are
+    /// refused: they take a process off that path.  A descendant left
+    /// running by the default `--on-exit detach` keeps the flag until its
+    /// next exec, which resets it with no supervisor left to set it again.
+    hide_pid: bool,
+    /// Encrypt the supervisor's at-rest plaintext copies and keep the
+    /// payload's redaction block out of a core dump.  Opt in, never the
+    /// default.
+    encrypt_memory: bool,
+    /// The per-session key, created by [`Mask::encrypt_memory`].
+    session_key: Option<std::sync::Arc<crate::crypto::SessionKey>>,
     watch_rename: bool,
+    watch_rename_strict: bool,
+    strict_exec: bool,
     no_new_privs: bool,
     unshare: bool,
     /// The namespace set `--redact --isolate` asked the redaction child to
@@ -344,8 +376,16 @@ impl Mask {
             env_overrides: Vec::new(),
             keep_env_names: Vec::new(),
             session_end: SessionEnd::Detach,
+            session_end_explicit: false,
             no_dumpable: false,
+            supervisor_non_dumpable: false,
+            allow_foreign: false,
+            hide_pid: false,
+            encrypt_memory: false,
+            session_key: None,
             watch_rename: false,
+            watch_rename_strict: false,
+            strict_exec: false,
             no_new_privs: false,
             unshare: false,
             namespaces: None,
@@ -448,13 +488,123 @@ impl Mask {
     /// Default: `SessionEnd::Detach`.
     pub fn session_end(mut self, policy: SessionEnd) -> Mask {
         self.session_end = policy;
+        self.session_end_explicit = true;
         self
+    }
+
+    /// True when the caller chose the session-end policy explicitly.
+    pub fn session_end_explicit(&self) -> bool {
+        self.session_end_explicit
+    }
+
+    /// The session-end policy the run will use.
+    pub fn session_end_value(&self) -> SessionEnd {
+        self.session_end
+    }
+
+    /// True when `--exec-once` was requested.
+    pub fn exec_once_enabled(&self) -> bool {
+        self.rexec_exec_once
+    }
+
+    /// True when `--watch-rename` installed the unremovable prctl filter.
+    pub fn watch_rename_enabled(&self) -> bool {
+        self.watch_rename
+    }
+
+    /// True when `--strict-exec` was requested.
+    pub fn strict_exec_enabled(&self) -> bool {
+        self.strict_exec
+    }
+
+    /// True when `--detach` (`detach_after_exec`) was requested.
+    pub fn detach_after_exec_enabled(&self) -> bool {
+        self.detach
+    }
+
+    /// Whether the payload's own `PR_GET_DUMPABLE` stays 1 under this
+    /// mask.  `--no-dumpable` and `--hide-pid` inject
+    /// `PR_SET_DUMPABLE=0` at every completion stop;
+    /// `--encrypt-memory` hardens the supervisor and the redaction block
+    /// and leaves the payload dumpable.  A run whose injection failed
+    /// reports the failure in its statistics, and the caller ORs that in.
+    pub fn payload_is_dumpable(&self) -> bool {
+        !self.no_dumpable
     }
 
     /// Inject `prctl(PR_SET_DUMPABLE, 0)` into every process of the tree.
     /// Core dumps and same-uid debugger attach stop working.
     pub fn no_dumpable(mut self) -> Mask {
         self.no_dumpable = true;
+        self
+    }
+
+    /// Keep the supervisor non-dumpable for the whole session.
+    ///
+    /// The default is false.  The supervisor scrubs the real argv and
+    /// environment from its own memory after the fork and zeroizes each
+    /// per-exec copy when the redaction block is built, so it holds no
+    /// plaintext at rest and can stay dumpable.  A dumpable supervisor is
+    /// an ordinary process of the caller's uid: on a host whose `/proc`
+    /// uses `hidepid=invisible`, a non-dumpable one would be hidden from
+    /// same-uid observers and named by the hidden-pid sweepers.
+    ///
+    /// Set this for a supervisor that does hold plaintext at rest (the
+    /// secret path, `--no-dumpable`, or `PMASK_NO_SELFMASK`).
+    pub fn supervisor_non_dumpable(mut self, on: bool) -> Mask {
+        self.supervisor_non_dumpable = on;
+        self
+    }
+
+    /// Whether the supervisor stays non-dumpable for the session.
+    pub fn supervisor_is_non_dumpable(&self) -> bool {
+        self.supervisor_non_dumpable
+    }
+
+    /// Run a 32-bit (foreign-ABI) image unredacted.  The default is to
+    /// refuse the exec: a 32-bit payload keeps its real command line,
+    /// environment and `comm`, so it is not a masked payload.  The run
+    /// ends with a clear warning instead of a silent disclosure.
+    pub fn allow_foreign(mut self, on: bool) -> Mask {
+        self.allow_foreign = on;
+        self
+    }
+
+    /// Hide the tree's pids from same-uid `/proc` readers.  Opt in, never
+    /// the default.
+    ///
+    /// The kernel mechanism is `PR_SET_DUMPABLE=0` plus a `/proc` mount
+    /// with `hidepid=invisible` (or `hidepid=ptraceable`).  The run is
+    /// refused when the mount policy is weaker, because the flag would
+    /// otherwise claim a hide the kernel does not provide.  A hidden pid
+    /// is still present to `kill(0)`, to `pidfd_open`, and to root; the
+    /// kernel's pid table is global.  The flag also pins the supervisor
+    /// non-dumpable, because it holds the real argv of every tracee.
+    pub fn hide_pid(mut self, on: bool) -> Mask {
+        self.hide_pid = on;
+        if on {
+            self.no_dumpable = true;
+            self.supervisor_non_dumpable = true;
+        }
+        self
+    }
+
+    /// Encrypt the supervisor's at-rest plaintext copies and keep the
+    /// payload's redaction block out of a core dump.  Opt in, never the
+    /// default.
+    ///
+    /// The payload's own heap and stack are not encrypted.  The flag
+    /// seals the supervisor's saved argv/environ with XChaCha20-Poly1305
+    /// under a per-session key in `memfd_secret` memory when the kernel
+    /// offers it.  The payload's redaction block stays anonymous and is
+    /// marked `MADV_DONTDUMP`: a `memfd_secret` mapping would leave a
+    /// `/secretmem` VMA in the payload's maps, which is a tool
+    /// fingerprint.
+    pub fn encrypt_memory(mut self, on: bool) -> Mask {
+        self.encrypt_memory = on;
+        if on {
+            self.supervisor_non_dumpable = true;
+        }
         self
     }
 
@@ -472,6 +622,25 @@ impl Mask {
     /// installed the child prints one line and runs without it.
     pub fn watch_rename(mut self) -> Mask {
         self.watch_rename = true;
+        self.no_new_privs = true;
+        self
+    }
+
+    /// `--strict-exec`: refuse an exec shape that cannot be redacted at
+    /// its entry stop (a `#!` script, a vfork child, a later exec under
+    /// `--no-dumpable`) instead of running it with the post-exec window.
+    pub fn strict_exec(mut self) -> Mask {
+        self.strict_exec = true;
+        self
+    }
+
+    /// `--watch-rename=strict`: also refuse a write to an already-open
+    /// `/proc/.../comm` descriptor.  The open-path guard cannot see a
+    /// symlink alias or a descriptor received over `SCM_RIGHTS`; the
+    /// write-fd guard resolves the actual target and catches both.
+    pub fn watch_rename_strict(mut self) -> Mask {
+        self.watch_rename = true;
+        self.watch_rename_strict = true;
         self.no_new_privs = true;
         self
     }
@@ -790,7 +959,91 @@ impl Mask {
         if let Some(n) = &self.secret_fd_name {
             crate::mem::validate_memfd_name(n)?;
         }
+        if self.watch_rename && self.detach {
+            // The rename filter is installed in the child before its
+            // first exec and cannot be removed.  --detach releases each
+            // tracee after that exec, so a later prctl(PR_SET_NAME)
+            // would hit SECCOMP_RET_TRACE with no tracer and return
+            // ENOSYS, which no unmasked program sees.
+            return Err(invalid(
+                "--watch-rename (or --stealth, which implies it) and --detach cannot be \
+                 combined: the rename filter stays installed after the tracee is detached, \
+                 so a later prctl(PR_SET_NAME) would return ENOSYS with no tracer to service it",
+            ));
+        }
+        if self.watch_rename && self.session_end == SessionEnd::Detach {
+            // Same unremovable-filter hazard at session end: a descendant
+            // detached when the master exits keeps the filter with no
+            // tracer to service it, so `prctl(PR_SET_NAME)` or opening
+            // `/proc/.../comm` returns ENOSYS (issue #72).
+            return Err(invalid(
+                "--watch-rename installs a seccomp filter that cannot be removed; \
+                 --on-exit detach would leave it in a descendant with no tracer to \
+                 service it.  Use SessionEnd::WaitTree or SessionEnd::KillTree.",
+            ));
+        }
+        if self.rexec_exec_once && (self.no_dumpable || self.hide_pid) {
+            // `--exec-once` rewrites a later exec's path at its entry stop,
+            // which needs a dumpable tracee (issue #65).
+            return Err(invalid(
+                "--exec-once needs a dumpable tracee at its later exec's entry stop; \
+                 --no-dumpable and --hide-pid make that write fail, so the cached carrier \
+                 could not be used.  Drop one flag, or use --rexec without --exec-once.",
+            ));
+        }
+        if self.strict_exec && self.detach {
+            // `--strict-exec` promises every exec in the tree is redacted
+            // at entry; `--detach` stops tracing after the first exec
+            // (issue #66).
+            return Err(invalid(
+                "--strict-exec and --detach cannot be combined: --detach releases each \
+                 tracee after its first exec, so later execs run unredacted; drop --detach \
+                 to keep strict exec enforcement",
+            ));
+        }
+        if self.hide_pid && !self.follow_tree {
+            // `--no-follow` marks descendants unmasked, so the exec
+            // completion stop (`on_exec_complete`) is skipped for them and
+            // PR_SET_DUMPABLE is never injected.  An exec resets the flag
+            // to 1, and a same-uid reader sees the pid again; the flag's
+            // tree-wide promise would be false for every descendant that
+            // execs.
+            return Err(invalid(
+                "--hide-pid and --no-follow cannot be combined: --no-follow leaves \
+                 descendants off the completion path, so their exec resets \
+                 PR_SET_DUMPABLE and they become visible to same-uid /proc readers; \
+                 drop --no-follow to hide the tree",
+            ));
+        }
+        if self.hide_pid && self.detach {
+            // Same class as `--watch-rename --detach`: the tracee is
+            // released after its first exec, and the next exec resets
+            // PR_SET_DUMPABLE to 1 with no tracer left to inject it.
+            return Err(invalid(
+                "--hide-pid and --detach cannot be combined: --detach releases a tracee \
+                 after its first exec, and the next exec resets PR_SET_DUMPABLE to 1, \
+                 so the pid becomes visible again; drop --detach to keep the tree hidden",
+            ));
+        }
         Ok(())
+    }
+
+    /// The `--exec-once` seccomp fast path is safe only when a tracer
+    /// outlives every process that inherits the filter, and every
+    /// completion stop still runs.  A survivor of the tracer would keep a
+    /// filter that traps `execve` with no one to service it, and the
+    /// kernel answers `ENOSYS`; a tracee off the completion path is never
+    /// sealed.
+    fn fast_exec_ok(&self) -> bool {
+        self.rexec_exec_once
+            && self.rexec
+            && self.follow_tree
+            && !self.detach
+            && self.session_end != SessionEnd::Detach
+            && self.exit_kill
+            && !self.unshare
+            && self.namespaces.is_none()
+            && self.run_as.is_none()
     }
 
     fn to_config(&self, program: &OsStr) -> io::Result<Config> {
@@ -815,6 +1068,61 @@ impl Mask {
         if comm.is_empty() {
             comm.push(b' '); // kernel ignores empty; present as blank
         }
+        let fast_exec = self.fast_exec_ok();
+        if self.rexec_exec_once && !fast_exec && !self.quiet {
+            if self.detach {
+                eprintln!(
+                    "pmask: --exec-once: --detach releases each tracee after its first exec, \
+                     so a later exec runs from its real path and the cached image is not \
+                     applied; drop --detach to keep the cache"
+                );
+            } else if self.session_end == SessionEnd::Detach {
+                eprintln!(
+                    "pmask: --exec-once: later execs are syscall-supervised because the \
+                     default --on-exit detach leaves the tracer behind; pass --on-exit wait \
+                     or --on-exit kill for the seccomp fast path"
+                );
+            } else if !self.exit_kill {
+                // The exec filter cannot be removed, and `--no-exit-kill`
+                // lets tracees survive an unexpected supervisor death.  A
+                // survivor's next exec would hit SECCOMP_RET_TRACE with no
+                // tracer and fail with ENOSYS, so the fast path stays off.
+                eprintln!(
+                    "pmask: --exec-once: --no-exit-kill lets tracees survive an unexpected \
+                     supervisor death, and the seccomp exec filter cannot be removed, so a \
+                     survivor's next exec would fail with ENOSYS; the tracee stays \
+                     syscall-supervised.  Drop --no-exit-kill for the fast path"
+                );
+            }
+        }
+        let session_key = match (&self.session_key, self.encrypt_memory) {
+            (Some(k), _) => Some(k.clone()),
+            (None, true) => Some(std::sync::Arc::new(crate::crypto::SessionKey::generate()?)),
+            (None, false) => None,
+        };
+        if self.hide_pid {
+            let policy = crate::caps::proc_hidepid();
+            if !policy.hides_non_dumpable() {
+                return Err(invalid(&format!(
+                    "--hide-pid needs /proc mounted with hidepid=invisible or \
+                     hidepid=ptraceable; this host is hidepid={}.  Remount /proc, or use \
+                     --stealth for the best trade the host allows",
+                    policy.as_word()
+                )));
+            }
+            let caps = crate::caps::Caps::cached();
+            if !caps.non_dumpable {
+                return Err(invalid(
+                    "--hide-pid needs PR_SET_DUMPABLE, and this host refuses it",
+                ));
+            }
+            if !caps.ptrace {
+                return Err(invalid(
+                    "--hide-pid needs ptrace to inject PR_SET_DUMPABLE into the tree, and \
+                     this host refuses ptrace",
+                ));
+            }
+        }
         Ok(Config {
             label: label.into_bytes(),
             label_comm: comm,
@@ -824,18 +1132,23 @@ impl Mask {
             verbose: self.verbose,
             quiet: self.quiet,
             no_dumpable: self.no_dumpable,
+            keep_non_dumpable: self.supervisor_non_dumpable,
+            allow_foreign: self.allow_foreign,
+            hide_pid: self.hide_pid,
+            encrypt_memory: self.encrypt_memory,
+            session_key,
+            fast_exec,
             watch_prctl: self.watch_rename,
+            watch_strict: self.watch_rename_strict,
+            strict_exec: self.strict_exec,
             session_end: self.session_end,
             keep_env: self.keep_env_names.clone(),
             // Test hooks, read before the supervisor redacts its own
             // environment: a redacted environ is empty by design.
-            fault_poke_at: std::env::var("PMASK_FAULT_POKE")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(0),
-            fault_no_vdso: std::env::var_os("PMASK_FAULT_NOVDSO").is_some(),
-            fault_refuse_map: std::env::var_os("PMASK_FAULT_REFUSE_MAP").is_some(),
-            fault_close_fds: std::env::var_os("PMASK_FAULT_CLOSE").is_some(),
+            fault_poke_at: crate::testhooks::number::<u32>("PMASK_FAULT_POKE").unwrap_or(0),
+            fault_no_vdso: crate::testhooks::flag("PMASK_FAULT_NOVDSO"),
+            fault_refuse_map: crate::testhooks::flag("PMASK_FAULT_REFUSE_MAP"),
+            fault_close_fds: crate::testhooks::flag("PMASK_FAULT_CLOSE"),
             // The flag withholds the descriptors from what the payload
             // spawns, so the tracer closes them in each descendant at its
             // fork and leaves them in the master.  The numbers are the
@@ -849,7 +1162,7 @@ impl Mask {
             } else {
                 Vec::new()
             },
-            exact: self.exact && std::env::var_os("PMASK_FAULT_NOWINDOW").is_none(),
+            exact: self.exact && !crate::testhooks::flag("PMASK_FAULT_NOWINDOW"),
             detach: self.detach,
             audit: self.audit,
             rexec_cache: self.rexec_cache.clone(),
@@ -939,9 +1252,9 @@ impl Mask {
             .chain(std::iter::once(std::ptr::null()))
             .collect();
 
-        let no_new_privs = self.no_new_privs || self.watch_rename;
+        let no_new_privs = self.no_new_privs || self.watch_rename || cfg.fast_exec;
         let filter: Vec<libc::sock_filter> = if self.watch_rename {
-            crate::seccomp::prctl_watch_filter()
+            crate::seccomp::rename_watch_filter(self.watch_rename_strict)
         } else {
             Vec::new()
         };
@@ -994,6 +1307,7 @@ impl Mask {
         let label_text = String::from_utf8_lossy(&cfg.label).into_owned();
         let mut rexec_image: Option<std::sync::Arc<crate::rexec::Image>> = None;
         let mut rexec_temp: Option<std::sync::Arc<crate::rexec::Image>> = None;
+        let mut rexec_prepare_disk_fallback = false;
         if self.rexec {
             let source = match &self.rexec_image {
                 Some(s) => Some(s.clone()),
@@ -1023,25 +1337,24 @@ impl Mask {
                     hugetlb: self.rexec_hugetlb,
                     memfd_name: self.rexec_memfd_name.clone(),
                 };
-                let prepared = match (&source, self.rexec_exec_once) {
-                    (crate::rexec::Source::Path(p), true) => {
-                        let resolved =
-                            std::fs::canonicalize(p).unwrap_or_else(|_| p.clone().into());
-                        let mut cache = self
-                            .rexec_cache
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        cache.get(&resolved, &label_text, opts).map_err(|e| {
+                // Prepare the root process's image directly rather than
+                // caching it in `self.rexec_cache`: later execs inside the
+                // tree use `Cache::get_temp`, never `Cache::get`, and a
+                // second `Arc` held by the cache kept `Arc::strong_count`
+                // at 2 so `close_parent_image_fds` could not close fd 200
+                // in the supervisor after the fork (issue #67).
+                let prepared = crate::rexec::prepare_source(&source, &label_text, opts)
+                    .and_then(|mut image| {
+                        crate::rexec::relocate(&mut image, 200)?;
+                        Ok(std::sync::Arc::new(image))
+                    })
+                    .map_err(|e| {
+                        if self.rexec_exec_once {
                             io::Error::new(e.kind(), format!("--rexec unavailable: {}", e))
-                        })
-                    }
-                    _ => crate::rexec::prepare_source(&source, &label_text, opts).and_then(
-                        |mut image| {
-                            crate::rexec::relocate(&mut image, 200)?;
-                            Ok(std::sync::Arc::new(image))
-                        },
-                    ),
-                };
+                        } else {
+                            e
+                        }
+                    });
                 match prepared {
                     Ok(image) => {
                         if let Some(note) = &image.note {
@@ -1057,7 +1370,7 @@ impl Mask {
                         // The temporary carrier is built in the parent:
                         // the child cannot create a file between the fork
                         // and the exec without unsafe allocation.
-                        let temp = if std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some() {
+                        let temp = if crate::testhooks::flag("PMASK_FAULT_REXEC_NO_PROC") {
                             crate::rexec::prepare_temp_named(
                                 &image,
                                 &label_text,
@@ -1077,15 +1390,25 @@ impl Mask {
                         rexec_image = Some(image);
                     }
                     Err(e) => {
-                        // `--image` has no on-disk program to fall back
-                        // to, so a source that cannot be prepared is a
-                        // hard error.  A path passed to `--rexec` can
-                        // still run normally, with the refusal reported.
-                        if self.rexec_image.is_some() {
-                            return Err(e);
+                        // A refused image is fatal unless the caller
+                        // explicitly added the on-disk path as the last
+                        // resort.  Continuing with the file on disk keeps
+                        // the label but exposes the real `exe`, `maps`
+                        // and `map_files`, which is exactly what
+                        // `--rexec` exists to prevent; doing that on a
+                        // clean exit status is a silent posture change
+                        // (issue 013).
+                        let disk_ok = self.rexec_allow_disk
+                            && matches!(
+                                &self.rexec_image,
+                                None | Some(crate::rexec::Source::Path(_))
+                            );
+                        if !disk_ok {
+                            return Err(io::Error::new(e.kind(), format!("--rexec: {}", e)));
                         }
+                        rexec_prepare_disk_fallback = true;
                         if !self.quiet {
-                            eprintln!("pmask: {}", e);
+                            eprintln!("pmask: {} (running the on-disk path by request)", e);
                         }
                     }
                 }
@@ -1155,7 +1478,7 @@ impl Mask {
                 "pmask: --rexec: falling back to the on-disk path (explicit last resort)",
             ),
             no_new_privs,
-            fault_watch: std::env::var_os("PMASK_FAULT_WATCH").is_some(),
+            fault_watch: crate::testhooks::flag("PMASK_FAULT_WATCH"),
             filter,
             rexec_image,
             rexec_temp,
@@ -1163,9 +1486,10 @@ impl Mask {
             rexec_temp_proc_path,
             rexec_temp_path,
             rexec_allow_disk,
-            fault_rexec_fail: std::env::var_os("PMASK_FAULT_REXEC_FAIL").is_some(),
-            fault_rexec_disk: std::env::var_os("PMASK_FAULT_REXEC_DISK").is_some(),
-            fault_rexec_no_proc: std::env::var_os("PMASK_FAULT_REXEC_NO_PROC").is_some(),
+            rexec_prepare_disk_fallback,
+            fault_rexec_fail: crate::testhooks::flag("PMASK_FAULT_REXEC_FAIL"),
+            fault_rexec_disk: crate::testhooks::flag("PMASK_FAULT_REXEC_DISK"),
+            fault_rexec_no_proc: crate::testhooks::flag("PMASK_FAULT_REXEC_NO_PROC"),
             unshare,
             namespaces,
             run_as: self.run_as,
@@ -1184,6 +1508,11 @@ impl Mask {
         let mut prepared = self.prepare(program, args)?;
         let cfg = prepared.cfg.clone();
         let (pid, ready_fd, go_fd, report_fd) = fork_prepared(&mut prepared)?;
+        // The child has its own copy of the address space.  Drop the
+        // parent's plaintext before the session starts, so the supervisor
+        // can stay dumpable at rest.
+        prepared.scrub();
+        drop(prepared);
         Tracer::new(cfg).supervise(pid, ready_fd, go_fd, report_fd)
     }
 
@@ -1227,6 +1556,9 @@ impl Mask {
                         return;
                     }
                 };
+                // The child has its own copy.  The parent keeps only the
+                // image descriptor the tracer needs for later execs.
+                prepared.scrub();
                 let _ = pid_tx.send(Ok(pid));
                 let r = Tracer::new(cfg_thread).supervise(pid, ready_fd, go_fd, report_fd);
                 // Keep the parent's image descriptor open until the
@@ -1297,6 +1629,10 @@ pub struct Prepared {
     rexec_temp_path: Option<CString>,
     /// Run the on-disk program when every image carrier is refused.
     rexec_allow_disk: bool,
+    /// True when parent-side image preparation failed and `--rexec-allow-disk`
+    /// selected the on-disk path directly, so the child still reports `b'4'`
+    /// to the session summary and report counters.
+    rexec_prepare_disk_fallback: bool,
     /// Test hook: make every image carrier fail, so the C-002 refusal
     /// path is reachable even where a real carrier would succeed.  Read
     /// from `PMASK_FAULT_REXEC_FAIL`.
@@ -1350,8 +1686,96 @@ impl Prepared {
             self.cfg.redact_environ,
         )
     }
+
+    /// [`Prepared::mask_self`] with an explicit supervisor dumpable
+    /// choice.  See [`Mask::supervisor_non_dumpable`].
+    pub fn mask_self_opts(&self, non_dumpable: bool) -> io::Result<()> {
+        let r = crate::selfmask::mask_self_label_with_window_opts(
+            &self.cfg.label,
+            &self.cfg.label_comm,
+            self.cfg.redact_environ,
+            non_dumpable,
+        );
+        match (r.error, r.window, r.dumpable) {
+            (Some(e), _, _) => Err(e),
+            (None, Some(e), _) => Err(e),
+            (None, None, Some(e)) => Err(e),
+            (None, None, None) => Ok(()),
+        }
+    }
+
+    /// Zero the real argv and environment strings this plan holds.
+    ///
+    /// Call it in the parent immediately after the fork.  The child has
+    /// its own copy of the address space and still needs the strings for
+    /// its exec; the parent does not, and a supervisor that keeps them
+    /// would have to stay non-dumpable for the whole session.
+    pub fn scrub(&mut self) {
+        for s in &mut self.argv_c {
+            scrub_cstring(s);
+        }
+        for s in &mut self.envp_c {
+            scrub_cstring(s);
+        }
+        // The pointer arrays above point into the allocations that
+        // `scrub_cstring` just freed.  Nothing reads them after this
+        // point, and clearing them keeps a stale pointer from surviving
+        // if a later path ever does.
+        self.argv_ptr.clear();
+        self.envp_ptr.clear();
+    }
 }
 
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        self.scrub();
+    }
+}
+
+impl Mask {
+    /// Zero the environment values this builder still holds after
+    /// [`Mask::prepare`] has copied them into the exec plan.
+    pub fn scrub_env_values(&mut self) {
+        if let EnvMode::Explicit(vars) = &mut self.env {
+            for (k, v) in vars {
+                scrub_os_string(k);
+                scrub_os_string(v);
+            }
+        }
+        for (k, v) in &mut self.env_overrides {
+            scrub_os_string(k);
+            scrub_os_string(v);
+        }
+    }
+}
+
+impl Drop for Mask {
+    fn drop(&mut self) {
+        self.scrub_env_values();
+    }
+}
+
+/// Overwrite an `OsString`'s bytes in place, then replace it with an
+/// empty string.
+fn scrub_os_string(s: &mut OsString) {
+    // Take the allocation, zero it, and leave an empty string.  Writing
+    // through a pointer derived from a shared `&OsString` is undefined
+    // behaviour, so the bytes are owned for the wipe.
+    let mut bytes = std::mem::take(s).into_vec();
+    bytes.zeroize();
+    *s = OsString::new();
+}
+
+/// Zero a `CString`'s bytes, then replace it with an empty string.
+fn scrub_cstring(s: &mut CString) {
+    // Take the allocation so the wipe writes through owned memory.  Writing
+    // through a pointer derived from a shared `&CString` is undefined
+    // behaviour (`CString::as_ptr` promises no mutation).  The terminator
+    // is part of the allocation and is wiped with the bytes.
+    let mut bytes = std::mem::take(s).into_bytes_with_nul();
+    bytes.zeroize();
+    *s = CString::default();
+}
 /// Handle to a supervised process tree.
 ///
 /// Dropping the handle without calling [`MaskedChild::wait`] kills the
@@ -1509,6 +1933,27 @@ impl MaskedChild {
 /// (after it has restored its own `dumpable`) and then blocks on the read
 /// end until the tracer has seized it and writes one byte.  Only
 /// async-signal-safe calls happen in the child.
+/// Close the supervisor's copies of the image descriptors after the
+/// fork.  The child has its own copies for the exec, and a supervisor
+/// that keeps 200/210 open hands a same-uid reader the real binary
+/// through `/proc/<supervisor>/fd` for the life of the session (issue
+/// 004).  The carriers' paths stay; only the descriptors close.
+fn close_parent_image_fds(p: &mut Prepared) {
+    for arc in [&mut p.rexec_image, &mut p.rexec_temp]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(img) = std::sync::Arc::get_mut(arc) {
+            if img.fd >= 0 {
+                // SAFETY: the descriptor is the supervisor's copy and is
+                // not used after this point.
+                unsafe { libc::close(img.fd) };
+                img.fd = -1;
+            }
+        }
+    }
+}
+
 fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, RawFd)> {
     let mut rdy = [0 as libc::c_int; 2];
     let mut fds = [0 as libc::c_int; 2];
@@ -1529,7 +1974,9 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
         }
         return Err(io::Error::last_os_error());
     }
-    if p.rexec_image.is_some() && unsafe { libc::pipe2(rep.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
+    if (p.rexec_image.is_some() || p.rexec_prepare_disk_fallback)
+        && unsafe { libc::pipe2(rep.as_mut_ptr(), libc::O_CLOEXEC) } == -1
+    {
         // SAFETY: all four pipe ends created above are owned here.
         unsafe {
             libc::close(rdy[0]);
@@ -1636,6 +2083,7 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
             libc::close(report_w);
         }
     }
+    close_parent_image_fds(p);
     Ok((pid, rdy_r, go_w, report_r))
 }
 
@@ -1847,6 +2295,9 @@ fn child_exec(
             }
             let code = if last == libc::ENOENT { 127 } else { 126 };
             child_fail(&p.msg_rexec, code);
+        }
+        if p.rexec_prepare_disk_fallback {
+            child_report(report_w, b'4');
         }
         libc::execve(p.prog_c.as_ptr(), p.argv_ptr.as_ptr(), p.envp_ptr.as_ptr());
         let e = last_errno();
@@ -2271,6 +2722,119 @@ mod tests {
         // A tab and other control bytes are legal in `comm`, and a label
         // is still accepted as before.
         assert!(Mask::new().label("x").comm("a\tb").validate().is_ok());
+    }
+
+    #[test]
+    fn exec_once_fast_path_requires_a_surviving_tracer() {
+        // `exec_once` implies `rexec`; `--on-exit wait` is the shape the
+        // fast path was built for.
+        let fast = || Mask::new().exec_once().session_end(SessionEnd::WaitTree);
+        assert!(fast().fast_exec_ok());
+
+        // `--no-exit-kill` lets a tracee outlive an unexpected tracer
+        // death, and the exec filter cannot be removed: a survivor's next
+        // exec would return ENOSYS.  No fast path.
+        assert!(!fast().let_tree_survive_self_death().fast_exec_ok());
+
+        // A detached or unfollowed tracee is off the completion path.
+        assert!(!fast().detach_after_exec(true).fast_exec_ok());
+        assert!(!fast().follow_tree(false).fast_exec_ok());
+
+        // The default session end is detach, so plain `--exec-once` stays
+        // syscall-supervised.
+        assert!(!Mask::new().exec_once().fast_exec_ok());
+    }
+
+    #[test]
+    fn hide_pid_refuses_compositions_it_cannot_hold() {
+        // issue: `--no-follow` leaves descendants off the completion path,
+        // and `--detach` releases a tracee after its first exec.  In both
+        // cases the next exec resets PR_SET_DUMPABLE to 1, so the tree is
+        // not hidden.  Refuse instead of claiming it.
+        let e = Mask::new()
+            .label("x")
+            .hide_pid(true)
+            .follow_tree(false)
+            .validate()
+            .expect_err("--hide-pid --no-follow must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains("--no-follow"), "message: {}", e);
+
+        let e = Mask::new()
+            .label("x")
+            .hide_pid(true)
+            .detach_after_exec(true)
+            .validate()
+            .expect_err("--hide-pid --detach must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains("--detach"), "message: {}", e);
+
+        // The default composition is accepted.  The mount policy is
+        // checked later, in `to_config`, so this test runs on any host.
+        assert!(Mask::new().label("x").hide_pid(true).validate().is_ok());
+    }
+
+    #[test]
+    fn scrub_cstring_leaves_no_plaintext() {
+        let mut s = CString::new("sup3r-s3cret").unwrap();
+        scrub_cstring(&mut s);
+        assert_eq!(s.as_bytes(), b"");
+        assert_eq!(s.as_bytes_with_nul(), b"\0");
+    }
+
+    #[test]
+    fn safety_refusals_hold_at_library_level() {
+        // Issue #65: --exec-once cannot be combined with --no-dumpable or --hide-pid.
+        let e = Mask::new()
+            .label("x")
+            .exec_once()
+            .no_dumpable()
+            .validate()
+            .expect_err("exec_once + no_dumpable must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains("dumpable tracee"), "message: {}", e);
+
+        let e = Mask::new()
+            .label("x")
+            .exec_once()
+            .hide_pid(true)
+            .validate()
+            .expect_err("exec_once + hide_pid must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+
+        // Issue #72: --watch-rename refuses SessionEnd::Detach (default or explicit).
+        let e = Mask::new()
+            .label("x")
+            .watch_rename()
+            .validate()
+            .expect_err("watch_rename with default Detach must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains("--on-exit detach"), "message: {}", e);
+
+        assert!(Mask::new()
+            .label("x")
+            .watch_rename()
+            .session_end(SessionEnd::WaitTree)
+            .validate()
+            .is_ok());
+        assert!(Mask::new()
+            .label("x")
+            .watch_rename()
+            .session_end(SessionEnd::KillTree)
+            .validate()
+            .is_ok());
+
+        // Issue #66: --strict-exec refuses --detach.
+        let e = Mask::new()
+            .label("x")
+            .strict_exec()
+            .detach_after_exec(true)
+            .validate()
+            .expect_err("strict_exec + detach must be refused");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        assert!(e.to_string().contains("--detach"), "message: {}", e);
+
+        assert!(Mask::new().label("x").strict_exec().validate().is_ok());
     }
 
     #[test]

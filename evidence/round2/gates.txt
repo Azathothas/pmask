@@ -1,0 +1,13 @@
+source-tree native gate (tests/testcases32 present): 1128 PASS / 0 FAIL / 29 SKIP
+################ QA: PASS cases=58 passed=569 skipped=21
+################ FINAL: ALL-PASS
+VERIFY: PASS
+
+VM gate: 629 PASS / 0 FAIL / 31 SKIP (root and uid 1000)
+################ FINAL: ALL-PASS
+VM-HARNESS-RESULT:0
+################ FINAL: ALL-PASS
+VM-HARNESS-RESULT-NONROOT:0
+
+fresh-extraction native gate: 1124 PASS / 0 FAIL / 30 SKIP
+note: K4 skips in a fresh native extraction because tests/testcases32 is a vm/run.sh artifact; the micro-VM gate builds it and covers the case.

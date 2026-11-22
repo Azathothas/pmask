@@ -367,7 +367,7 @@ fn peer_cred(fd: RawFd) -> io::Result<libc::ucred> {
 /// fallback warning is reachable from a suite.  Read once.
 fn peerpidfd_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("PMASK_FAULT_PEERPIDFD").is_some())
+    *OFF.get_or_init(|| crate::testhooks::flag("PMASK_FAULT_PEERPIDFD"))
 }
 
 /// A pidfd for the peer, when the kernel offers one.
@@ -458,6 +458,21 @@ impl Peer {
     /// `SO_PEERPIDFD` it is best effort in the sense documented on
     /// [`Peer`] and on the module.
     pub fn revalidate(&self) -> io::Result<PathBuf> {
+        self.revalidate_for(true)
+    }
+
+    /// Re-establish that the process this connection belongs to is still
+    /// the one that connected, and return the executable it runs now.
+    ///
+    /// The `pidfd` and `/proc/<pid>/stat` start-time identity pins are
+    /// always verified first (fail closed).  When `need_exe` is false
+    /// (the agent has no executable policy configured) and reading
+    /// `/proc/<pid>/exe` returns `PermissionDenied` — for example because
+    /// a hardened `pmask run` client called `PR_SET_DUMPABLE=0` before
+    /// fetching secrets — this returns `<non-dumpable>` instead of
+    /// refusing the connection.  When `need_exe` is true, an unreadable
+    /// executable always fails closed.
+    pub fn revalidate_for(&self, need_exe: bool) -> io::Result<PathBuf> {
         let replaced = || {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -496,7 +511,19 @@ impl Peer {
                 }
             }
         }
-        proc_exe(self.pid)
+        classify_peer_exe(proc_exe(self.pid), need_exe)
+    }
+}
+
+/// Apply the executable-resolution rule after the peer's pid pin has
+/// already been verified.
+fn classify_peer_exe(res: io::Result<PathBuf>, need_exe: bool) -> io::Result<PathBuf> {
+    match res {
+        Ok(exe) => Ok(exe),
+        Err(e) if !need_exe && e.kind() == io::ErrorKind::PermissionDenied => {
+            Ok(PathBuf::from("<non-dumpable>"))
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -1611,9 +1638,11 @@ fn handle(stream: UnixStream, shared: &Arc<Shared>) -> io::Result<()> {
         return Ok(());
     }
 
+    let need_exe = !shared.policy.is_empty();
+
     // The first authorisation.  A refusal is the answer to the ready
     // line, so the client reads it as the connection's verdict.
-    let exe = match peer.revalidate() {
+    let exe = match peer.revalidate_for(need_exe) {
         Ok(e) => e,
         Err(e) => {
             let mut s = stream;
@@ -1653,7 +1682,7 @@ fn handle(stream: UnixStream, shared: &Arc<Shared>) -> io::Result<()> {
 
         // Per-request authorisation: the peer is re-checked before every
         // command, so a peer that exec'd since the last one is refused.
-        let exe = match peer.revalidate() {
+        let exe = match peer.revalidate_for(need_exe) {
             Ok(e) => e,
             Err(e) => {
                 reply_err(&mut w, &e.to_string())?;
@@ -2734,5 +2763,45 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("ERR "), "{}", text);
         assert!(text.contains("larger"), "{}", text);
+    }
+
+    #[test]
+    fn revalidate_for_allows_non_dumpable_only_without_exe_policy() {
+        let eacces = || io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let enoent = || io::Error::new(io::ErrorKind::NotFound, "gone");
+
+        // No executable policy: a hardened non-dumpable peer succeeds after
+        // pid-pin verification with the placeholder path.
+        assert_eq!(
+            classify_peer_exe(Err(eacces()), false).unwrap(),
+            PathBuf::from("<non-dumpable>")
+        );
+        // With an executable policy: PermissionDenied still fails closed.
+        assert_eq!(
+            classify_peer_exe(Err(eacces()), true).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        // A missing/exited process still fails closed even without a policy.
+        assert_eq!(
+            classify_peer_exe(Err(enoent()), false).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        // A readable executable is returned as-is in both modes.
+        let p = PathBuf::from("/usr/bin/pmask");
+        assert_eq!(classify_peer_exe(Ok(p.clone()), false).unwrap(), p);
+        assert_eq!(classify_peer_exe(Ok(p.clone()), true).unwrap(), p);
+
+        // Live peer: revalidate_for(false) and revalidate_for(true) succeed
+        // on our own socketpair, while a tampered start-time pin fails closed
+        // even when need_exe is false.
+        let (a, _b) = UnixStream::pair().unwrap();
+        let mut peer = Peer::acquire(a.as_raw_fd()).unwrap();
+        assert!(peer.revalidate_for(false).is_ok());
+        assert!(peer.revalidate_for(true).is_ok());
+        peer.start = Some(peer.start.unwrap_or(0).wrapping_add(1));
+        assert_eq!(
+            peer.revalidate_for(false).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 }

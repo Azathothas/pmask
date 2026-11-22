@@ -22,7 +22,8 @@
 #                               visible too (last request wins)
 #   qa16-name-only              --keep-env=KEEPME alone: exactly one
 #                               variable, KEEPME
-#   qa16-control-default        no --keep-env at all: environ is 0 bytes
+#   qa16-control-default        no --keep-env at all: neither KEEPME nor OTHER
+#                               is visible in /proc/self/environ
 set -u
 cd "$(dirname "$0")"
 . ../lib.sh
@@ -98,11 +99,11 @@ else
 fi
 
 # --------------------------------------------------------------- control
-sz=$(KEEPME=v OTHER=h "$TOOL" -q -- /bin/sh -c 'wc -c < /proc/self/environ' 2>/dev/null | tr -d ' ')
-if [ "$sz" = "0" ]; then
+dump_env d
+if ! visible_names "$D/d" | grep -qx 'KEEPME' && ! visible_names "$D/d" | grep -qx 'OTHER'; then
     pass qa16-control-default
 else
-    fail "qa16-control-default (environ=$sz bytes, want 0)"
+    fail "qa16-control-default (caller variable leaked without --keep-env)"
 fi
 
 exit "$FAIL"

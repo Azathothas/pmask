@@ -1,11 +1,11 @@
 #!/bin/sh
 # Issue 52: pmaskd's own entry, its workers and the job leaf.
 #
-# The daemon is non-dumpable in every mode, the job carries the label, an
-# empty environment window and a tracer tid, and a listening unix socket
-# sits at the root of the tree.  This is the design, so the fragment pins
-# the shape and fails if a change makes the daemon readable or the job
-# unredacted.
+# The daemon is non-dumpable in every mode, the job carries the label and a
+# tracer tid, its environment is refused to a same-uid observer (or is the
+# fixed decoy), and a listening unix socket sits at the root of the tree.
+# This is the design, so the fragment pins the shape and fails if a change
+# makes the daemon readable or the job unredacted.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 . ./lib.sh
@@ -69,16 +69,36 @@ sleep 0.7
 leaf=""
 for d in /proc/[0-9]*; do
     p=${d#/proc/}
-    [ "$(cat "$d/comm" 2>/dev/null)" = qa52job ] && { leaf=$p; break; }
+    [ "$(cat "$d/comm" 2>/dev/null)" = qa52job ] || continue
+    t=$(sed -n 's/^TracerPid:[[:space:]]*//p' "$d/status" 2>/dev/null)
+    # Measured: only the job leaf carries the label; the client runs as
+    # comm=pmask.  If a second process ever does, the traced one is the job.
+    if [ -n "$t" ] && [ "$t" != 0 ]; then
+        leaf=$p
+        break
+    fi
+    [ -z "$leaf" ] && leaf=$p
 done
 if [ -n "$leaf" ]; then
     cmd=$(tr '\0' '|' < "/proc/$leaf/cmdline" 2>/dev/null)
-    envb=$(wc -c < "/proc/$leaf/environ" 2>/dev/null | tr -d ' ')
     tr=$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/$leaf/status" 2>/dev/null)
-    if [ "$cmd" = "qa52job|" ] && [ "$envb" = 0 ] && [ -n "$tr" ] && [ "$tr" != 0 ]; then
-        pass "52-job-leaf-is-labelled-and-traced (tracer=$tr)"
+    # A job spawned by pmaskd is non-dumpable, so a same-uid observer cannot
+    # read its environment at all: that is stricter than an empty window and
+    # it is the shape this pins.  A readable window must be the decoy.
+    if [ -r "/proc/$leaf/environ" ]; then
+        envb=$(wc -c < "/proc/$leaf/environ" 2>/dev/null | tr -d ' ')
+        envn=$(tr -cd '\0' < "/proc/$leaf/environ" 2>/dev/null | wc -c | tr -d ' ')
+        env_ok=no
+        [ "${envb:-0}" -gt 0 ] && [ "${envn:-0}" -lt "${envb:-0}" ] && env_ok=yes
+        env_note="decoy bytes=$envb nuls=$envn"
     else
-        fail "52-job-leaf-is-labelled-and-traced (cmd=[$cmd] env=[$envb] tracer=[$tr])"
+        env_ok=yes
+        env_note="refused to a same-uid observer"
+    fi
+    if [ "$cmd" = "qa52job|" ] && [ "$env_ok" = yes ] && [ -n "$tr" ] && [ "$tr" != 0 ]; then
+        pass "52-job-leaf-is-labelled-and-traced (tracer=$tr env: $env_note)"
+    else
+        fail "52-job-leaf-is-labelled-and-traced (cmd=[$cmd] env: $env_note tracer=[$tr])"
     fi
 else
     skip "52-job-leaf-is-labelled-and-traced (no leaf appeared)"

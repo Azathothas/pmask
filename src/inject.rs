@@ -37,7 +37,7 @@ fn aligned(_addr: u64) -> bool {
 }
 #[cfg(target_arch = "aarch64")]
 fn aligned(addr: u64) -> bool {
-    addr % 4 == 0
+    addr & 3 == 0
 }
 #[cfg(target_arch = "x86")]
 fn aligned(_addr: u64) -> bool {

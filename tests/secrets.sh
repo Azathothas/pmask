@@ -205,7 +205,10 @@ EOF
 chmod 700 "$FDCHECK"
 
 if [ -x "$CASES" ] && command -v timeout >/dev/null 2>&1; then
-    timeout 4 "$TOOL" run --secret-close-on-exec --secret T=file:"$D/tok" \
+    # `--allow-dumpable` lets the child's `$FDCHECK` probe `/proc/$PPID/fd/3`
+    # to confirm the parent kept its descriptor while the child lost it;
+    # default non-dumpable `--secret-close-on-exec` is covered by c1/c1c/c1d/c1j.
+    timeout 4 "$TOOL" run --allow-dumpable --secret-close-on-exec --secret T=file:"$D/tok" \
         -- "$CASES" threadspawn "$FDCHECK" MARK1 MARK2 \
         > "$T/c1g.out" 2>"$T/c1g.err"
     if grep -q 'parent-has-fd' "$T/c1g.out" \
@@ -218,7 +221,7 @@ if [ -x "$CASES" ] && command -v timeout >/dev/null 2>&1; then
 
     # vfork: the child is a real fork of the payload, so the close runs
     # before the child execs the check.
-    timeout 4 "$TOOL" run --secret-close-on-exec --secret T=file:"$D/tok" \
+    timeout 4 "$TOOL" run --allow-dumpable --secret-close-on-exec --secret T=file:"$D/tok" \
         -- "$CASES" vforkspawn "$FDCHECK" MARK \
         > "$T/c1h.out" 2>"$T/c1h.err"
     if grep -q 'parent-has-fd' "$T/c1h.out" \
@@ -375,19 +378,27 @@ fi
     && pass "c1l-rexec-with-a-secret-still-runs" \
     || fail "c1l-rexec-with-a-secret-still-runs ($(tr '\n' '|' < "$T/c1l.err"))"
 
-# A failed relocation warns and drops --rexec for that run instead of
-# leaving the image at a descriptor number `install_fds` may clobber
-# (R1-12).  A descriptor limit of 200 makes `F_DUPFD 200` fail, the
-# warning names the failure, and the on-disk program still runs (rc 0).
-# `--image` has no on-disk program, so there the same failure is fatal.
+# A failed relocation fails closed (exit 126, issue #76) instead of silently
+# running the on-disk binary or leaving the image at a descriptor number
+# `install_fds` may clobber (R1-12).  A descriptor limit of 200 makes
+# `F_DUPFD 200` fail and names `RLIMIT_NOFILE`; `--rexec-allow-disk` makes
+# the on-disk fallback explicit (rc 0 with a warning).
 if ( ulimit -n 200 ) 2>/dev/null; then
     out=$( ( ulimit -n 200; "$TOOL" --rexec -- /bin/true ) 2>&1 )
     rc=$?
-    if [ "$rc" = 0 ] \
-        && printf '%s' "$out" | grep -q 'cannot move the image above the secret descriptors'; then
+    if [ "$rc" = 126 ] \
+        && printf '%s' "$out" | grep -q 'RLIMIT_NOFILE'; then
         pass "c1m-a-failed-image-relocation-refuses-rexec"
     else
         fail "c1m-a-failed-image-relocation-refuses-rexec (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|'))"
+    fi
+    out=$( ( ulimit -n 200; "$TOOL" --rexec --rexec-allow-disk -- /bin/true ) 2>&1 )
+    rc=$?
+    if [ "$rc" = 0 ] \
+        && printf '%s' "$out" | grep -q 'on-disk path by request'; then
+        pass "c1m-a-failed-image-relocation-allows-explicit-disk-fallback"
+    else
+        fail "c1m-a-failed-image-relocation-allows-explicit-disk-fallback (rc=$rc out=$(printf '%s' "$out" | tr '\n' '|'))"
     fi
 else
     skip "c1m-a-failed-image-relocation-refuses-rexec (cannot lower the descriptor limit)"

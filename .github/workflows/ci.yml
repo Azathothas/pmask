@@ -44,18 +44,28 @@ jobs:
       - name: format
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --locked --all-targets --features testbins -- -D warnings -W clippy::incompatible_msrv
+        run: cargo clippy --locked --all-targets --features testbins,test-hooks -- -D warnings -W clippy::incompatible_msrv
       - name: library tests
-        run: cargo test --locked --lib
+        run: cargo test --locked --lib --features test-hooks
       - name: doc tests
         run: cargo test --locked --doc
       - name: rustdoc
         run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - name: build
         run: |
-          cargo build --locked --release --bins --features testbins
-          cargo build --locked --release --target x86_64-unknown-linux-musl --bins --features testbins
+          cargo build --locked --release --bins --features testbins,test-hooks
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bins --features testbins,test-hooks
           cargo build --locked --release --examples
+      - name: release has no test hooks
+        run: |
+          cargo build --locked --release --bin pmask
+          set +e
+          PMASK_FAULT_REFUSE_MAP=1 ./target/release/pmask -l nohook -- /bin/true \
+            >/dev/null 2>"$RUNNER_TEMP/nohook.err"
+          rc=$?
+          set -e
+          test "$rc" = 0
+          ! grep -q 'kept the kernel' "$RUNNER_TEMP/nohook.err"
       - name: man pages
         run: |
           sudo apt-get update -qq
@@ -104,7 +114,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: build
-        run: cargo build --locked --release --bins --features testbins
+        run: cargo build --locked --release --bins --features testbins,test-hooks
       - name: copy the binaries the suites expect
         run: |
           for b in pmask pmaskd pmask-testcases pmask-protocases; do
@@ -160,7 +170,7 @@ jobs:
             fi
           done
       - name: build
-        run: cargo build --locked --release --bins --features testbins
+        run: cargo build --locked --release --bins --features testbins,test-hooks
       - name: copy the binaries the suites expect
         run: |
           for b in pmask pmaskd pmask-testcases pmask-protocases; do
@@ -315,10 +325,29 @@ jobs:
           tar -xzf "$RUNNER_TEMP/trufflehog_3.99.8_linux_amd64.tar.gz" -C "$RUNNER_TEMP" trufflehog
           "$RUNNER_TEMP/trufflehog" git file://. --only-verified --fail
 
+  aarch64-vm-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: "1.99.1"
+          targets: aarch64-unknown-linux-musl
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm cpio
+      - run: cargo fetch --locked --target aarch64-unknown-linux-musl
+      - run: cargo build --locked --release --target aarch64-unknown-linux-musl --bins --features testbins,test-hooks
+      - run: sh scripts/check-static.sh target/aarch64-unknown-linux-musl/release/pmask target/aarch64-unknown-linux-musl/release/pmaskd
+      - run: |
+          printf '%s\n' '#!/bin/sh' 'set -eu' 'pmask --version' 'pmask probe' 'pmask --label ci-runner /bin/true' 'pmaskd --help >/dev/null' > /tmp/smoke.sh
+          PMASK_VM_ARCH=aarch64 sh vm/debug.sh /tmp/smoke.sh
+
   all:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [check, concurrency, native-suites, msrv, suites-in-vm, deny, secrets]
+    needs: [check, concurrency, native-suites, msrv, suites-in-vm, aarch64-vm-smoke, deny, secrets]
     if: always()
     permissions:
       actions: read

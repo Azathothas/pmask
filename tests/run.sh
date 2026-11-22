@@ -3,7 +3,7 @@
 #
 # Binaries (see refresh_bins in lib.sh):
 #   TESTBIN_DIR=DIR   copy prebuilt binaries from DIR
-#   cargo present     always `cargo build --release --bins --features testbins`;
+#   cargo present     always `cargo build --release --bins --features testbins,test-hooks`;
 #                     cargo decides what is stale
 #   no cargo          use the binaries already in tests/ (the VM case)
 #
@@ -51,9 +51,9 @@ fi
 # than pass/fail suites, so they run near the end and their verdict line
 # decides.  The speed and zapper comparisons live in measurements/ and are
 # not part of this gate.
-for suite in validate suite stress edge daemon daemon_neg options core audit store isolation lease secrets compare conformance regressions; do
+for suite in validate suite stress edge daemon daemon_neg options redteam blueteam core audit store isolation lease secrets compare conformance regressions; do
     if [ ! -f "$suite.sh" ]; then
-        # The micro-VM stages only nine suites and marks the tree with
+        # The micro-VM stages a subset of the suites and marks the tree with
         # `.vm-staged`, so an absent suite there is expected.  In the native
         # gate an absent suite is a missing check: failing here is the point,
         # because "SKIP (absent)" over an ALL-PASS line reads as coverage.

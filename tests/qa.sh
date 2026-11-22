@@ -131,14 +131,31 @@ for c in qa.d/*.sh; do
     # would hold the write end of a pipe open and block the dispatcher
     # before the sweep below could reap it.
     out="$QA_TMP/$N.out"
-    sh "$c" >"$out" 2>&1
+    # A fragment that never finishes would hold the whole batch, and a CI
+    # job that hangs reports nothing at all.  The limit turns that into a
+    # named FAIL instead, so the job fails in a readable way.
+    QA_TIMEOUT=${PMASK_QA_TIMEOUT:-300}
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$QA_TIMEOUT" sh "$c" >"$out" 2>&1
+    else
+        sh "$c" >"$out" 2>&1
+    fi
     rc=$?
     [ -s "$out" ] && cat "$out"
+    if [ "$rc" = 124 ]; then
+        echo "FAIL $c (exceeded ${QA_TIMEOUT}s: a fragment that does not finish decides nothing)"
+    fi
     fp=$(grep -c '^PASS ' "$out")
-    ff=$(grep -c '^FAIL ' "$out")
+    ff=$(grep -c -E '^(FAIL( |:|$)|[[:space:]]+FAIL( |:|$))' "$out")
     fs=$(grep -c '^SKIP ' "$out")
     PASSED=$((PASSED + fp))
     SKIPPED=$((SKIPPED + fs))
+    # A fragment that printed a FAIL line decided a case against the
+    # tree.  The exit status is not the only carrier (62, 63 and 64 used
+    # to exit 0 after their verdict line), so count the line itself.
+    if [ "$ff" != 0 ]; then
+        FAIL=1
+    fi
     if [ "$rc" != 0 ]; then
         FAIL=1
     fi
@@ -153,6 +170,10 @@ done
 if [ "$N" = 0 ]; then
     echo "SKIP qa (no fragments)"
     echo "################ QA: SKIP cases=0 passed=0 skipped=0"
+    exit 0
+fi
+if [ "$FAIL" = 0 ] && [ "$PASSED" = 0 ]; then
+    echo "################ QA: SKIP cases=$N passed=0 skipped=$SKIPPED (every fragment decided no case)"
     exit 0
 fi
 echo "################ QA: $([ "$FAIL" = 0 ] && echo PASS || echo FAIL) cases=$N passed=$PASSED skipped=$SKIPPED"

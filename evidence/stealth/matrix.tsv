@@ -1,0 +1,21 @@
+case	launcher	flags	comm	cmdline	environ_bytes	exe	TracerPid	memscan_same	strace	gdb
+P0	plain		payload	/srv/work/audit-new/harness/payloads/payload|--canary|CANARY-P0-307528|--secret|CANARY-P0-307528|	382	/srv/work/audit-new/harness/payloads/payload	0	summary pid=734763 regions=26 hits=2		[Inferior 1 (process 734763) detached]
+M1	pmask		lblM1	lblM1|	0	/srv/work/audit-new/harness/payloads/payload	735795	summary pid=735796 regions=26 hits=3		
+M2	pmask	--no-exact	lblM2	lblM2    |	15	/srv/work/audit-new/harness/payloads/payload	736239	summary pid=736240 regions=26 hits=3		
+M3	pmask	--no-dumpable	lblM3	lblM3|		EACCES	736503			
+M4	pmask	--rexec	lblM4	lblM4|	0	/memfd:lblM4 (deleted)	736561	summary pid=736562 regions=26 hits=3		
+M5	pmask	--detach	lblM5	lblM5|	0	/srv/work/audit-new/harness/payloads/payload	0	summary pid=736620 regions=26 hits=3		[Inferior 1 (process 736620) detached]
+M7	pmask	--isolate	payload	/srv/work/audit-new/harness/payloads/payload|--canary|CANARY-M7-339180|--secret|CANARY-M7-339180|	382	/srv/work/audit-new/harness/payloads/payload	0	summary pid=736689 regions=26 hits=2		[Inferior 1 (process 736689) detached]
+M8	pmask	--isolate=none	lblM8	lblM8|	0	/srv/work/audit-new/harness/payloads/payload	736789	summary pid=736790 regions=26 hits=3		
+M9	pmask	--no-redact	payload	/srv/work/audit-new/harness/payloads/payload|--canary|CANARY-M9-784391|--secret|CANARY-M9-784391|	382	/srv/work/audit-new/harness/payloads/payload	0	summary pid=736855 regions=26 hits=2		[Inferior 1 (process 736855) detached]
+M11	pmask	--keep-env=KEEP	lblM11	lblM11|	19	/srv/work/audit-new/harness/payloads/payload	736931	summary pid=736932 regions=26 hits=3		
+M12	pmask	--comm commX	commX	lblM12|	0	/srv/work/audit-new/harness/payloads/payload	736989	summary pid=736990 regions=26 hits=3		
+M14	pmask	--watch-rename	lblM14	lblM14|	0	/srv/work/audit-new/harness/payloads/payload	737254	summary pid=737255 regions=21 hits=3		
+M18	pmask	--exec-once	lblM18	lblM18|	0	/dev/shm/.pmask-rexec-lblM18-737731-c009962a-0	737732	summary pid=737734 regions=36 hits=1		
+M40	pmask									
+M41	pmask		renamed-worker	lblM41|	0	/srv/work/audit-new/harness/payloads/payload	738673	summary pid=738674 regions=21 hits=3		
+M48	pmask	--detach	sleep	/bin/sleep|5|	364	/usr/bin/sleep	0	summary pid=738727 regions=36 hits=1		[Inferior 1 (process 738727) detached]
+C1	zapper		payload	payload||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||	382	/srv/work/audit-new/harness/payloads/payload	0	summary pid=738787 regions=26 hits=2		[Inferior 1 (process 738787) detached]
+C6	mimic		apache2	/usr/sbin/apache2|-k|start|	382	/srv/work/audit-new/harness/payloads/payload	738886	summary pid=738887 regions=21 hits=2		
+C9	exec_a		payload	fake-worker|--canary|CANARY-C9-108135|--secret|CANARY-C9-108135|	431	/srv/work/audit-new/harness/payloads/payload	0	summary pid=738957 regions=26 hits=2		[Inferior 1 (process 738957) detached]
+C10	setproctitle		worker	worker|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||	386	/usr/bin/python3.13	0	summary pid=763211 regions=50 hits=2		[Inferior 1 (process 763211) detached]

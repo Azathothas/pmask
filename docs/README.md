@@ -1,16 +1,21 @@
 # Documentation
 
-| file | answers |
+| file | contents |
 |---|---|
-| [`../README.md`](../README.md) | what pmask is, how to install it, how to use it, and its honest limits |
-| [`DESIGN.md`](DESIGN.md) | the mechanism: exec-entry swap, window relocation, daemon protocol, failure modes |
-| [`THREAT-MODEL.md`](THREAT-MODEL.md) | one row per claim, the mechanism behind it, and the test that catches a regression |
-| [`DEPLOY.md`](DEPLOY.md) | the three deployment shapes and the row each one closes |
-| [`COMMENT-AUDIT.md`](COMMENT-AUDIT.md) | the source comments the fix branches corrected, and the replacement each got |
-| [`ISSUE-CLOSURE.md`](ISSUE-CLOSURE.md) | one row per issue: its fix commit, the test that would fail if the behaviour changed, and the evidence directory |
-| [`research/README.md`](research/README.md) | the measurements, the detection residue, the b-team channel studies, and the field survey |
-| [`releases/`](releases/) | release notes, one file per tag |
+| [`../README.md`](../README.md) | Overview, installation, usage, and security limits |
+| [`DESIGN.md`](DESIGN.md) | Architecture: exec-entry swap, window relocation, daemon protocol, failure modes |
+| [`THREAT-MODEL.md`](THREAT-MODEL.md) | Per-claim security matrix, backing mechanisms, and regression tests |
+| [`DEPLOY.md`](DEPLOY.md) | Three deployment shapes and the threats each shape closes |
+| [`INTEGRATION.md`](INTEGRATION.md) | Binary and library contract, feature flags, and packaging |
+| [`DETECTION-AUDIT.md`](DETECTION-AUDIT.md) | Detection-audit findings, fixes, tests, and evidence |
+| [`REDTEAM-RESULTS.md`](REDTEAM-RESULTS.md) | Red-team campaign results across redaction, stealth, and secret delivery |
+| [`COMPETITORS.md`](COMPETITORS.md) | Feature and boundary comparison against related tools |
+| [`COMMENT-AUDIT.md`](COMMENT-AUDIT.md) | Source comments corrected during audit branches |
+| [`ISSUE-CLOSURE.md`](ISSUE-CLOSURE.md) | Per-issue provenance ledger: fix commits, QA fragments, and evidence directories |
+| [`research/README.md`](research/README.md) | Measurements, detection residue, b-team channel studies, and field survey |
+| [`releases/v0.1.0.md`](releases/v0.1.0.md) | Release notes for `v0.1.0` |
+| [`releases/`](releases/) | All release notes, one file per tag |
 
-The README is the contract. A claim in any other document that the code
-does not support is a bug; report it against the mechanism and the test
-that should have caught it.
+`README.md` is the user contract.
+Any claim in another document that the code does not support is a bug.
+Report mismatches against the mechanism and the test that should catch the regression.

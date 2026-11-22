@@ -1,0 +1,127 @@
+
+===== MASKED RUN report-file label=r2-rep =====
+started pgid=543764
+payload=543781 cmdline=r2-rep| comm=r2-rep
+-- same-uid dump of payload 543781 --
+### procdump tag=payload-r2-rep pid=543781 uid=1000
+cmdline.len=7
+cmdline.hex=72322d72657000
+cmdline.text='r2-rep|'
+comm='r2-rep'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=140262200201216
+stat.49_arg_end=140262200201223
+stat.50_env_start=140262200201226
+stat.51_env_end=140262200201226
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f91569e500a
+auxv.execfn_string='r2-rep'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps.open=OK
+status.TracerPid:	543780
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=4
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-rep.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-rep.out
+fd| 3 -> /memfd:pmask-secret (deleted)
+### end tag=payload-r2-rep pid=543781
+-- same-uid memory scan of payload 543781 for the payload canary --
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=55ffbc7a9000-55ffbc7ca000 off=a10
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=55ffbc7a9000-55ffbc7ca000 off=ae0
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=7f91569e3000-7f91569e7000 off=204e
+scanmem pid=543781 regions=28 scanned_bytes=3551260
+needle=CANARY_R2_REPORT_PAYLOAD_7a2e hits=3
+report.path=/workspace/pmask-work/evidence/round2/r2-report.r2-rep.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hide_pid": false,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+STOP verified: 0 label processes remain
+
+===== MASKED RUN report-file label=r2-rep-b =====
+started pgid=544309
+payload=544326 cmdline=r2-rep-b| comm=r2-rep-b
+-- same-uid dump of payload 544326 --
+### procdump tag=payload-r2-rep-b pid=544326 uid=1000
+cmdline.len=9
+cmdline.hex=72322d7265702d6200
+cmdline.text='r2-rep-b|'
+comm='r2-rep-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+stat.48_arg_start=139958841491456
+stat.49_arg_end=139958841491465
+stat.50_env_start=139958841491468
+stat.51_env_end=139958841491468
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7f4ab507c00c
+auxv.execfn_string='r2-rep-b'
+exe.readlink='/srv/pmask-target/release/pmask-testcases'
+exe.open=OK
+maps.lines=29
+maps.open=OK
+status.TracerPid:	544325
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	0
+status.Seccomp_filters:	1
+fd.open=OK
+fd.count=4
+fd| 0 -> /dev/null
+fd| 1 -> /workspace/pmask-work/evidence/round2/.r2-rep-b.out
+fd| 2 -> /workspace/pmask-work/evidence/round2/.r2-rep-b.out
+fd| 3 -> /memfd:pmask-secret (deleted)
+### end tag=payload-r2-rep-b pid=544326
+-- same-uid memory scan of payload 544326 for the payload canary --
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=56294a419000-56294a43a000 off=a10
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=56294a419000-56294a43a000 off=ae0
+hit needle=CANARY_R2_REPORT_PAYLOAD_7a2e region=7f4ab507a000-7f4ab507e000 off=2052
+scanmem pid=544326 regions=28 scanned_bytes=3551260
+needle=CANARY_R2_REPORT_PAYLOAD_7a2e hits=3
+report.path=/workspace/pmask-work/evidence/round2/r2-report.r2-rep-b.json
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hide_pid": false,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}
+STOP verified: 0 label processes remain
+
+===== RESIDUE CHECK =====
+none

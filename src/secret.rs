@@ -38,11 +38,11 @@
 use crate::mem::{SealedFd, SecBuf};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The largest number of secrets one delivery carries.
 ///
@@ -93,6 +93,16 @@ pub enum Source {
 }
 
 impl Source {
+    /// Zero the value-bearing part of this source after the secret has
+    /// been loaded.  Paths and names are not secret; a literal and an
+    /// environment variable name are.
+    pub fn scrub(&mut self) {
+        match self {
+            Source::Literal(s) | Source::Env(s) | Source::Daemon(s) => s.zeroize(),
+            Source::File(_) | Source::Stdin => {}
+        }
+    }
+
     /// Parse the `NAME=SOURCE` form used by `--secret`.
     ///
     /// A caller that can tell the operator about a typo should use
@@ -289,7 +299,7 @@ pub fn read_secret_file(path: &PathBuf) -> io::Result<SecBuf> {
             md.mode() & 0o777
         );
     }
-    let mut v = Vec::new();
+    let mut v = Zeroizing::new(Vec::new());
     f.read_to_end(&mut v)?;
     // Trim one trailing newline: `echo token > file` is the common case.
     if v.last() == Some(&b'\n') {
@@ -297,8 +307,6 @@ pub fn read_secret_file(path: &PathBuf) -> io::Result<SecBuf> {
     }
     let mut b = SecBuf::new(v.len())?;
     b.as_mut_slice().copy_from_slice(&v);
-    // The intermediate Vec held the plaintext too.
-    v.zeroize();
     Ok(b)
 }
 
@@ -308,7 +316,12 @@ pub fn load(name: &str, source: &Source, daemon_socket: Option<&PathBuf>) -> io:
         Source::Literal(v) => SecBuf::from_slice(v.as_bytes())?,
         Source::File(p) => read_secret_file(p)?,
         Source::Env(var) => match std::env::var_os(var) {
-            Some(v) => SecBuf::from_slice(v.as_bytes())?,
+            Some(v) => {
+                // `var_os` hands us an owned copy; wrap it in `Zeroizing`
+                // so it is wiped before being freed even on error.
+                let bytes = Zeroizing::new(v.into_vec());
+                SecBuf::from_slice(&bytes)?
+            }
             None => {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -317,14 +330,13 @@ pub fn load(name: &str, source: &Source, daemon_socket: Option<&PathBuf>) -> io:
             }
         },
         Source::Stdin => {
-            let mut v = Vec::new();
+            let mut v = Zeroizing::new(Vec::new());
             io::stdin().read_to_end(&mut v)?;
             if v.last() == Some(&b'\n') {
                 v.pop();
             }
             let mut b = SecBuf::new(v.len())?;
             b.as_mut_slice().copy_from_slice(&v);
-            v.zeroize();
             b
         }
         Source::Daemon(remote) => crate::agent::fetch(daemon_socket, remote)?,

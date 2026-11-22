@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 /// Knobs of a masking session.
 #[derive(Clone)]
@@ -32,10 +33,38 @@ pub struct Config {
     pub quiet: bool,
     /// Inject `prctl(PR_SET_DUMPABLE, 0)` at every exec completion.
     pub no_dumpable: bool,
+    /// Keep the supervisor non-dumpable for the whole session.  False
+    /// when the supervisor has scrubbed its at-rest plaintext and can be
+    /// an ordinary dumpable process; true for the secret path and
+    /// `--no-dumpable`.
+    pub keep_non_dumpable: bool,
+    /// Run a foreign-ABI (32-bit) image unredacted.  False by default:
+    /// the exec is refused, because a payload that runs with its real
+    /// command line is not a masked payload.
+    pub allow_foreign: bool,
+    /// Hide the tree's pids from same-uid `/proc` readers.  The policy
+    /// check lives in `Mask::to_config`; this flag drives the report and
+    /// the per-tracee dumpable injection.
+    pub hide_pid: bool,
+    /// Encrypt the supervisor's at-rest plaintext copies and keep the
+    /// payload's block anonymous and `MADV_DONTDUMP`.
+    pub encrypt_memory: bool,
+    /// The per-session key for the sealed copies.
+    pub session_key: Option<std::sync::Arc<crate::crypto::SessionKey>>,
+    /// Install a seccomp filter that traps only `execve`/`execveat` on a
+    /// settled tracee, so `--exec-once` does not need a syscall stop for
+    /// every syscall.  Safe only when the tracer outlives every tracee
+    /// (the session-end policy is `wait` or `kill`, not `detach`).
+    pub fast_exec: bool,
     /// The children carry a seccomp filter that traps `prctl(PR_SET_NAME)`
     /// (`SECCOMP_RET_TRACE`). The tracer redirects the rename to the label, or
     /// refuses the call when it cannot reach the label address.
     pub watch_prctl: bool,
+    /// `--watch-rename=strict`: the filter also traps the write family,
+    /// and the handler checks the descriptor target.
+    pub watch_strict: bool,
+    /// `--strict-exec`: refuse an exec that would take the post-exec path.
+    pub strict_exec: bool,
     /// What happens to the remaining tree when the master exits.
     pub session_end: SessionEnd,
     /// Environment variable names that stay visible in `environ` while
@@ -148,8 +177,10 @@ pub struct SessionStats {
     /// the label.  Counted rather than letting the payload's own name
     /// through (`--watch-rename`, issue 60).
     pub rename_refused: u32,
-    /// Foreign-architecture execs refused.
+    /// Foreign-architecture execs run unredacted (`--allow-foreign`).
     pub foreign_arch: u32,
+    /// Foreign-architecture execs refused before the image ran.
+    pub foreign_refused: u32,
     /// Execs of an already settled process: redacted after the exec, with
     /// a short exposure window (no entry swap).
     pub reexec: u32,
@@ -172,6 +203,23 @@ pub struct SessionStats {
     pub rexec_fallback: u32,
     /// `--rexec` runs that used the explicit on-disk last resort.
     pub rexec_disk: u32,
+    /// Redaction blocks mapped anonymously under `--encrypt-memory`.
+    /// This is the design, not a fallback: a `memfd_secret` block would
+    /// leave a `/secretmem` VMA in the payload, which is a fingerprint.
+    pub block_anonymous: u32,
+    /// Blocks whose `MADV_DONTDUMP` injection failed, so a core dump of
+    /// the payload could include the redaction block.
+    pub dontdump_failed: u32,
+    /// Tracees whose `PR_SET_DUMPABLE=0` injection failed (`--hide-pid`).
+    pub dumpable_failed: u32,
+    /// `--encrypt-memory` copies that were sealed successfully.
+    pub sealed: u32,
+    /// `--encrypt-memory` copies that could not be sealed and stayed
+    /// plaintext in the supervisor.
+    pub seal_failures: u32,
+    /// `--exec-once` runs where a vfork child took the post-exec path, so
+    /// the cache tag was not applied.
+    pub vfork_cache_skipped: u32,
     /// Execs with at least one of the degradations above.
     pub degraded: u32,
 }
@@ -206,6 +254,29 @@ pub struct Tracee {
     pub ev_save: Option<Vec<u64>>,
     pub argv: Option<Vec<Vec<u8>>>,
     pub envp: Option<Vec<Vec<u8>>>,
+    /// Bytes the presentation environment will occupy for this exec.
+    /// The entry swap sizes the kernel's environment block from it so
+    /// the completion can write the presentation in the original stack
+    /// region.
+    pub pres_env_len: usize,
+    /// `--encrypt-memory`: the saved argv/envp as ciphertext.  The
+    /// plaintext fields above stay `None` while these are set.
+    pub sealed_argv: Option<crate::crypto::EncryptedStrings>,
+    pub sealed_envp: Option<crate::crypto::EncryptedStrings>,
+    /// The seccomp exec filter could not be installed, so this tracee
+    /// must stay syscall-supervised.
+    pub fast_exec_failed: bool,
+    /// The seccomp exec filter is already installed and persists across
+    /// execs, so it is not installed again.
+    pub exec_filter_installed: bool,
+    /// A 32-bit image ran under `--allow-foreign`.  A later exec of this
+    /// tracee is refused, because the 64-bit tracer cannot read the
+    /// 32-bit image's registers and pointer arrays.
+    pub foreign_done: bool,
+    /// This tracee's real strings are in the supervisor's memory right
+    /// now.  The tracer keeps itself non-dumpable while any tracee has
+    /// this set, and dumpable at rest.
+    pub pending_plaintext: bool,
     /// Fork depth relative to the supervised master: 0 for the master, 1
     /// for its direct children.  The descriptor policy needs it, because
     /// the program the caller started keeps the secret descriptors and
@@ -234,6 +305,12 @@ pub struct Tracee {
     /// tracer, which turned the natural flag pair into a silent leak
     /// (issue 60).
     pub rename_addr: u64,
+    /// Cached address of a `syscall` / `svc #0` instruction in this tracee's
+    /// current address space, captured at exec completion while the tracee
+    /// is still dumpable and inherited across fork/vfork/clone.  Allows
+    /// `close_secret_fds_at_fork` to inject `close(2)` into a non-dumpable
+    /// child without reading `/proc/<child>/maps` (which returns `EACCES`).
+    pub syscall_site: Option<u64>,
 }
 
 impl Tracee {
@@ -248,11 +325,19 @@ impl Tracee {
             ev_save: None,
             argv: None,
             envp: None,
+            pres_env_len: 0,
+            sealed_argv: None,
+            sealed_envp: None,
+            fast_exec_failed: false,
+            exec_filter_installed: false,
+            foreign_done: false,
+            pending_plaintext: false,
             depth: 0,
             secret_fds_open: false,
             vfork_child: false,
             rexec_image: None,
             rename_addr: 0,
+            syscall_site: None,
         }
     }
 
@@ -263,14 +348,42 @@ impl Tracee {
         self.ev_addr = 0;
         self.av_save = None;
         self.ev_save = None;
-        self.argv = None;
-        self.envp = None;
+        zeroize_strings(&mut self.argv);
+        zeroize_strings(&mut self.envp);
+        self.sealed_argv = None;
+        self.sealed_envp = None;
+        self.pres_env_len = 0;
+    }
+}
+
+impl Drop for Tracee {
+    fn drop(&mut self) {
+        zeroize_strings(&mut self.argv);
+        zeroize_strings(&mut self.envp);
+    }
+}
+
+/// Zero and drop a saved argv/envp vector.
+pub(crate) fn zeroize_strings(v: &mut Option<Vec<Vec<u8>>>) {
+    if let Some(mut strings) = v.take() {
+        for s in &mut strings {
+            s.zeroize();
+        }
     }
 }
 
 /// Grace period after the master exits during which descendants that
 /// have not yet settled their first exec keep their supervision.
 const DETACH_GRACE: Duration = Duration::from_secs(1);
+
+/// Parent metadata captured at a fork/vfork/clone event for a newcomer whose
+/// first stop has not been processed yet.
+struct PendingChild {
+    parent: libc::pid_t,
+    depth: u32,
+    site: Option<u64>,
+    clone_files: bool,
+}
 
 pub struct Tracer {
     pub cfg: Config,
@@ -287,12 +400,9 @@ pub struct Tracer {
     started: Instant,
     /// Tracees that were sent `PTRACE_INTERRUPT` during the drain.
     interrupted: std::collections::HashSet<libc::pid_t>,
-    /// Child pid to the pid that forked it and that parent's fork depth,
-    /// filled from the fork event and consumed when the child's first stop
-    /// arrives.  The depth comes from the event, so a parent that exits
-    /// before the child's first stop cannot make the child look shallower
-    /// than it is.
-    pending_children: HashMap<libc::pid_t, (libc::pid_t, u32)>,
+    /// Child pid to parent metadata captured at `PTRACE_EVENT_{FORK,VFORK,CLONE}`
+    /// and consumed when the child's first stop arrives.
+    pending_children: HashMap<libc::pid_t, PendingChild>,
     /// Child pids from a `PTRACE_EVENT_VFORK` stop, consumed when the
     /// child's first stop registers it.  A vfork child shares its parent's
     /// address space, so its first exec takes the post-exec path.
@@ -320,6 +430,133 @@ pub struct Tracer {
     /// The `--detach` release warning has been printed.  One line per
     /// session: the count is in the session summary.
     detach_warned: bool,
+    /// The `--exec-once` unsealed temporary-carrier note has been printed.
+    pub(super) rexec_seal_warned: bool,
+    /// The `--watch-rename` unreadable `/proc/<pid>/{fd,cwd}` warning has
+    /// been printed.
+    watch_proc_denied_warned: bool,
+    /// Number of tracees whose real argv/environ are in this process's
+    /// memory right now.  Zero at rest: the supervisor can be dumpable.
+    pending_plaintext: usize,
+}
+
+impl Drop for Tracer {
+    fn drop(&mut self) {
+        if self.rexec_report_fd >= 0 {
+            // SAFETY: the descriptor is owned by this session.
+            unsafe { libc::close(self.rexec_report_fd) };
+            self.rexec_report_fd = -1;
+        }
+    }
+}
+
+/// True for a `/proc/.../comm` path.  The check is deliberately on the
+/// shape, not on a pid: `/proc/self/comm`, `/proc/thread-self/comm`,
+/// `/proc/<pid>/comm` and `/proc/<pid>/task/<tid>/comm` all end in
+/// `/comm` under `/proc/`.  A write to any of them changes a comm.
+fn join_open_path(base: Option<&[u8]>, path: &[u8]) -> Vec<u8> {
+    if path.first() == Some(&b'/') {
+        return path.to_vec();
+    }
+    match base {
+        Some(base) => {
+            let mut out = base.to_vec();
+            if out.last() != Some(&b'/') {
+                out.push(b'/');
+            }
+            out.extend_from_slice(path);
+            out
+        }
+        None => path.to_vec(),
+    }
+}
+
+/// The absolute path an `open`/`openat`/`openat2` will resolve, as far as
+/// the tracee's own cwd and descriptors reveal it.
+///
+/// A relative path is joined onto the directory the kernel will use: the
+/// `dirfd` the tracee named, or its cwd.  Without this, the path the trap
+/// reads is `comm`, which the shape test cannot place anywhere, so
+/// `openat(open("/proc/self", O_PATH), "comm", O_WRONLY)` changed the
+/// comm under `--watch-rename` (issue 71).  A symlinked component below
+/// that directory is still not resolved; `--watch-rename=strict` checks
+/// the descriptor target on the write instead, which catches it.
+///
+/// When the directory cannot be read -- the descriptor is not open, the
+/// tracee is non-dumpable, or the tracee is already gone -- the path is used
+/// as given and the `read_link` error is returned so the caller can warn on
+/// `EACCES`/`EPERM` instead of failing open silently (Invariant 13).
+fn open_target_path(
+    pid: libc::pid_t,
+    dirfd: Option<u64>,
+    path: &[u8],
+) -> (Vec<u8>, Option<io::Error>) {
+    if path.first() == Some(&b'/') {
+        return (path.to_vec(), None);
+    }
+    let link = match dirfd {
+        Some(n) if n as i64 != libc::AT_FDCWD as i64 => {
+            format!("/proc/{}/fd/{}", pid, n as libc::c_int)
+        }
+        _ => format!("/proc/{}/cwd", pid),
+    };
+    match std::fs::read_link(&link) {
+        Ok(b) => {
+            use std::os::unix::ffi::OsStrExt;
+            let base = b.as_os_str().as_bytes();
+            (join_open_path(Some(base), path), None)
+        }
+        Err(e) => (join_open_path(None, path), Some(e)),
+    }
+}
+
+/// Lexically normalize a byte path: collapse repeated `/` and resolve `.`
+/// and `..` segments without touching the filesystem.
+fn normalize_lexical_path(path: &[u8]) -> Vec<u8> {
+    let p = path.strip_suffix(b"\0").unwrap_or(path);
+    let abs = p.first() == Some(&b'/');
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for comp in p.split(|&b| b == b'/') {
+        if comp.is_empty() || comp == b"." {
+            continue;
+        }
+        if comp == b".." {
+            if abs || matches!(parts.last(), Some(&last) if last != b"..") {
+                parts.pop();
+            } else {
+                parts.push(comp);
+            }
+        } else {
+            parts.push(comp);
+        }
+    }
+    let mut out = Vec::with_capacity(p.len());
+    if abs {
+        out.push(b'/');
+    }
+    for (i, comp) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push(b'/');
+        }
+        out.extend_from_slice(comp);
+    }
+    out
+}
+
+fn is_proc_comm_path(path: &[u8]) -> bool {
+    let p = normalize_lexical_path(path);
+    p.starts_with(b"/proc/") && p.ends_with(b"/comm") && p.len() > b"/proc/".len() + b"/comm".len()
+}
+
+/// True when one `/proc/<pid>/fd` entry (`N:target`) names a descriptor
+/// that no ordinary program holds.
+///
+/// The test is on what the descriptor is, not on a string a caller chose:
+/// a sealed secret memfd is residue whatever name it carries, and a file
+/// whose path happens to contain `pmask` is not (issue 007).
+fn fd_is_residue(entry: &str) -> bool {
+    let target = entry.split_once(':').map(|(_, t)| t).unwrap_or(entry);
+    target.contains("/memfd:") || target.contains("(deleted)") || target.contains(".pmask-rexec-")
 }
 
 impl Tracer {
@@ -348,6 +585,14 @@ impl Tracer {
         }
     }
 
+    /// A refusal is not chatter.  The tracee is killed and the run cannot
+    /// continue, so the line survives `-q`: an operator who asked for quiet
+    /// still has to be able to tell a refusal from a payload that died on
+    /// its own, and the exit status alone cannot say which happened.
+    pub(crate) fn refuse(&self, args: std::fmt::Arguments) {
+        eprintln!("pmask: refused: {}", args);
+    }
+
     pub fn new(cfg: Config) -> Tracer {
         let fault_poke_at = cfg.fault_poke_at;
         let fault_no_vdso = cfg.fault_no_vdso;
@@ -374,6 +619,61 @@ impl Tracer {
             audit_header: false,
             rexec_report_fd: -1,
             detach_warned: false,
+            rexec_seal_warned: false,
+            watch_proc_denied_warned: false,
+            pending_plaintext: 0,
+        }
+    }
+
+    /// Surface a once-per-session warning when `--watch-rename` cannot
+    /// inspect `/proc/<pid>/{fd,cwd}` due to `EACCES`/`EPERM` (for example
+    /// on a non-dumpable tracee under an unprivileged tracer).
+    fn warn_watch_proc_denied(&mut self, pid: libc::pid_t, err: &io::Error) {
+        if !self.watch_proc_denied_warned {
+            self.watch_proc_denied_warned = true;
+            self.warn(format_args!(
+                "pid {}: --watch-rename cannot resolve /proc/{}/fd or cwd ({}); \
+                 relative or descriptor-based writes to /proc/.../comm cannot be inspected \
+                 while the tracee is non-dumpable",
+                pid, pid, err
+            ));
+        }
+    }
+
+    /// Mark a tracee as holding real strings in the supervisor's memory.
+    /// The first one makes the supervisor non-dumpable; the last release
+    /// makes it dumpable again unless the session asked otherwise.
+    pub(super) fn set_pending(&mut self, pid: libc::pid_t, on: bool) {
+        let Some(t) = self.table.get_mut(&pid) else {
+            return;
+        };
+        if t.pending_plaintext == on {
+            return;
+        }
+        t.pending_plaintext = on;
+        if on {
+            self.pending_plaintext += 1;
+            if self.pending_plaintext == 1 {
+                self.set_dumpable(false);
+            }
+        } else {
+            self.pending_plaintext = self.pending_plaintext.saturating_sub(1);
+            if self.pending_plaintext == 0 {
+                self.set_dumpable(true);
+            }
+        }
+    }
+
+    /// Apply the supervisor's own dumpable flag.  `keep_non_dumpable`
+    /// pins it off for the session.
+    fn set_dumpable(&self, dumpable: bool) {
+        if self.cfg.keep_non_dumpable {
+            return;
+        }
+        let flag = if dumpable { 1 } else { 0 };
+        // SAFETY: our own dumpable flag.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, flag, 0, 0, 0);
         }
     }
 
@@ -385,6 +685,14 @@ impl Tracer {
     }
 
     fn unregister(&mut self, pid: libc::pid_t) {
+        if self
+            .table
+            .get(&pid)
+            .map(|t| t.pending_plaintext)
+            .unwrap_or(false)
+        {
+            self.set_pending(pid, false);
+        }
         self.table.remove(&pid);
         self.interrupted.remove(&pid);
         if let Ok(mut set) = self.cfg.tree.lock() {
@@ -475,8 +783,9 @@ impl Tracer {
             unsafe {
                 libc::close(ready_fd);
                 libc::close(go_fd);
-                if report_fd >= 0 {
-                    libc::close(report_fd);
+                if self.rexec_report_fd >= 0 {
+                    libc::close(self.rexec_report_fd);
+                    self.rexec_report_fd = -1;
                 }
             }
             return Ok(finish_status(master, st));
@@ -487,8 +796,9 @@ impl Tracer {
             // SAFETY: closing the pipe end owned by this call.
             unsafe {
                 libc::close(go_fd);
-                if report_fd >= 0 {
-                    libc::close(report_fd);
+                if self.rexec_report_fd >= 0 {
+                    libc::close(self.rexec_report_fd);
+                    self.rexec_report_fd = -1;
                 }
             }
             // Nothing is traced: the child must not run unmasked.
@@ -529,8 +839,9 @@ impl Tracer {
             // owned by this call.
             unsafe {
                 libc::close(go_fd);
-                if report_fd >= 0 {
-                    libc::close(report_fd);
+                if self.rexec_report_fd >= 0 {
+                    libc::close(self.rexec_report_fd);
+                    self.rexec_report_fd = -1;
                 }
             }
             if e.raw_os_error() == Some(libc::ESRCH) {
@@ -559,8 +870,9 @@ impl Tracer {
                 // SAFETY: the descriptor, the pipe end and our own child.
                 unsafe {
                     libc::close(go_fd);
-                    if report_fd >= 0 {
-                        libc::close(report_fd);
+                    if self.rexec_report_fd >= 0 {
+                        libc::close(self.rexec_report_fd);
+                        self.rexec_report_fd = -1;
                     }
                     libc::kill(master, libc::SIGKILL);
                     let mut st = 0i32;
@@ -571,8 +883,14 @@ impl Tracer {
         };
         if !libc::WIFSTOPPED(status) {
             // died before the handshake (for example an internal error)
-            // SAFETY: the pipe end is owned by this call.
-            unsafe { libc::close(go_fd) };
+            // SAFETY: the pipe end and report descriptor are owned by this call.
+            unsafe {
+                libc::close(go_fd);
+                if self.rexec_report_fd >= 0 {
+                    libc::close(self.rexec_report_fd);
+                    self.rexec_report_fd = -1;
+                }
+            }
             return Ok(finish_status(master, status));
         }
         // A `PTRACE_INTERRUPT` stop is `PTRACE_EVENT_STOP` with SIGTRAP.
@@ -679,11 +997,8 @@ impl Tracer {
             let event = (status as u32) >> 16;
 
             if !self.table.contains_key(&pid) {
-                let (parent, parent_depth) = match self.pending_children.remove(&pid) {
-                    Some((p, d)) => (p, Some(d)),
-                    None => (proc_ppid(pid).unwrap_or(master), None),
-                };
-                self.on_new_tracee(pid, master, parent, parent_depth);
+                let pending = self.pending_children.remove(&pid);
+                self.on_new_tracee(pid, master, pending);
                 continue;
             }
 
@@ -827,7 +1142,9 @@ impl Tracer {
         if std::fs::File::open(format!("{}/mem", base)).is_ok() {
             reasons.push("mem");
         }
-        if fd_names.iter().any(|f| f.contains("pmask")) {
+        // Classify by what the descriptor is, not by a cosmetic name.
+        let fd_residue = fd_names.iter().any(|f| fd_is_residue(f));
+        if fd_residue {
             reasons.push("fd");
         }
         if !reasons.is_empty() {
@@ -853,6 +1170,13 @@ impl Tracer {
         if self.cfg.quiet {
             return;
         }
+        if self.cfg.hide_pid {
+            eprintln!(
+                "pmask: hide-pid: the tree is non-dumpable; same-uid /proc readers cannot \
+                 see it.  cgroup.procs/cgroup.threads, kill(0), pidfd_open, \
+                 sched_getaffinity/getpriority/prlimit and root still can."
+            );
+        }
         if s.degraded > 0 {
             let mut reasons: Vec<String> = Vec::new();
             let mut add = |name: &str, n: u32| {
@@ -871,11 +1195,25 @@ impl Tracer {
             add("unredacted", s.unredacted);
             add("comm-not-set", s.comm_skipped);
             add("foreign-arch", s.foreign_arch);
+            add("foreign-refused", s.foreign_refused);
             eprintln!(
                 "pmask: {} of {} execs degraded ({})",
                 s.degraded,
                 s.execs,
                 reasons.join(", ")
+            );
+        }
+        if s.vfork_cache_skipped > 0 {
+            eprintln!(
+                "pmask: {} vfork child(ren) took the post-exec path; the --exec-once cache tag is not applied there",
+                s.vfork_cache_skipped
+            );
+        }
+        if s.foreign_refused > 0 {
+            eprintln!(
+                "pmask: {} 32-bit (foreign ABI) exec(s) refused; a 32-bit image \
+                 cannot be redacted, so it is not run unless --allow-foreign is set",
+                s.foreign_refused
             );
         }
         // A refused window relocation is a degradation in its own right:
@@ -896,6 +1234,22 @@ impl Tracer {
                 "pmask: {} tracee(s) left detached after their exec \
                  (--detach: their later execs are not redacted)",
                 s.detached
+            );
+        }
+        // A tracee that refused PR_SET_DUMPABLE is still readable to its
+        // own uid, so --hide-pid did not take effect for it.
+        if s.dumpable_failed > 0 {
+            eprintln!(
+                "pmask: {} tracee(s) stayed dumpable (PR_SET_DUMPABLE refused); \
+                 --hide-pid is not active for them",
+                s.dumpable_failed
+            );
+        }
+        if s.dontdump_failed > 0 {
+            eprintln!(
+                "pmask: {} redaction block(s) could not be marked MADV_DONTDUMP; \
+                 a core dump could include the block",
+                s.dontdump_failed
             );
         }
         // A descriptor that could not be closed at a descendant's fork is
@@ -1148,9 +1502,12 @@ impl Tracer {
         &mut self,
         pid: libc::pid_t,
         master: libc::pid_t,
-        parent: libc::pid_t,
-        parent_depth: Option<u32>,
+        pending: Option<PendingChild>,
     ) {
+        let (parent, parent_depth, parent_site, parent_clone_files) = match pending {
+            Some(p) => (p.parent, Some(p.depth), p.site, p.clone_files),
+            None => (proc_ppid(pid).unwrap_or(master), None, None, false),
+        };
         // Auto-traced newcomer (fork/vfork/clone of an existing tracee).
         let unmasked = !self.cfg.follow_tree && pid != master;
         // A thread inherits its group's position in the exec lifecycle: a
@@ -1192,6 +1549,13 @@ impl Tracer {
             vlog!(self, "pid {}: registered as a vfork child", pid);
         }
         t.depth = depth;
+        // The seccomp exec filter is inherited across fork and clone, so a
+        // newcomer of a filtered tracee already has it.
+        t.exec_filter_installed = self
+            .table
+            .get(&parent)
+            .map(|p| p.exec_filter_installed)
+            .unwrap_or(false);
         // A thread shares its group's descriptor table, so it holds the
         // secret descriptors exactly when the group does.  A real fork is
         // recorded as open only when the close below fails.
@@ -1200,6 +1564,13 @@ impl Tracer {
         } else {
             false
         };
+        // A forked/vforked/cloned child inherits its parent's address space
+        // (and vDSO/executable syscall site) until it execs.  Caching it
+        // lets `close_secret_fds_at_fork` inject `close(2)` into a
+        // non-dumpable child without reading `/proc/<child>/maps`.
+        t.syscall_site = parent_site
+            .or_else(|| self.table.get(&parent).and_then(|p| p.syscall_site))
+            .or_else(|| thread_of.and_then(|l| self.table.get(&l).and_then(|t| t.syscall_site)));
         self.register(pid, t);
         let killed = self.master_exit.is_some() && self.cfg.session_end == SessionEnd::KillTree;
         if killed {
@@ -1226,7 +1597,14 @@ impl Tracer {
         // its parent's close failed, so the inherited copies are closed as
         // low as the injection reaches.
         if !killed
-            && !self.close_secret_fds_at_fork(pid, parent, depth, thread_of.is_some(), parent_open)
+            && !self.close_secret_fds_at_fork(
+                pid,
+                parent,
+                depth,
+                thread_of.is_some(),
+                parent_open,
+                parent_clone_files,
+            )
         {
             return;
         }
@@ -1256,6 +1634,7 @@ impl Tracer {
         depth: u32,
         is_thread: bool,
         parent_open: bool,
+        parent_clone_files: bool,
     ) -> bool {
         if is_thread || self.cfg.close_secret_fds_in_descendants.is_empty() {
             return true;
@@ -1274,7 +1653,14 @@ impl Tracer {
             self.set_secret_fds_open(pid, true);
             return true;
         }
-        if shares_fd_table(pid, parent) == Some(true) {
+        let shared_fds = match shares_fd_table(pid, parent) {
+            Some(v) => v,
+            // `kcmp` returns EPERM for an unprivileged tracer on non-dumpable
+            // tracees (which is the default for `--secret`); fall back to
+            // checking the parent's `clone`/`clone3` flags via ptrace.
+            None => parent_clone_files || parent_has_clone_files(parent),
+        };
+        if shared_fds {
             self.warn(format_args!(
                 "pid {}: shares its parent's descriptor table (clone(CLONE_FILES)); \
                  the secret descriptors stay open in it and in the process it shares \
@@ -1295,7 +1681,14 @@ impl Tracer {
             self.set_secret_fds_open(pid, true);
             return true;
         };
-        let Some(site) = crate::inject::find_syscall_site(pid, None, self.fault_no_vdso) else {
+        let cached_site = if self.fault_no_vdso {
+            None
+        } else {
+            self.table.get(&pid).and_then(|t| t.syscall_site)
+        };
+        let Some(site) =
+            cached_site.or_else(|| crate::inject::find_syscall_site(pid, None, self.fault_no_vdso))
+        else {
             self.warn(format_args!(
                 "pid {}: no syscall instruction found; the secret descriptors stay open \
                  in it and in what it starts",
@@ -1402,8 +1795,21 @@ impl Tracer {
                 let cpid = self.event_msg(pid) as libc::pid_t;
                 vlog!(self, "pid {} event {} -> {}", pid, event, cpid);
                 if cpid > 0 {
-                    let depth = self.table.get(&pid).map(|t| t.depth).unwrap_or(0);
-                    self.pending_children.insert(cpid, (pid, depth));
+                    let (depth, site) = self
+                        .table
+                        .get(&pid)
+                        .map(|t| (t.depth, t.syscall_site))
+                        .unwrap_or((0, None));
+                    let clone_files = parent_has_clone_files(pid);
+                    self.pending_children.insert(
+                        cpid,
+                        PendingChild {
+                            parent: pid,
+                            depth,
+                            site,
+                            clone_files,
+                        },
+                    );
                     if event == PTRACE_EVENT_VFORK {
                         self.vfork_children.insert(cpid);
                     }
@@ -1418,8 +1824,12 @@ impl Tracer {
                 if former != pid && former > 0 {
                     if let Some(t) = self.table.remove(&former) {
                         vlog!(self, "pid {}: exec by non-leader thread {}", pid, former);
+                        // Clear any stale pending_plaintext count on the
+                        // leader entry before replacing it with `t`.
+                        self.set_pending(pid, false);
                         if let Ok(mut set) = self.cfg.tree.lock() {
                             set.remove(&former);
+                            set.insert(pid);
                         }
                         self.interrupted.remove(&former);
                         self.table.insert(pid, t);
@@ -1427,6 +1837,10 @@ impl Tracer {
                 }
                 let no_redact = self.table.get(&pid).map(|t| t.no_redact).unwrap_or(false);
                 if no_redact {
+                    if let Some(t) = self.table.get_mut(&pid) {
+                        t.syscall_site = None;
+                    }
+                    self.set_pending(pid, false);
                     self.set_state(pid, State::Run);
                     self.resume_state(pid, 0);
                 } else {
@@ -1456,14 +1870,147 @@ impl Tracer {
     /// the label address is reachable, and refused otherwise.
     fn on_seccomp_stop(&mut self, pid: libc::pid_t) {
         let mut si: SyscallInfo = unsafe { std::mem::zeroed() };
-        if inject::get_syscall_info(pid, &mut si).is_ok()
-            && si.entry_nr() == Some(arch::SYS_PRCTL)
-            && self.cfg.watch_prctl
-        {
-            // SAFETY: the union holds entry-shaped data at a seccomp stop.
-            let opt = unsafe { si.detail.seccomp.args[0] };
-            if opt == libc::PR_SET_NAME as u64 {
-                self.redirect_rename(pid, &si);
+        if inject::get_syscall_info(pid, &mut si).is_ok() {
+            if let Some(nr) = si.entry_nr() {
+                if self.cfg.watch_prctl && nr == arch::SYS_PRCTL {
+                    // SAFETY: the union holds entry-shaped data at a
+                    // seccomp stop.
+                    let opt = unsafe { si.detail.seccomp.args[0] };
+                    if opt == libc::PR_SET_NAME as u64 {
+                        self.redirect_rename(pid, &si);
+                    }
+                    self.resume_state(pid, 0);
+                    return;
+                }
+                if self.cfg.watch_prctl {
+                    let args = unsafe { si.detail.seccomp.args };
+                    let open = if nr == arch::SYS_OPENAT {
+                        let write = (args[2] & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64;
+                        Some((args[1], write, Some(args[0])))
+                    } else if nr == arch::SYS_OPEN {
+                        let write = (args[1] & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64;
+                        Some((args[0], write, None))
+                    } else if nr == arch::SYS_CREAT {
+                        Some((args[0], true, None))
+                    } else if nr == arch::SYS_OPENAT2 {
+                        let mut how = [0u8; 8];
+                        let write = if crate::remote::read_mem(pid, args[2], &mut how) == 8 {
+                            let flags = u64::from_le_bytes(how);
+                            (flags & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64
+                        } else {
+                            // A comm path whose flags cannot be read is
+                            // refused rather than allowed; any other
+                            // path is allowed.
+                            true
+                        };
+                        Some((args[1], write, Some(args[0])))
+                    } else {
+                        None
+                    };
+                    if let Some((path_ptr, true, dirfd)) = open {
+                        if let Some(path) = crate::remote::read_cstr(pid, path_ptr, 4096) {
+                            // `openat` may name the directory by
+                            // descriptor; resolve it before the shape
+                            // test, or `openat(dirfd, "comm")` walks
+                            // past it (issue 71).
+                            let (path, link_err) = open_target_path(pid, dirfd, &path);
+                            if let Some(err) = link_err {
+                                if err.kind() == io::ErrorKind::PermissionDenied {
+                                    self.warn_watch_proc_denied(pid, &err);
+                                }
+                            }
+                            if is_proc_comm_path(&path) {
+                                if let Ok(mut regs) = Regs::get(pid) {
+                                    regs.deny_syscall(libc::EACCES);
+                                    if regs.put(pid).is_ok() {
+                                        self.stats.rename_refused += 1;
+                                        self.warn(format_args!(
+                                            "pid {}: a write-mode open of {} is refused; the \
+                                             label stays the comm",
+                                            pid,
+                                            String::from_utf8_lossy(&path)
+                                        ));
+                                    }
+                                }
+                                self.resume_state(pid, 0);
+                                return;
+                            }
+                        }
+                    }
+                    if self.cfg.watch_strict {
+                        let is_write = matches!(
+                            nr,
+                            arch::SYS_WRITE
+                                | arch::SYS_WRITEV
+                                | arch::SYS_PWRITE64
+                                | arch::SYS_PWRITEV
+                                | arch::SYS_PWRITEV2
+                        );
+                        if is_write {
+                            let fd = args[0];
+                            let link = format!("/proc/{}/fd/{}", pid, fd);
+                            match std::fs::read_link(&link) {
+                                Ok(target) => {
+                                    let target = target.to_string_lossy().into_owned();
+                                    if is_proc_comm_path(target.as_bytes()) {
+                                        if let Ok(mut regs) = Regs::get(pid) {
+                                            regs.deny_syscall(libc::EACCES);
+                                            if regs.put(pid).is_ok() {
+                                                self.stats.rename_refused += 1;
+                                                self.warn(format_args!(
+                                                    "pid {}: a write to {} is refused; the label stays \
+                                                     the comm",
+                                                    pid, target
+                                                ));
+                                            }
+                                        }
+                                        self.resume_state(pid, 0);
+                                        return;
+                                    }
+                                }
+                                Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                                    self.warn_watch_proc_denied(pid, &err);
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    }
+                }
+                if self.cfg.fast_exec && arch::classify_exec(si.arch, nr) != ExecClass::NotExec {
+                    // The seccomp stop can be the second report of an exec
+                    // whose syscall-entry stop already ran the handler.
+                    // `Swapped` is exactly that window: the inline arrays
+                    // are already replaced, so a second `on_exec_entry`
+                    // would save the label as the real argv.  `Script` and
+                    // `Foreign` chose the post-exec path for this exec.
+                    // Only a tracee that has not begun this exec reaches
+                    // the entry handler from here.
+                    let state = self.table.get(&pid).map(|t| t.state).unwrap_or(State::Run);
+                    if !matches!(state, State::Run | State::Slow) {
+                        self.resume(pid, 0, true);
+                        return;
+                    }
+                    match Regs::get(pid) {
+                        Ok(regs) => self.on_exec_entry(pid, nr, &regs),
+                        Err(_) => {
+                            if self.cfg.strict_exec {
+                                self.refuse(format_args!(
+                                    "pid {}: --strict-exec refuses an exec whose entry registers \
+                                     are unreadable; the payload is killed and the run stops",
+                                    pid
+                                ));
+                                // SAFETY: plain kill(2) of a stopped tracee.
+                                unsafe { libc::kill(pid, libc::SIGKILL) };
+                                self.set_state(pid, State::Script);
+                                self.resume(pid, 0, false);
+                            } else {
+                                self.set_state(pid, State::Script);
+                                self.resume(pid, 0, true);
+                            }
+                        }
+                    }
+                    return;
+                }
             }
         }
         self.resume_state(pid, 0);
@@ -1567,6 +2114,34 @@ impl Tracer {
                 None => (State::Run, false),
             };
             let class = arch::classify_exec(si.arch, nr);
+            if class != ExecClass::NotExec
+                && self
+                    .table
+                    .get(&pid)
+                    .map(|t| t.foreign_done)
+                    .unwrap_or(false)
+            {
+                vlog!(
+                    self,
+                    "pid {}: later exec after a 32-bit image, refusing",
+                    pid
+                );
+                // The first 32-bit image ran under --allow-foreign.  A
+                // later exec cannot be redacted: the 64-bit tracer cannot
+                // read the 32-bit image's registers or pointer arrays.
+                // Refuse it before the image runs.
+                self.stats.foreign_refused += 1;
+                self.refuse(format_args!(
+                    "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it; the exec is killed",
+                    pid
+                ));
+                // SAFETY: plain kill(2) of a stopped tracee.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                self.resume(pid, 0, false);
+                return;
+            }
             if class != ExecClass::NotExec && no_redact {
                 // no redaction wanted: settle to Run and let the exec
                 // proceed normally
@@ -1592,6 +2167,20 @@ impl Tracer {
                     // stale address must not be used as a rename target.
                     t.rename_addr = 0;
                 }
+                self.set_pending(pid, false);
+                if self.cfg.strict_exec && !self.cfg.allow_foreign {
+                    self.stats.foreign_refused += 1;
+                    self.refuse(format_args!(
+                        "pid {}: --strict-exec refuses a foreign-ABI exec at entry; \
+                         the payload is killed and the run stops",
+                        pid
+                    ));
+                    // SAFETY: plain kill(2) of a stopped tracee.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    self.set_state(pid, State::Foreign);
+                    self.resume(pid, 0, false);
+                    return;
+                }
                 self.set_state(pid, State::Script);
                 self.resume(pid, 0, true);
                 return;
@@ -1600,8 +2189,20 @@ impl Tracer {
                 match Regs::get(pid) {
                     Ok(regs) => self.on_exec_entry(pid, nr, &regs),
                     Err(_) => {
-                        self.set_state(pid, State::Script);
-                        self.resume(pid, 0, true);
+                        if self.cfg.strict_exec {
+                            self.refuse(format_args!(
+                                "pid {}: --strict-exec refuses an exec whose entry registers \
+                                 are unreadable; the payload is killed and the run stops",
+                                pid
+                            ));
+                            // SAFETY: plain kill(2) of a stopped tracee.
+                            unsafe { libc::kill(pid, libc::SIGKILL) };
+                            self.set_state(pid, State::Script);
+                            self.resume(pid, 0, false);
+                        } else {
+                            self.set_state(pid, State::Script);
+                            self.resume(pid, 0, true);
+                        }
                     }
                 }
                 return;
@@ -1613,39 +2214,30 @@ impl Tracer {
         // syscall exit
         let state = self.table.get(&pid).map(|t| t.state).unwrap_or(State::Run);
         match state {
-            State::Swapped | State::Script => {
+            State::Swapped | State::Script | State::Foreign => {
                 if si.exit_is_error() {
-                    // exec failed: put the original inline arrays back
-                    // and keep the process syscall-supervised: its first
-                    // exec has not settled.
+                    // exec failed: put any swapped inline arrays back, drop
+                    // any sealed count and pending_plaintext marker, and keep
+                    // the process syscall-supervised until an exec settles.
                     self.restore_orig_arrays(pid);
+                    let sealed = self
+                        .table
+                        .get(&pid)
+                        .map(|t| t.sealed_argv.is_some() as u32 + t.sealed_envp.is_some() as u32)
+                        .unwrap_or(0);
                     if let Some(t) = self.table.get_mut(&pid) {
                         t.clear_exec_state();
                     }
+                    self.stats.sealed = self.stats.sealed.saturating_sub(sealed);
+                    self.set_pending(pid, false);
                     self.set_state(pid, State::Slow);
                     self.resume(pid, 0, true);
                 } else {
-                    // exec succeeded but no PTRACE_EVENT_EXEC stop
-                    // arrived: do the completion here, at the exit stop.
-                    // The new image is mapped and the program has not
-                    // started yet.
+                    // exec succeeded but no PTRACE_EVENT_EXEC stop arrived:
+                    // do the completion (or foreign refusal) here, at the
+                    // exit stop.  The new image is mapped and the program
+                    // has not started yet.
                     self.on_exec_complete(pid, true);
-                }
-            }
-            State::Foreign => {
-                if si.exit_is_error() {
-                    // The 32-bit image was refused at entry, so no
-                    // inline arrays were swapped and there is nothing to
-                    // restore.  A tracee left in `Foreign` never takes
-                    // another exec-entry stop, so its next exec would run
-                    // unredacted; settle it back to `Slow` and keep it
-                    // syscall-supervised.
-                    self.set_state(pid, State::Slow);
-                    self.resume(pid, 0, true);
-                } else {
-                    // A successful foreign exec is refused at the
-                    // completion stop; keep the state that records it.
-                    self.resume_state(pid, 0);
                 }
             }
             _ => self.resume_state(pid, 0),
@@ -1660,7 +2252,28 @@ impl Tracer {
         let slow = self
             .table
             .get(&pid)
-            .map(|t| t.state == State::Slow)
+            .map(|t| {
+                // Any non-Run state (`Slow`, `Swapped`, `Script`, `Foreign`)
+                // MUST stay under `PTRACE_SYSCALL`: a mid-exec signal or
+                // ptrace event must never switch an in-flight exec to
+                // `PTRACE_CONT` and miss its syscall-exit stop.
+                t.state != State::Run
+                    || (!t.no_redact
+                        && (
+                            // `--exec-once` redirects a settled tracee's later
+                            // exec at the exec's syscall-entry stop unless the
+                            // seccomp exec filter handles it.
+                            (self.cfg.rexec_per_exec && !self.cfg.fast_exec)
+                            // `--strict-exec` requires every exec (including
+                            // re-execs of a settled process) to hit entry-stop
+                            // redaction or refusal, never silent post-exec.
+                            || (self.cfg.strict_exec && !self.cfg.fast_exec)
+                            // A failed fast-exec filter must not leave the
+                            // tracee running free: fall back to syscall
+                            // supervision.
+                            || t.fast_exec_failed
+                        ))
+            })
             .unwrap_or(false);
         self.resume(pid, sig, slow);
     }
@@ -1706,7 +2319,7 @@ impl Tracer {
         if self.cfg.exit_kill {
             o |= libc::PTRACE_O_EXITKILL as libc::c_long;
         }
-        if self.cfg.watch_prctl {
+        if self.cfg.watch_prctl || self.cfg.fast_exec {
             o |= arch::PTRACE_O_TRACESECCOMP;
         }
         o
@@ -1749,6 +2362,28 @@ fn newcomer_depth(
             .map(|d| d + 1)
             .unwrap_or(1),
     }
+}
+
+/// True when `parent` (stopped in a fork/vfork/clone event) is executing
+/// `clone(2)` or `clone3(2)` with `CLONE_FILES` set.  Used as a fallback
+/// when `kcmp(KCMP_FILES)` returns `EPERM` on a non-dumpable tracee.
+fn parent_has_clone_files(parent: libc::pid_t) -> bool {
+    let Ok(regs) = Regs::get(parent) else {
+        return false;
+    };
+    let nr = regs.syscall_nr();
+    if nr == arch::SYS_CLONE {
+        return (regs.arg(1) & libc::CLONE_FILES as u64) != 0;
+    }
+    if nr == arch::SYS_CLONE3 {
+        let ptr = regs.arg(1);
+        if ptr == 0 {
+            return false;
+        }
+        return crate::remote::peek_word(parent, ptr)
+            .is_some_and(|flags| (flags & libc::CLONE_FILES as u64) != 0);
+    }
+    false
 }
 
 /// True when the two tasks share one file descriptor table
@@ -1931,5 +2566,114 @@ mod tests {
         // Unknown newcomer: the conservative depth the old code used.
         assert_eq!(newcomer_depth(None, None, None, None), 1);
         assert_eq!(newcomer_depth(Some(1), None, None, None), 1);
+    }
+}
+
+#[cfg(test)]
+mod comm_path_tests {
+    use super::{is_proc_comm_path, join_open_path, normalize_lexical_path};
+
+    #[test]
+    fn a_relative_path_is_joined_onto_the_directory() {
+        assert_eq!(
+            join_open_path(Some(b"/proc/1234"), b"comm"),
+            b"/proc/1234/comm"
+        );
+        assert_eq!(
+            join_open_path(Some(b"/proc/1234/"), b"comm"),
+            b"/proc/1234/comm"
+        );
+        assert_eq!(join_open_path(Some(b"/tmp"), b"comm"), b"/tmp/comm");
+        assert_eq!(join_open_path(None, b"comm"), b"comm");
+    }
+
+    #[test]
+    fn an_absolute_path_is_used_as_written() {
+        assert_eq!(
+            join_open_path(Some(b"/tmp"), b"/proc/self/comm"),
+            b"/proc/self/comm"
+        );
+    }
+
+    #[test]
+    fn a_resolved_dirfd_reaches_the_comm_shapes() {
+        // openat(open("/proc/self", O_PATH), "comm", O_WRONLY)
+        assert!(is_proc_comm_path(&join_open_path(
+            Some(b"/proc/1234"),
+            b"comm"
+        )));
+        // openat(open("/proc/self/fd", O_PATH), "../comm", O_WRONLY)
+        assert!(is_proc_comm_path(&join_open_path(
+            Some(b"/proc/1234/fd"),
+            b"../comm"
+        )));
+        // openat(open("/tmp", O_PATH), "../proc/self/comm", O_WRONLY)
+        assert!(is_proc_comm_path(&join_open_path(
+            Some(b"/tmp"),
+            b"../proc/self/comm"
+        )));
+        // The same call with the cwd outside /proc is not a comm.
+        assert!(!is_proc_comm_path(&join_open_path(Some(b"/tmp"), b"comm")));
+    }
+
+    #[test]
+    fn the_shape_test_covers_every_proc_comm_spelling() {
+        assert!(is_proc_comm_path(b"/proc/self/comm"));
+        assert!(is_proc_comm_path(b"/proc/thread-self/comm"));
+        assert!(is_proc_comm_path(b"/proc/1234/comm"));
+        assert!(is_proc_comm_path(b"/proc/1234/task/1234/comm"));
+        assert!(!is_proc_comm_path(b"/proc/comm"));
+        assert!(!is_proc_comm_path(b"/proc/1234/comm/x"));
+        assert!(!is_proc_comm_path(b"/tmp/comm"));
+    }
+
+    #[test]
+    fn lexical_normalization_catches_slashed_and_dotdot_proc_comm() {
+        assert_eq!(
+            normalize_lexical_path(b"///proc///self//comm"),
+            b"/proc/self/comm"
+        );
+        assert_eq!(
+            normalize_lexical_path(b"/tmp/../proc/./self/comm"),
+            b"/proc/self/comm"
+        );
+        assert_eq!(
+            normalize_lexical_path(b"/../../proc/1234/task/56/../56/comm"),
+            b"/proc/1234/task/56/comm"
+        );
+        assert!(is_proc_comm_path(b"///proc/self/comm"));
+        assert!(is_proc_comm_path(b"/tmp/../proc/self/comm"));
+        assert!(is_proc_comm_path(b"/../../proc/./self//comm"));
+        assert!(is_proc_comm_path(b"/proc/self/fd/../../self/comm"));
+        assert!(!is_proc_comm_path(b"///proc///comm"));
+        assert!(!is_proc_comm_path(b"/proc/self/comm/.."));
+        assert!(!is_proc_comm_path(b"/tmp/proc/self/comm"));
+    }
+}
+
+#[cfg(test)]
+mod fd_tests {
+    use super::fd_is_residue;
+
+    #[test]
+    fn secret_memfd_is_residue_whatever_its_name() {
+        assert!(fd_is_residue("3:/memfd:custom-name (deleted)"));
+        assert!(fd_is_residue("3:/memfd:pmask-secret (deleted)"));
+        assert!(fd_is_residue("4:/memfd:custom-name"));
+    }
+
+    #[test]
+    fn an_ordinary_file_is_not_residue() {
+        assert!(!fd_is_residue("9:/tmp/qa70.abc/pmask-looking-file"));
+        assert!(!fd_is_residue("0:/dev/null"));
+        assert!(!fd_is_residue("1:/dev/pts/3"));
+        assert!(!fd_is_residue("5:/usr/bin/pmask"));
+        assert!(!fd_is_residue("9:not reachable"));
+    }
+
+    #[test]
+    fn deleted_and_rexec_targets_are_residue() {
+        assert!(fd_is_residue("6:/tmp/x (deleted)"));
+        assert!(fd_is_residue("7:/tmp/.pmask-rexec-1234"));
     }
 }

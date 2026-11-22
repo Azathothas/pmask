@@ -35,6 +35,104 @@ const NLM_F_REQUEST: u16 = 1;
 /// `NLMSG_ERROR`: the kernel's answer to a refused request.
 const NLMSG_ERROR: u16 = 2;
 
+/// The `/proc` mount's `hidepid=` policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HidePid {
+    /// `hidepid=0` or `hidepid=off`: every process of the uid is visible.
+    Off,
+    /// `hidepid=1` or `hidepid=noaccess`: other uids cannot open a
+    /// `/proc/<pid>/` directory, but a process of the same uid is still
+    /// visible.
+    NoAccess,
+    /// `hidepid=2` or `hidepid=invisible`: other uids are hidden, and a
+    /// non-dumpable process is hidden from its own uid too.
+    Invisible,
+    /// `hidepid=4` or `hidepid=ptraceable`: only the processes the
+    /// caller can ptrace are listed.  A non-dumpable process is hidden
+    /// from its own uid.
+    Ptraceable,
+    /// The mount did not name a policy this build understands.
+    Unknown,
+}
+
+impl HidePid {
+    /// The word `pmask probe` prints.
+    pub fn as_word(self) -> &'static str {
+        match self {
+            HidePid::Off => "off",
+            HidePid::NoAccess => "noaccess",
+            HidePid::Invisible => "invisible",
+            HidePid::Ptraceable => "ptraceable",
+            HidePid::Unknown => "unknown",
+        }
+    }
+
+    /// True when a non-dumpable process is hidden from its own uid.
+    pub fn hides_non_dumpable(self) -> bool {
+        matches!(self, HidePid::Invisible | HidePid::Ptraceable)
+    }
+}
+
+/// Read the `/proc` mount's `hidepid=` policy from `/proc/self/mountinfo`.
+///
+/// The option may appear in the per-mount option list or in the
+/// superblock option list after `- proc proc`; both are scanned.  A host
+/// with no explicit option is `hidepid=0`.
+pub fn proc_hidepid() -> HidePid {
+    let Ok(text) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return HidePid::Unknown;
+    };
+    // A mount namespace can hold more than one `/proc` mount (the outer
+    // one and the one the payload sees).  Match the device of the
+    // process's own `/proc` so the policy read is the policy in force.
+    let want_dev = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc")
+            .ok()
+            .map(|m| format!("{}:{}", libc::major(m.dev()), libc::minor(m.dev())))
+    };
+    let mut fallback: Option<Vec<&str>> = None;
+    for line in text.lines().rev() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 || fields[4] != "/proc" || !line.contains(" - proc proc ") {
+            continue;
+        }
+        if let Some(want) = &want_dev {
+            if fields[2] != want {
+                if fallback.is_none() {
+                    fallback = Some(fields);
+                }
+                continue;
+            }
+        }
+        return parse_hidepid(&fields);
+    }
+    if let Some(fields) = fallback {
+        return parse_hidepid(&fields);
+    }
+    HidePid::Unknown
+}
+
+fn parse_hidepid(fields: &[&str]) -> HidePid {
+    for f in &fields[4..] {
+        // The superblock options are one comma-separated field
+        // (`rw,hidepid=invisible`), so split before matching.
+        for piece in f.split(',') {
+            let Some(v) = piece.strip_prefix("hidepid=") else {
+                continue;
+            };
+            return match v {
+                "0" | "off" => HidePid::Off,
+                "1" | "noaccess" => HidePid::NoAccess,
+                "2" | "invisible" => HidePid::Invisible,
+                "4" | "ptraceable" => HidePid::Ptraceable,
+                _ => HidePid::Unknown,
+            };
+        }
+    }
+    HidePid::Off
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// Secrets are delivered as sealed file descriptors and kept in
@@ -173,9 +271,10 @@ impl ProbeOverrides {
 
 /// Parse `0` or `1`; any other value leaves the probe in place.
 fn bool_probe(name: &str) -> Option<bool> {
-    bool_value(&std::env::var(name).ok()?)
+    crate::testhooks::bool_opt(name)
 }
 
+#[cfg(test)]
 fn bool_value(v: &str) -> Option<bool> {
     match v {
         "0" => Some(false),
@@ -186,7 +285,7 @@ fn bool_value(v: &str) -> Option<bool> {
 
 /// Parse a decimal number; any other value leaves the probe in place.
 fn number_probe<T: std::str::FromStr>(name: &str) -> Option<T> {
-    std::env::var(name).ok()?.parse().ok()
+    crate::testhooks::number(name)
 }
 
 impl Caps {
@@ -221,7 +320,7 @@ impl Caps {
             Some(v) => v,
             // The probe creates the descriptor through the same helper
             // the real buffers use, so a probe that succeeds cannot
-            // disagree with the allocation about `MFD_CLOEXEC`, and
+            // disagree with the allocation about close-on-exec, and
             // there is only one creation site to audit (issue 15).
             None => crate::mem::secret_memfd_available(),
         };
@@ -501,6 +600,69 @@ impl Caps {
                         "this host shows you every process; redaction is doing the work alone"
                             .into(),
                     )
+                },
+            ),
+            (
+                "hide-pid",
+                if !self.ptrace {
+                    State::Unavailable(
+                        "ptrace is not permitted; there is no tracer to inject PR_SET_DUMPABLE"
+                            .into(),
+                    )
+                } else if !self.non_dumpable {
+                    State::Unavailable("PR_SET_DUMPABLE is refused".into())
+                } else if proc_hidepid().hides_non_dumpable() {
+                    State::Active
+                } else {
+                    State::Unavailable(format!(
+                        "/proc is hidepid={}; a non-dumpable process is still visible to its \
+                         own uid",
+                        proc_hidepid().as_word()
+                    ))
+                },
+            ),
+            (
+                "memory encryption",
+                if self.memfd_secret {
+                    State::Active
+                } else if self.mlock {
+                    State::Degraded(
+                        "memfd_secret is unavailable; the key and ciphertext are locked but \
+                         still reachable through the kernel direct map"
+                            .into(),
+                    )
+                } else {
+                    State::Unavailable(
+                        "neither memfd_secret nor mlock is available; the key cannot be kept \
+                         out of swap"
+                            .into(),
+                    )
+                },
+            ),
+            (
+                "proc hidepid policy",
+                match proc_hidepid() {
+                    HidePid::Off => State::Active,
+                    HidePid::NoAccess => State::Degraded(
+                        "hidepid=1/noaccess: other uids cannot open a process directory, but a \
+                         non-dumpable process is still visible to its own uid"
+                            .into(),
+                    ),
+                    HidePid::Invisible => State::Degraded(
+                        "hidepid=2/invisible: a non-dumpable process is hidden from same-uid \
+                         observers, so chkproc and unhide can name the supervisor and a \
+                         --no-dumpable tree"
+                            .into(),
+                    ),
+                    HidePid::Ptraceable => State::Degraded(
+                        "hidepid=4/ptraceable: only processes the caller can ptrace are listed; \
+                         a non-dumpable process is hidden from same-uid observers"
+                            .into(),
+                    ),
+                    HidePid::Unknown => State::Degraded(
+                        "the /proc mount did not name a hidepid policy this build understands"
+                            .into(),
+                    ),
                 },
             ),
             (
@@ -1005,6 +1167,7 @@ mod tests {
         assert!(c.peerpidfd);
     }
 
+    #[cfg(feature = "test-hooks")]
     #[test]
     fn audit_probe_override_decides_without_the_socket() {
         // The probe is host state; the override is what the QA suite

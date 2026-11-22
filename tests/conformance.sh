@@ -9,7 +9,7 @@
 #
 #   args-hidden              /proc/<pid>/cmdline does not hold the canary
 #   args-visible-control     the same canary IS visible without supervision
-#   environ-hidden           /proc/<pid>/environ is empty
+#   environ-hidden           /proc/<pid>/environ holds a decoy without the canary
 #   environ-keep-control     --keep-env=NAME keeps that name visible
 #   comm-is-label            comm is the label cut to 15 bytes
 #   comm-control             an unsupervised comm is the program name
@@ -246,19 +246,19 @@ fi
 
 # ---------------------------------------------------- environ hidden
 # The environmental value is checked twice: no canary anywhere in the file,
-# and no non-zero length at all, because a redacted environ is empty by
-# construction.  A non-zero length with no canary would mean the redaction
-# kept something it should have dropped, which is a defect, not a pass.
+# and a plausible non-empty, non-all-NUL decoy environment (exact mode
+# installs DECOY_ENV so /proc/<pid>/environ is not an empty-env fingerprint).
 if [ -n "$PAY" ] && [ -d "/proc/$PAY" ]; then
     eb=$( ( wc -c < "/proc/$PAY/environ" ) 2>/dev/null | tr -d ' ')
+    nonnul=$( ( tr -d '\0' < "/proc/$PAY/environ" | wc -c ) 2>/dev/null | tr -d ' ')
     if [ -z "$eb" ]; then
         fail environ-hidden "environ could not be read for pid $PAY"
     elif has "/proc/$PAY/environ" "$CAN"; then
         fail environ-hidden "canary is in /proc/$PAY/environ"
-    elif [ "$eb" != 0 ]; then
-        fail environ-hidden "environ is [$eb] bytes, want 0: $(tr '\0' '|' < "/proc/$PAY/environ" | cut -c1-100)"
+    elif [ "$eb" -gt 0 ] && [ "${nonnul:-0}" -gt 0 ]; then
+        pass "environ-hidden decoy=${eb}B"
     else
-        pass environ-hidden
+        fail environ-hidden "environ is [$eb] bytes (non-NUL=${nonnul:-0}), want a non-empty decoy without the canary"
     fi
 else
     skip environ-hidden "the payload of the redacted session is gone"
@@ -463,27 +463,47 @@ else
     fi
 fi
 
-# Row: the descriptor is a sealed memfd, and a plain file is not.  The
-# payload link is read while the secret session is alive; a missing link is
-# reported as a failure rather than as a skip, because the session above has
-# already proved that a payload exists.
+# Row: the descriptor is a sealed memfd, and a plain file is not.  On a
+# non-root observer the default --secret session marks the payload
+# non-dumpable (issue #67), so /proc/<pid>/fd/3 is refused on the default
+# session and the /memfd: link is verified with an explicit
+# --allow-dumpable session.
 if [ -z "$PROBE" ]; then
     skip secret-fd-is-memfd "no C compiler, so F_GET_SEALS cannot be read"
     skip secret-fd-control "no C compiler, so F_GET_SEALS cannot be read"
 else
-    link=""
-    [ -n "$SPAY" ] && [ -d "/proc/$SPAY" ] && link=$(readlink "/proc/$SPAY/fd/3" 2>/dev/null)
     out=$("$TOOL" run -q --label "$LABEL" --secret "TOK=literal:$SEC" \
         -- "$PROBE" seals TOK 2>"$T/seal.err")
     sfd=$(printf '%s\n' "$out" | sed -n 's/^fd=//p')
     sseal=$(printf '%s\n' "$out" | sed -n 's/^seals=//p')
     swerr=$(printf '%s\n' "$out" | sed -n 's/^write_errno=//p')
+    link=""
+    default_refused=1
+    if root_peer_observer; then
+        [ -n "$SPAY" ] && [ -d "/proc/$SPAY" ] && link=$(readlink "/proc/$SPAY/fd/3" 2>/dev/null)
+    else
+        if [ -n "$SPAY" ] && [ -d "/proc/$SPAY" ]; then
+            def_link=$(readlink "/proc/$SPAY/fd/3" 2>/dev/null)
+            [ -n "$def_link" ] && default_refused=0
+        fi
+        "$TOOL" run -q --allow-dumpable --label "$LABEL" --secret "TOK=literal:$SEC" \
+            -- /bin/sh -c "sleep $HOLD" >/dev/null 2>"$T/allow.err" &
+        ASUP=$!
+        track "$ASUP"
+        APAY=$(await_child "$ASUP" "$LABEL") || APAY=""
+        [ -n "$APAY" ] && track "$APAY"
+        [ -n "$APAY" ] && [ -d "/proc/$APAY" ] && link=$(readlink "/proc/$APAY/fd/3" 2>/dev/null)
+        kill -9 "$ASUP" $APAY 2>/dev/null
+        wait "$ASUP" 2>/dev/null
+    fi
     case "$link" in
         /memfd:*) link_ok=1 ;;
         *) link_ok=0 ;;
     esac
     if [ -z "$sfd" ]; then
         fail secret-fd-is-memfd "the payload never reported a descriptor for TOK (stderr: $(head -1 "$T/seal.err"))"
+    elif [ "$default_refused" = 0 ]; then
+        fail secret-fd-is-memfd "same-uid readlink /proc/$SPAY/fd/3 succeeded on default --secret session (want EACCES)"
     elif [ "$link_ok" = 1 ] && [ "${sseal:-0}" = 15 ] && [ "${swerr:-0}" = 1 ]; then
         # F_SEAL_SEAL 1, SHRINK 2, GROW 4, WRITE 8: all four, so 15, and the
         # one-byte write fails with EPERM, which is 1 on Linux.

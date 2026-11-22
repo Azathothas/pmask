@@ -173,7 +173,7 @@ fn argv_from(args: &[String]) -> Vec<Vec<u8>> {
 
 fn hex_decode(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if bytes.len() & 1 != 0 {
         usage("HEX needs an even number of digits");
     }
     let mut out = Vec::new();

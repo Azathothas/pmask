@@ -10,7 +10,9 @@
 //! calls this module, then forks.  The child's exec therefore still
 //! sees the real values.
 
+use std::ffi::OsString;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 
 /// Locate `[arg_start, arg_end, env_start, env_end]` of this process via
 /// `/proc/self/stat` (fields 48-51; comm may contain spaces/parens, so
@@ -36,13 +38,50 @@ fn self_arg_env_range() -> io::Result<(u64, u64, u64, u64)> {
 /// `/proc/self/cmdline` is served from).
 ///
 /// # Safety
-/// Writes zeros over the process's initial argv string area.  Nothing in
-/// the process may rely on `argv` contents afterwards (Rust's `std`
-/// copies argv at startup and never re-reads the original block).
+/// Writes zeros over the process's initial argv string area.  Nothing may
+/// read the original argv afterwards.  `std` saves `argc` and the `argv`
+/// pointer at startup, not the strings, and every `std::env::args()` /
+/// `args_os()` call dereferences those saved pointers.  After this call
+/// they yield `argc` empty strings; after `mask_self` writes the label at
+/// `arg_start`, element 0 is the label and later elements are label
+/// suffixes or empty.  Collect `args_os()` (or call `snapshot_argv`)
+/// before this call.
 pub unsafe fn zero_own_argv() -> io::Result<()> {
     let (arg_start, arg_end, _, _) = self_arg_env_range()?;
     if arg_start < arg_end {
         std::ptr::write_bytes(arg_start as *mut u8, 0, (arg_end - arg_start) as usize);
+    }
+    Ok(())
+}
+
+/// Put the process's own argv back into the kernel's argv block.
+///
+/// A plain run promises not to mask itself.  `main` zeroes the block
+/// before parsing so no option can publish a secret, and a run that then
+/// selects plain mode would be left with an all-NUL `cmdline` and
+/// `comm=pmask`, a one-read signature that no ordinary process has.  The
+/// snapshot taken before the zeroing restores the original shape.
+///
+/// The restoration is lossy only when the original block was smaller
+/// than the stored strings, which cannot happen for a snapshot taken
+/// from that block.  A write failure leaves the block as it was, which is
+/// the old behaviour, not a new exposure.
+pub fn restore_own_argv(argv: &[OsString]) -> io::Result<()> {
+    let (arg_start, arg_end, _, _) = self_arg_env_range()?;
+    if arg_start >= arg_end {
+        return Ok(());
+    }
+    let room = (arg_end - arg_start) as usize;
+    let mut buf = zeroize::Zeroizing::new(Vec::new());
+    for a in argv {
+        buf.extend_from_slice(a.as_bytes());
+        buf.push(0);
+    }
+    let n = buf.len().min(room);
+    // SAFETY: the range is this process's own argv block, which `main`
+    // zeroed at startup and nothing reads concurrently.
+    unsafe {
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), arg_start as *mut u8, n);
     }
     Ok(())
 }
@@ -111,6 +150,24 @@ pub fn mask_self_label_with_window(
     label_comm: &[u8],
     redact_environ: bool,
 ) -> SelfMask {
+    mask_self_label_with_window_opts(label, label_comm, redact_environ, true)
+}
+
+/// [`mask_self_label_with_window`] with an explicit choice for the
+/// supervisor's dumpable flag.
+///
+/// `non_dumpable` is the safe default for a supervisor that holds
+/// plaintext at rest.  A supervisor that has scrubbed every at-rest copy
+/// can stay dumpable: on a host whose `/proc` uses `hidepid=invisible`,
+/// a non-dumpable process is hidden from same-uid observers, and the
+/// hidden-pid sweepers name it.  A dumpable supervisor with no secrets
+/// is an ordinary process of the caller's uid.
+pub fn mask_self_label_with_window_opts(
+    label: &[u8],
+    label_comm: &[u8],
+    redact_environ: bool,
+    non_dumpable: bool,
+) -> SelfMask {
     // SAFETY: the callers snapshot everything they need from argv and
     // environ before this call (see the module docs).
     let mut first_error: Option<io::Error> = unsafe {
@@ -139,13 +196,15 @@ pub fn mask_self_label_with_window(
     if rc == -1 && first_error.is_none() {
         first_error = Some(io::Error::last_os_error());
     }
-    // The supervisor holds the real argv of every tracee it has swapped
-    // and, in a secret run, the plaintext until delivery.  A same-uid
-    // peer must not read its maps, auxv or memory for the life of the
-    // session.  The forked child restores its own dumpable flag before
-    // the readiness byte, so the payload keeps the default.
+    // A supervisor that still holds plaintext at rest must not be
+    // readable by a same-uid peer.  A supervisor that has scrubbed every
+    // at-rest copy can be dumpable; that is what keeps it out of the
+    // hidden-pid family on a `hidepid=invisible` host.  The forked child
+    // restores its own dumpable flag before the readiness byte, so the
+    // payload keeps the default.
     // SAFETY: our own dumpable flag.
-    let dumpable = if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } == -1 {
+    let flag = if non_dumpable { 0 } else { 1 };
+    let dumpable = if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, flag, 0, 0, 0) } == -1 {
         Some(io::Error::last_os_error())
     } else {
         None
@@ -188,7 +247,20 @@ fn relocate_own_window(label_len: u64, collapse_env: bool) -> io::Result<()> {
         m.env_start = m.arg_end;
         m.env_end = m.arg_end;
     }
-    let buf = crate::presetmm::encode(&m, 0, 0);
+    // The supervisor's own `saved_auxv` still names the pmask binary in
+    // `AT_EXECFN`, which a same-uid reader can resolve.  Rewrite it to
+    // point at the label in the argv window, so auxv agrees with cmdline.
+    // The kernel copies this buffer into `mm->saved_auxv`, so it only has
+    // to live for the prctl call below.
+    let mut auxv =
+        crate::presetmm::read_auxv(std::process::id() as libc::pid_t).unwrap_or_default();
+    let (auxv_addr, auxv_size) = if auxv.is_empty() {
+        (0, 0)
+    } else {
+        crate::presetmm::patch_execfn(&mut auxv, m.arg_start);
+        (auxv.as_ptr() as u64, auxv.len() as u32)
+    };
+    let buf = crate::presetmm::encode(&m, auxv_addr, auxv_size);
     let rc = unsafe {
         libc::syscall(
             libc::SYS_prctl,
@@ -209,9 +281,4 @@ fn relocate_own_window(label_len: u64, collapse_env: bool) -> io::Result<()> {
 /// command-line label and the `comm` name.
 pub fn mask_self(label_comm: &[u8], redact_environ: bool) -> io::Result<()> {
     mask_self_label(label_comm, label_comm, redact_environ)
-}
-
-/// [`mask_self`] with the window relocation reported separately.
-pub fn mask_self_with_window(label_comm: &[u8], redact_environ: bool) -> SelfMask {
-    mask_self_label_with_window(label_comm, label_comm, redact_environ)
 }

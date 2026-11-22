@@ -1,0 +1,185 @@
+
+===== MASKED RUN --stealth label=r2-stealth (no -q, to capture the trade line) =====
+started pmask pgid=546283
+546283 1 r2-stealth ? 0
+546286 546283 r2-stealth ? 546285
+supervisor=546283 payload=546286
+-- comm samples around the payload's self-rename --
+comm@0.6s=r2-stealth
+comm@1.8s=r2-stealth
+-- same-uid dump of payload 546286 --
+### procdump tag=sameuid-r2-stealth pid=546286 uid=1000
+cmdline.len=11
+cmdline.hex=72322d737465616c746800
+cmdline.text='r2-stealth|'
+comm='r2-stealth'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/546286/environ'
+environ=ERR:[Errno 13] Permission denied: '/proc/546286/environ'
+stat.48_arg_start=0
+stat.49_arg_end=0
+stat.50_env_start=0
+stat.51_env_end=0
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/546286/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/546286/mem'
+auxv=ERR:[Errno 13] Permission denied: '/proc/546286/auxv'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/546286/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/546286/exe'
+maps=ERR:[Errno 13] Permission denied: '/proc/546286/maps'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/546286/maps'
+status.TracerPid:	546285
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=ERR:[Errno 13] Permission denied: '/proc/546286/fd'
+fd.list=ERR:[Errno 13] Permission denied: '/proc/546286/fd'
+### end tag=sameuid-r2-stealth pid=546286
+-- root dump of payload 546286 (AT_EXECFN) --
+### procdump tag=root-r2-stealth pid=546286 uid=0
+cmdline.len=11
+cmdline.hex=72322d737465616c746800
+cmdline.text='r2-stealth|'
+comm='r2-stealth'
+environ.open=OK
+environ.len=0
+environ.keys=
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7fc7558b900e
+auxv.execfn_string='r2-stealth'
+exe.readlink='/memfd:r2-stealth (deleted)'
+exe.open=OK
+maps.lines=29
+maps| 55df23e37000-55df23e56000 r--p 00000000 00:01 1768                       /memfd:r2-stealth (deleted)
+maps| 55df23e56000-55df23eee000 r-xp 0001e000 00:01 1768                       /memfd:r2-stealth (deleted)
+maps| 55df23eee000-55df23ef2000 r--p 000b5000 00:01 1768                       /memfd:r2-stealth (deleted)
+maps| 55df23ef2000-55df23ef4000 rw-p 000b8000 00:01 1768                       /memfd:r2-stealth (deleted)
+status.TracerPid:	546285
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+### end tag=root-r2-stealth pid=546286
+-- stderr/stdout captured from the run so far (trade line, renamer print) --
+pmask: --stealth: /proc uses hidepid=off; --no-dumpable is applied, so a same-uid reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES refusals are themselves a signal.
+pmask: warning: pid 546286: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+renamer-comm=r2-stealth
+STOP verified: 0 label processes remain
+-- captured output after stop --
+pmask: --stealth: /proc uses hidepid=off; --no-dumpable is applied, so a same-uid reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES refusals are themselves a signal.
+pmask: warning: pid 546286: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+renamer-comm=r2-stealth
+
+===== MASKED RUN --stealth label=r2-stealth-b (no -q, to capture the trade line) =====
+started pmask pgid=546702
+546702 1 r2-stealth-b ? 0
+546705 546702 r2-stealth-b ? 546704
+supervisor=546702 payload=546705
+-- comm samples around the payload's self-rename --
+comm@0.6s=r2-stealth-b
+comm@1.8s=r2-stealth-b
+-- same-uid dump of payload 546705 --
+### procdump tag=sameuid-r2-stealth-b pid=546705 uid=1000
+cmdline.len=13
+cmdline.hex=72322d737465616c74682d6200
+cmdline.text='r2-stealth-b|'
+comm='r2-stealth-b'
+environ.open=ERR:[Errno 13] Permission denied: '/proc/546705/environ'
+environ=ERR:[Errno 13] Permission denied: '/proc/546705/environ'
+stat.48_arg_start=0
+stat.49_arg_end=0
+stat.50_env_start=0
+stat.51_env_end=0
+auxv.open=ERR:[Errno 13] Permission denied: '/proc/546705/auxv'
+mem.open=ERR:[Errno 13] Permission denied: '/proc/546705/mem'
+auxv=ERR:[Errno 13] Permission denied: '/proc/546705/auxv'
+exe.readlink="ERR:[Errno 13] Permission denied: '/proc/546705/exe'"
+exe.open=ERR:[Errno 13] Permission denied: '/proc/546705/exe'
+maps=ERR:[Errno 13] Permission denied: '/proc/546705/maps'
+maps.open=ERR:[Errno 13] Permission denied: '/proc/546705/maps'
+status.TracerPid:	546704
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=ERR:[Errno 13] Permission denied: '/proc/546705/fd'
+fd.list=ERR:[Errno 13] Permission denied: '/proc/546705/fd'
+### end tag=sameuid-r2-stealth-b pid=546705
+-- root dump of payload 546705 (AT_EXECFN) --
+### procdump tag=root-r2-stealth-b pid=546705 uid=0
+cmdline.len=13
+cmdline.hex=72322d737465616c74682d6200
+cmdline.text='r2-stealth-b|'
+comm='r2-stealth-b'
+environ.open=OK
+environ.len=0
+environ.keys=
+auxv.open=OK
+mem.open=OK
+auxv.entries=23 AT_EXECFN=0x7fae20c74010
+auxv.execfn_string='r2-stealth-b'
+exe.readlink='/memfd:r2-stealth-b (deleted)'
+exe.open=OK
+maps.lines=29
+maps| 5617ca361000-5617ca380000 r--p 00000000 00:01 4872                       /memfd:r2-stealth-b (deleted)
+maps| 5617ca380000-5617ca418000 r-xp 0001e000 00:01 4872                       /memfd:r2-stealth-b (deleted)
+maps| 5617ca418000-5617ca41c000 r--p 000b5000 00:01 4872                       /memfd:r2-stealth-b (deleted)
+maps| 5617ca41c000-5617ca41e000 rw-p 000b8000 00:01 4872                       /memfd:r2-stealth-b (deleted)
+status.TracerPid:	546704
+status.Uid:	1000	1000	1000	1000
+status.CoreDumping:	0
+status.NoNewPrivs:	1
+status.Seccomp_filters:	2
+fd.open=OK
+fd.count=3
+### end tag=root-r2-stealth-b pid=546705
+-- stderr/stdout captured from the run so far (trade line, renamer print) --
+pmask: --stealth: /proc uses hidepid=off; --no-dumpable is applied, so a same-uid reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES refusals are themselves a signal.
+pmask: warning: pid 546705: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+renamer-comm=r2-stealth-b
+STOP verified: 0 label processes remain
+-- captured output after stop --
+pmask: --stealth: /proc uses hidepid=off; --no-dumpable is applied, so a same-uid reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES refusals are themselves a signal.
+pmask: warning: pid 546705: cannot redirect a rename to the label; the rename is refused so comm keeps the label
+renamer-comm=r2-stealth-b
+
+===== CONTROL RUN 1 (no pmask): renamer self-rename is visible =====
+comm@0.2s=pmask-testcases
+comm@1.7s=other
+-- same-uid open shape of the plain process --
+uidprobe tag=control1 pid=547120 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+-- payload output --
+renamer-comm=other
+
+===== CONTROL RUN 2 (no pmask): renamer self-rename is visible =====
+comm@0.2s=pmask-testcases
+comm@1.7s=other
+-- same-uid open shape of the plain process --
+uidprobe tag=control2 pid=547130 uid=1000
+readdir.present=True
+stat(/proc/PID)=OK
+open(/proc/PID/status)=OK
+open(/proc/PID/cmdline)=OK
+open(/proc/PID/environ)=OK
+open(/proc/PID/maps)=OK
+open(/proc/PID/auxv)=OK
+open(/proc/PID/mem)=OK
+listdir(/proc/PID/fd)=OK
+kill(pid,0)=OK
+-- payload output --
+renamer-comm=other
+
+===== RESIDUE CHECK =====
+none

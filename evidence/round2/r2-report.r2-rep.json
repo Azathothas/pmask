@@ -1,0 +1,17 @@
+{
+  "mode": "redact",
+  "mode_reason": "",
+  "ptrace": true,
+  "payload_dumpable": true,
+  "hide_pid": false,
+  "encrypt_memory": false,
+  "block_secretmem": false,
+  "hardening": "locked+secret_mem",
+  "exit": {"code": 137, "signal": 9},
+  "execs": {"total": 1, "degraded": 0, "detached": 0, "sized": 1, "sized_skipped": 0, "secret_close_failed": 0, "block_anonymous": 0, "dontdump_failed": 0, "dumpable_failed": 0},
+  "secrets": [
+    {"name": "S", "locked": true, "secret_mem": true, "fd": 3}],
+  "notes": [
+    "a literal: or env: secret value is in pmask's own argv or environment, and the kernel audit log, the shell history and any wrapper's argv keep a copy of it",
+    "secret 'S' uses literal:; the value was briefly in this process's argv or environment before the supervisor masked its own /proc entry"]
+}

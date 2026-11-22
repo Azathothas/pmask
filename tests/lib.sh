@@ -238,6 +238,55 @@ wait_comm_exe() {
     echo "$n"
 }
 
+# payload_pid COMM-PREFIX EXE-BASENAME [SECONDS]
+# Print the pid of the payload: comm starts with COMM-PREFIX *and*
+# /proc/<pid>/exe names EXE-BASENAME.  The supervisor applies the same
+# label to itself, so a scan for the comm alone returns the tracer first
+# (its pid is lower than the child's) and a fragment that measures that
+# pid asserts nothing about the payload.  Polls for up to SECONDS
+# (default 5); returns 1 when no such process appears.
+payload_pid() {
+    pp_comm="$1"; pp_exe="$2"; pp_wait="${3:-5}"
+    pp_end=$(( $(date +%s 2>/dev/null || echo 0) + pp_wait ))
+    while :; do
+        for pp_d in /proc/[0-9]*; do
+            case "$(cat "$pp_d/comm" 2>/dev/null)" in
+                "$pp_comm"*) ;;
+                *) continue ;;
+            esac
+            case "$(readlink "$pp_d/exe" 2>/dev/null)" in
+                */"$pp_exe") echo "${pp_d#/proc/}"; return 0 ;;
+            esac
+        done
+        pp_now=$(date +%s 2>/dev/null || echo 99999999999)
+        [ "$pp_now" -ge "$pp_end" ] && return 1
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+}
+
+# child_pid PARENT [SECONDS]
+# Print the pid of a direct child of PARENT.  `payload_pid` needs the
+# payload's exe, and a non-dumpable payload (one holding a secret) hides
+# /proc/<pid>/exe from a same-uid reader, so the parent relation is the
+# only way to name it.  Polls for up to SECONDS (default 5); returns 1
+# when the parent has no child.
+child_pid() {
+    cp_parent="$1"; cp_wait="${2:-5}"
+    cp_end=$(( $(date +%s 2>/dev/null || echo 0) + cp_wait ))
+    while :; do
+        for cp_d in /proc/[0-9]*; do
+            cp_stat=$(cat "$cp_d/stat" 2>/dev/null) || continue
+            # comm may contain spaces and parentheses, so split after the
+            # last ')' and take the field after state: ppid.
+            cp_ppid=$(printf '%s' "$cp_stat" | sed 's/.*) [A-Z] //' | cut -d' ' -f1)
+            [ "$cp_ppid" = "$cp_parent" ] && { echo "${cp_d#/proc/}"; return 0; }
+        done
+        cp_now=$(date +%s 2>/dev/null || echo 99999999999)
+        [ "$cp_now" -ge "$cp_end" ] && return 1
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+}
+
 # environ_hits MARKER
 # Count processes whose /proc environ contains MARKER (own shell excluded).
 environ_hits() {
@@ -254,7 +303,7 @@ environ_hits() {
 # unique marker for this run
 fresh_marker() {
     dd if=/dev/urandom bs=6 count=1 2>/dev/null | base64 2>/dev/null | tr -dc 'a-zA-Z0-9'
-    echo -n ""
+    printf ''
 }
 
 # ------------------------------------------------- root observer (issue 35)
@@ -298,7 +347,7 @@ root_peer_observer() {
 # ---------------------------------------------------------------- binaries
 # refresh_bins: make tests/{pmask,pmaskd,testcases,protocases} current.
 #   1. TESTBIN_DIR set: copy the prebuilt binaries from there.
-#   2. cargo present: always run `cargo build --release --bins --features testbins` (a no-op
+#   2. cargo present: always run `cargo build --release --bins --features testbins,test-hooks` (a no-op
 #      when fresh) and copy; cargo decides what is stale.
 #   3. otherwise (the VM): use the binaries already in this directory.
 # Returns 1 with a FATAL line when a required binary is missing.
@@ -330,12 +379,13 @@ refresh_bins() {
         done
         [ -x "$TESTBIN_DIR/testcases32" ] && install_bin "$TESTBIN_DIR/testcases32" testcases32
     elif command -v cargo >/dev/null 2>&1 && [ -f "$root/Cargo.toml" ]; then
-        (cd "$root" && cargo build --release --bins --features testbins) \
+        (cd "$root" && cargo build --release --bins --features testbins,test-hooks) \
             || { echo "FATAL: cargo build failed" >&2; return 1; }
+        target_dir="${CARGO_TARGET_DIR:-$root/target}"
         for pair in $BIN_PAIRS; do
             src=${pair%%:*}; dst=${pair##*:}
-            [ -x "$root/target/release/$src" ] || continue
-            install_bin "$root/target/release/$src" "$dst" || return 1
+            [ -x "$target_dir/release/$src" ] || continue
+            install_bin "$target_dir/release/$src" "$dst" || return 1
         done
         # Cargo decides what is stale.  A per-binary mtime comparison
         # against every src/*.rs file is wrong: pmaskd does not depend

@@ -2,91 +2,76 @@
 
 ## Report a vulnerability
 
-Do not open a public issue for a vulnerability. Use the private report
-of GitHub: open <https://github.com/Azathothas/pmask/security/advisories/new>
-and include:
+Do not open a public issue for a vulnerability.
+Open a private GitHub security advisory at <https://github.com/Azathothas/pmask/security/advisories/new>.
+Include four items in your report:
 
-- the version (`pmask --version`) and the system (`uname -a`);
-- the output of `pmask probe`;
-- the steps that show the fault;
-- what an attacker can do, and what the attacker must have first.
+- The version (`pmask --version`) and kernel (`uname -a`).
+- The output of `pmask probe`.
+- The exact steps that reproduce the fault.
+- What an attacker gains and what access the attacker needs first.
 
-The maintainer replies in the report. A fix comes in a new release, and
-the report becomes a public advisory after the release.
+The maintainer responds inside the private advisory.
+The maintainer ships the fix in a new release and publishes the advisory after the release.
 
 ## Supported versions
 
-Only the latest release and `main` get fixes. A prerelease (a tag with a
-suffix, for example `v0.1.0-beta.3`) is replaced by the next release.
+Only the latest release and `main` receive security fixes.
+A stable release such as `v0.1.0` replaces prior prerelease tags (tags with a suffix such as `v0.1.0-beta.5`).
 
 ## What pmask does not protect
 
-The limit table in `README.md` is the contract. In particular:
+The limit table in `README.md` defines the security contract.
+Keep these boundaries in mind:
 
-- Root on the host sees that a pid exists and can read its memory.
-- `cmdline` and `comm` are readable by every local account.
-- `environ`, `exe`, `maps`, `fd/*` and `cwd` are readable by the same uid
-  unless `--no-dumpable` is set.
-- The real argv and environment live in the tracee's memory; a same-uid
-  ptrace reader recovers them.
-- A `--secret` descriptor is readable through `/proc/<pid>/fd/N` unless
-  the payload is non-dumpable. `--secret-burn` narrows the window for a
-  reader that cooperates; a reader that keeps a copy defeats it.
-- `--detach` gives up later-exec coverage.
-- A `#!` script has a post-exec window. `tests/compare.sh` prints its
-  duration on the host that runs it.
-- A `literal:` secret travels in pmask's own argv until the self-mask
-  runs, and the kernel audit subsystem writes the exec record
-  (`type=EXECVE` and `type=PROCTITLE`) before that point. The value stays
-  in the audit log for the retention of the log, in the
-  `/proc/<pid>/cmdline` of a wrapper such as `sudo` for the wrapper's
-  life, and in the interactive shell's history file. An `env:` source is
-  in the caller's environment, which the shell and the wrapper already
-  hold. `file:`, `agent:` and `stdin` keep the value out of the command
-  line, and `--args-from-fd` keeps the payload's argument vector out of
-  it.
-- `--keep-env` re-exposes the whole environment and `--keep-env=NAME`
-  re-exposes the named values. A secret in either is readable by the same
-  uid.
+- Root on the host sees every pid and can read its memory.
+- Every local account can read `/proc/<pid>/cmdline` and `/proc/<pid>/comm`.
+- Same-uid observers can read `environ`, `exe`, `maps`, `fd/*`, and `cwd` unless `--no-dumpable` is set.
+- Real argv and environment strings live in tracee memory. A same-uid ptrace reader recovers them unless `--no-dumpable` blocks attach.
+- `--secret` runs in redact mode enable `--no-dumpable` on the payload and supervisor by default (`--allow-dumpable` opts out). When the payload is dumpable, a same-uid peer can read `/proc/<pid>/fd/N`.
+- `--secret-burn` narrows the read window for a cooperating reader. A reader that retains a copy defeats truncation.
+- `--detach` ends supervision after the first exec, leaving later execs unredacted.
+- `#!` scripts have a short post-exec redaction window unless `--strict-exec` refuses them. Run `tests/compare.sh` to measure the window on your host.
+- A `literal:` secret travels in `pmask`'s own argv until self-masking runs. The kernel audit subsystem records `type=EXECVE` and `type=PROCTITLE` before self-masking. That value persists in audit logs, wrapper `cmdline` entries such as `sudo`, and shell history.
+- An `env:` secret already exists in the caller's environment. Use `file:`, `agent:`, or `stdin` to keep secrets off the command line, and use `--args-from-fd` to keep payload arguments off the command line.
+- `--keep-env` exposes the full environment and `--keep-env=NAME` exposes named variables. Same-uid observers can read any secret placed in those variables.
 
 ## The daemon
 
-`--allow-uid` lets that uid execute arbitrary programs with the daemon's
-privileges and inherit its environment. Grant it only to uids that may
-already do that. The socket is mode 0600; authorisation is
-`SO_PEERCRED`; the client checks the peer uid of the socket it connected
-to. On a root daemon, `--run-as-uid` runs each job with the client's own
-uid and gid.
+`--allow-uid` permits the listed uid to run arbitrary programs with `pmaskd`'s privileges and environment.
+Grant `--allow-uid` only to uids already trusted with that access.
+`pmaskd` creates its socket with mode 0600 by default and authorizes clients via `SO_PEERCRED`.
+The client verifies the daemon's peer uid before sending a request.
+On a root daemon, pass `--run-as-uid` to run each job under the client's uid and gid.
 
-The socket path is visible in `/proc/net/unix` and `ss -x` to every uid,
-even when the node is 0600 inside a 0700 directory and connecting is
-refused. The PING reply has two bodies. The daemon's own uid and root get
-the policy: the job slots, the environment variable count, the allowed
-uids, the socket mode, the timeouts, the peer identity and the peer uid.
-Another uid the daemon authorises gets `protocol`, `detail=reduced`,
-`label`, `uid` and `run_as_uid`, because it may run a job and needs to
-frame one. No field in either body carries an environment value.
+Every local uid can see the socket path in `/proc/net/unix` and `ss -x`, even when the socket is mode 0600 inside a mode 0700 directory.
+The `PING` reply returns two detail levels:
+
+- The daemon's own uid and root receive the full policy: job slots, environment variable count, allowed uids, socket mode, timeouts, peer-identity method, and peer uid.
+- Another uid admitted by `--allow-uid` receives only `protocol`, `detail=reduced`, `label`, `uid`, and `run_as_uid`.
+
+Neither reply includes environment variable values.
 
 ## Secrets
 
-The store is Argon2id + ChaCha20-Poly1305, mode 0600. `pmask agent`
-holds the unlocked store, not `pmaskd`. `--secret` values never enter the
-child's argv or environ; the descriptor caveat above applies. The
-caller's side is separate: a `literal:` value is in pmask's own argv and
-in the audit log and the shell history, as listed under what pmask does
-not protect. The agent's use-audit line has no value field: it carries
-the time, the secret name, the peer pid and executable, and the lease id,
-and `tests/lease.sh` asserts that the value is not in it.
+The encrypted store uses Argon2id and XChaCha20-Poly1305 in a mode 0600 file.
+`pmask agent` holds the unlocked store in memory. `pmaskd` does not open the store.
+`--secret` values never enter the child's `argv` or `environ`.
+The caller-side caveats listed above still apply to `literal:` and `env:` sources.
+The agent's hash-chained audit record omits secret values.
+Each audit line logs the timestamp, secret name, peer pid, peer executable, and lease id.
+`tests/lease.sh` verifies that secret values never appear in audit records.
 
 ## Dependencies
 
-`.github/workflows/deny.yml` runs `cargo deny` on each push and each day:
-advisories, licenses, bans and sources (`deny.toml`). Dependabot opens
-crate and action updates weekly. The crate is 0BSD and every dependency
-must be permissive.
+`.github/workflows/deny.yml` runs `cargo deny` on every push and on a daily schedule.
+The workflow checks advisories, licenses, bans, and sources against `deny.toml`.
+Dependabot opens weekly updates for crates and GitHub Actions.
+`pmask` uses the 0BSD license, and every dependency must use a permissive license.
 
 ## Known gaps
 
-No third-party audit. The fuzz target covers the store header only.
-Linux 5.3 or newer, x86-64 or aarch64. The release binaries are static
-musl for x86-64 and ARM64; the other architectures are not shipped.
+`pmask` has not undergone an external third-party security audit.
+The fuzz target currently covers only the store header parser.
+Supported platforms are Linux 5.3 or newer on x86-64 and aarch64.
+Release artifacts ship static musl binaries for x86-64 and ARM64 only.

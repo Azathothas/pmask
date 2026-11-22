@@ -6,24 +6,26 @@
 #   default (exact) mode:
 #     cmdline            == label + one NUL            (len == len(label)+1)
 #     arg_end - arg_start == the cmdline byte count
-#     env_start == env_end                             (zero environment span)
+#     arg_end == env_start, and the environment window is a non-zero
+#                          decoy (PATH/HOME/LANG/TERM), never a run of NULs
 #     comm               == the label cut to 15 bytes
 #
 #   --no-exact:
-#     cmdline carries one NUL per argument slot plus the label, and the
-#     environment one NUL per variable; the extent is not relocated.
+#     cmdline carries the label and one final NUL, and the environment
+#     window holds a plausible decoy; the extent is not relocated.
 #
 # The report also refutes a rule the project's own research stated
 # ("cmdline shorter than the stat span"), so the negative control here is
 # an ordinary process: its span equals its cmdline length too, and its
 # environment span is non-zero.  That is what makes the conjunction
-# (one NUL + equal span + zero env span) the discriminating rule rather
-# than any single clause.
+# (one NUL + equal span + a plausible environment) the discriminating rule
+# rather than any single clause.  A zero environment span was the beta.4
+# shape and is itself the anomaly: no ordinary process has one.
 #
 # Cases:
 #   W1 control: an unmasked /bin/sleep has many NULs and a non-zero env span
 #   W2 default: cmdline == label+NUL, arg span == that length
-#   W3 default: env_start == env_end
+#   W3 default: arg_end == env_start, and the env window is a decoy
 #   W4 default: comm == the label, and >15 bytes are cut to 15
 #   W5 default: comm is the label, cut to 15 bytes
 #   W6 a 20-byte label: comm is 15 bytes, cmdline carries all 20
@@ -95,6 +97,11 @@ env_nuls() { tr -cd '\0' < "/proc/$1/environ" 2>/dev/null | wc -c; }
 spans() {
     awk '{sub(/.*\) /,""); print $47 - $46, $49 - $48}' "/proc/$1/stat" 2>/dev/null
 }
+# arg_end and env_start as absolute addresses: the argv window must end
+# exactly where the environment window begins.
+bounds() {
+    awk '{sub(/.*\) /,""); print $47, $48}' "/proc/$1/stat" 2>/dev/null
+}
 
 # ------------------------- W1: control, an ordinary process
 env -i PATH=/usr/bin:/bin FOO=bar /bin/sleep 300 >/dev/null 2>&1 &
@@ -135,10 +142,16 @@ EOT
     else
         fail "w3-arg-span-equals-cmdline (span=$as bytes=$cb)"
     fi
-    if [ "$es" = 0 ]; then
-        pass "w4-env-span-collapsed (span=$es)"
+    eb=$(env_bytes "$PAY"); en=$(env_nuls "$PAY")
+    read -r ae ev <<EOT
+$(bounds "$PAY")
+EOT
+    # The environment window is a decoy, not a hole: arg_end meets
+    # env_start, the span is non-zero, and environ is not a NUL run.
+    if [ "$es" -gt 0 ] && [ "$ae" = "$ev" ] && [ "$eb" = "$es" ] && [ "$en" -lt "$eb" ]; then
+        pass "w4-env-window-is-a-decoy (span=$es arg_end=$ae env_start=$ev envbytes=$eb envnuls=$en)"
     else
-        fail "w4-env-span-collapsed (span=$es, want 0)"
+        fail "w4-env-window-is-a-decoy (span=$es arg_end=$ae env_start=$ev envbytes=$eb envnuls=$en)"
     fi
     if [ "$comm" = "$L" ]; then
         pass "w5-comm-is-the-label (comm=$comm)"
@@ -180,10 +193,10 @@ if start -; then
     read -r as es <<EOT
 $(spans "$PAY")
 EOT
-    if [ "$cb" = 1 ] && [ "$cn" = 1 ] && [ "$as" = 1 ] && [ "$es" = 0 ]; then
+    if [ "$cb" = 1 ] && [ "$cn" = 1 ] && [ "$as" = 1 ] && [ "$es" -gt 0 ]; then
         pass "w8-label-empty-arithmetic (bytes=$cb nuls=$cn argspan=$as envspan=$es)"
     else
-        fail "w8-label-empty-arithmetic (bytes=$cb nuls=$cn argspan=$as envspan=$es, want 1/1/1/0)"
+        fail "w8-label-empty-arithmetic (bytes=$cb nuls=$cn argspan=$as envspan=$es, want 1/1/1/>0)"
     fi
     stop
 else
@@ -191,18 +204,13 @@ else
     stop
 fi
 
-# ------------------------- W10: --no-exact, the count rule
-# Measured on this build: the `--no-exact` path does NOT relocate its
-# window.  It re-reads the kernel's copied strings (the post-exec code
-# path) and places them in a hidden mapping; it then zeroes the kernel
-# argv/env spans (the same span the kernel just used to copy), so the
-# visible space becomes a sequence of empty slots with their NUL bytes.
-# The rule is: cmdline == label + one NUL per argument slot (argc+1 total).
-# A control run (no pmask) has more NULs because the kernel copied the
-# full strings.
-#
-# For the ELF entry path, pmask also builds a hidden block and rewrites
-# the visible spans to zeros except for the label+null at the start.
+# ------------------------- W10: --no-exact, the presentation rule
+# The `--no-exact` path does NOT relocate its window.  It re-reads the
+# kernel's copied strings, places them in a hidden mapping, and then
+# presents the original extent as one command line: the label, spaces,
+# and a single final NUL.  The environment gets a plausible decoy (or
+# the --keep-env variables), not an all-NUL block.  The old shape, one
+# NUL per argument slot, was a fingerprint.
 A1=$(printf 'a%.0s' $(seq 40))
 A2=$(printf 'b%.0s' $(seq 40))
 A3=$(printf 'c%.0s' $(seq 40))
@@ -220,16 +228,35 @@ while [ $i -lt 40 ]; do
 done
 if [ -n "$PAY" ]; then
     cb=$(cmd_bytes "$PAY"); cn=$(cmd_nuls "$PAY")
-    argc=5   # payload arguments: sleeper QAMARK A1 A2 A3
-    if [ "$cn" = "$((argc + 1))" ]; then
-        pass "w10-no-exact-one-nul-per-arg-slot (nuls=$cn argcount=$argc)"
+    eb=$(env_bytes "$PAY"); en=$(env_nuls "$PAY")
+    read -r asp esp <<EOT
+$(spans "$PAY")
+EOT
+    if [ "$cn" = 1 ]; then
+        pass "w10-no-exact-single-nul (nuls=$cn)"
     else
-        fail "w10-no-exact-one-nul-per-arg-slot (nuls=$cn, want $((argc + 1)))"
+        fail "w10-no-exact-single-nul (nuls=$cn, want 1)"
     fi
-    if [ "$cb" = "$(( ${#L9} + argc + 1 ))" ]; then
-        pass "w10-cmdline-bytes=label+NUL-count (bytes=$cb)"
+    if [ "$cb" = "$asp" ]; then
+        pass "w10-cmdline-bytes=argspan (bytes=$cb span=$asp)"
     else
-        fail "w10-cmdline-bytes=label+NUL-count (bytes=$cb, want $(( ${#L9} + argc + 1 )))"
+        fail "w10-cmdline-bytes=argspan (bytes=$cb span=$asp)"
+    fi
+    if [ "$(head -c "${#L9}" "/proc/$PAY/cmdline")" = "$L9" ]; then
+        pass "w10-cmdline-starts-with-the-label"
+    else
+        fail "w10-cmdline-starts-with-the-label"
+    fi
+    tail_bytes=$(tail -c "+$(( ${#L9} + 1 ))" "/proc/$PAY/cmdline" | tr -d ' ' | wc -c)
+    if [ "$tail_bytes" = 1 ]; then
+        pass "w10-cmdline-tail-is-spaces-then-one-nul"
+    else
+        fail "w10-cmdline-tail-is-spaces-then-one-nul (non-space bytes=$tail_bytes)"
+    fi
+    if [ "$eb" = "$esp" ] && { [ "$eb" -le 1 ] || [ "$en" -lt "$eb" ]; }; then
+        pass "w10-environ-is-not-an-all-nul-block (bytes=$eb nuls=$en span=$esp)"
+    else
+        fail "w10-environ-is-not-an-all-nul-block (bytes=$eb nuls=$en span=$esp)"
     fi
     stop
 else

@@ -17,10 +17,17 @@ _pmask() {
         '--no-exit-kill[do not set PTRACE_O_EXITKILL]' \
         '--no-exitkill[alias for --no-exit-kill]' \
         '--no-dumpable[set PR_SET_DUMPABLE=0]' \
+        '--allow-dumpable[keep the payload dumpable when a secret is delivered]' \
+        '--strict-exec[refuse exec shapes that cannot be redacted at entry]' \
+        '--allow-foreign[run a 32-bit image unredacted]' \
+        '--hide-pid[hide the tree from same-uid /proc readers]' \
+        '--encrypt-memory[seal at-rest copies (memfd_secret key) and mark block MADV_DONTDUMP]' \
+        '--stealth[compose --rexec, --watch-rename and the best dumpable choice]' \
         '--no-new-privs[set no_new_privs]' \
         '--no-exact[keep the original cmdline byte extent]' \
         '--detach[detach each tracee after its exec; TracerPid reads 0]' \
         '--watch-rename[revert later renames to the label]' \
+        '--watch-rename=-[revert later renames with strict write traps]:mode:(strict)' \
         '--rexec[exec from a sealed memfd]' \
         '--image[read the program bytes from PATH; - reads stdin]:path:_files' \
         '--image-from-fd[read the program bytes from a descriptor]:fd:' \
@@ -54,7 +61,25 @@ _pmask() {
         '(-K)'-K'[alias for --no-exit-kill]' \
         '(-f)'-f'[accepted for compatibility, no effect]' \
         '(-c)'-c'[accepted for compatibility, no effect]' \
+        '1:subcommand or command:_pmask_subcmd' \
         '*::command:_normal'
+}
+
+_pmask_subcmd() {
+    local -a subcmds
+    subcmds=(
+        'run:run a command (same parser as the default mode)'
+        'store:manage the encrypted secret store'
+        'agent:hold the store unlocked and serve it'
+        'get:ask a running agent for one secret'
+        'read:print a secret delivered to this process'
+        'probe:report what this host allows'
+        'doctor:report store, agent and guarantee verdict'
+        'help:print help'
+        'version:print version'
+    )
+    _describe -t subcommands 'pmask subcommand' subcmds
+    _command_names -e
 }
 
 _pmask "$@"

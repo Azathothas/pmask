@@ -161,8 +161,17 @@ else
 fi
 if [ -n "$d3b_pid" ]; then
     job_len=$(wc -c < "/proc/$d3b_pid/environ" 2>/dev/null | tr -d ' ')
-    [ "$job_len" = 0 ] && pass "d3b-daemon-job-environ-is-redacted" \
-        || fail "d3b-daemon-job-environ-is-redacted ($job_len bytes, want 0)"
+    if [ -z "$job_len" ]; then
+        pass "d3b-daemon-job-environ-is-refused"
+    else
+        job_has_secret=0
+        cat "/proc/$d3b_pid/environ" 2>/dev/null | tr '\0' '\n' | grep -qF -- "$SECRET" && job_has_secret=1
+        if [ "$job_len" -gt 0 ] && [ "$job_has_secret" = 0 ]; then
+            pass "d3b-daemon-job-environ-is-decoy ($job_len bytes, no secret)"
+        else
+            fail "d3b-daemon-job-environ-is-decoy ($job_len bytes, secret=$job_has_secret)"
+        fi
+    fi
 else
     fail "d3b-daemon-job-not-found (no payload with comm $D3B_LABEL15)"
 fi
@@ -340,11 +349,15 @@ if [ -n "$d7_child" ]; then
     # read the whole value.  This is the documented hazard: the child is
     # dumpable after exec, so a peer of the same uid can read the value
     # of any descriptor it keeps open.  The seal only stops mutations.
-    SZ=$(cat "/proc/$d7_child/fd/3" 2>/dev/null | wc -c | tr -d ' ')
-    if [ "$SZ" = "$LEN" ]; then
-        pass d8-same-uid-can-read-fd3-documented-hazard
+    if [ "$(id -u)" = 0 ]; then
+        skip "d8-same-uid-fd3-is-refused (root is not a same-uid peer)"
     else
-        fail "d8-same-uid-can-read-fd3-documented-hazard (read $SZ bytes, want $LEN)"
+        SZ=$(cat "/proc/$d7_child/fd/3" 2>/dev/null | wc -c | tr -d ' ')
+        if [ "$SZ" != "$LEN" ]; then
+            pass d8-same-uid-fd3-is-refused
+        else
+            fail "d8-same-uid-fd3-is-refused (read $SZ bytes; the value must not be readable)"
+        fi
     fi
 
     # D7b: the same-uid environ view.  The payload's environ window is
@@ -365,8 +378,17 @@ if [ -n "$d7_child" ]; then
     else
         fail "d7b-control-environ-is-readable (len=[$ctl_len])"
     fi
-    [ "$child_len" = 0 ] && pass "d7b-payload-environ-is-redacted" \
-        || fail "d7b-payload-environ-is-redacted ($child_len bytes, want 0)"
+    if [ -z "$child_len" ]; then
+        pass "d7b-payload-environ-is-refused"
+    else
+        child_has_secret=0
+        cat "/proc/$d7_child/environ" 2>/dev/null | tr '\0' '\n' | grep -qF -- "$SECRET" && child_has_secret=1
+        if [ "$child_len" -gt 0 ] && [ "$child_has_secret" = 0 ]; then
+            pass "d7b-payload-environ-is-decoy ($child_len bytes, no secret)"
+        else
+            fail "d7b-payload-environ-is-decoy ($child_len bytes, secret=$child_has_secret)"
+        fi
+    fi
     if [ "$(id -u)" = 0 ]; then
         # root reads a non-dumpable process's environ; it is not the
         # same-uid peer the row is about.  The payload row above still

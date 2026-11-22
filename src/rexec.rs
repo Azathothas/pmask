@@ -75,6 +75,17 @@ pub struct Image {
     pub note: Option<String>,
     /// The named temporary file, when the carrier needed a name.
     pub path: Option<PathBuf>,
+    /// `(ctime, ctime_nsec)` of the carrier inode at the moment its bytes
+    /// were finished.  A same-uid writer can rewrite the named carrier in
+    /// place without changing its device, inode or length, and both readers
+    /// in `verify_carrier` then see the same modified bytes; the status
+    /// change time is the only record that the bytes moved.  An unprivileged
+    /// writer cannot set it back.
+    pub stamp: Option<(i64, i64)>,
+    /// Write end of the carrier reaper pipe, when a named carrier spawned a
+    /// double-forked reaper.  Closing it on drop signals the reaper to
+    /// unlink the carrier (if still present) and exit cleanly.
+    pub(crate) reaper_fd: Option<RawFd>,
 }
 
 impl Drop for Image {
@@ -88,6 +99,14 @@ impl Drop for Image {
         }
         if let Some(path) = &self.path {
             let _ = std::fs::remove_file(path);
+        }
+        if let Some(wr) = self.reaper_fd.take() {
+            if wr >= 0 {
+                // SAFETY: the reaper pipe write end is owned by this value.
+                unsafe {
+                    libc::close(wr);
+                }
+            }
         }
     }
 }
@@ -501,6 +520,8 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         backing: Backing::Memfd,
         note: None,
         path: None,
+        stamp: None,
+        reaper_fd: None,
     })
 }
 
@@ -532,6 +553,8 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 cause
             )),
             path: None,
+            stamp: None,
+            reaper_fd: None,
         })
     };
     let huge = match huge_memfd(name) {
@@ -550,6 +573,8 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 },
                 note: None,
                 path: None,
+                stamp: None,
+                reaper_fd: None,
             })
         }
         Err(e) => {
@@ -569,6 +594,8 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             backing,
             note,
             path: None,
+            stamp: None,
+            reaper_fd: None,
         }),
         Err(e) if matches!(backing, Backing::HugeTlb { .. }) => {
             // A hugetlb memfd can be created while the pool is empty; the
@@ -591,6 +618,8 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
                 backing: Backing::Memfd,
                 note,
                 path: None,
+                stamp: None,
+                reaper_fd: None,
             })
         }
         Err(e) => {
@@ -631,10 +660,27 @@ pub fn relocate(image: &mut Image, min: RawFd) -> io::Result<()> {
     // SAFETY: duplicating our own descriptor.
     let hi = unsafe { libc::fcntl(image.fd, libc::F_DUPFD, min) };
     if hi < 0 {
-        return Err(with_context(
-            io::Error::last_os_error(),
-            "cannot move the image above the secret descriptors",
-        ));
+        let e = io::Error::last_os_error();
+        // `F_DUPFD` fails `EINVAL` when `min` is at or above the limit.
+        // Naming the limit and the required value is the difference
+        // between a usable diagnosis and "the secret descriptors".
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into our struct.
+        let have = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0;
+        let detail = if have && e.raw_os_error() == Some(libc::EINVAL) {
+            format!(
+                "cannot place the image at fd {}: RLIMIT_NOFILE is {}, need at least {}",
+                min,
+                lim.rlim_cur,
+                min as u64 + 1
+            )
+        } else {
+            "cannot move the image above the secret descriptors".to_string()
+        };
+        return Err(with_context(e, &detail));
     }
     // SAFETY: the duplicate is ours.
     let rc = unsafe { libc::fcntl(hi, libc::F_SETFD, libc::FD_CLOEXEC) };
@@ -662,7 +708,10 @@ const CACHE_MAX: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Key {
     path: PathBuf,
+    dev: u64,
+    ino: u64,
     mtime: (i64, i64),
+    ctime: (i64, i64),
     size: u64,
     hugetlb: bool,
     /// `--memfd-name`.  Two sessions sharing one cache with different
@@ -671,17 +720,36 @@ struct Key {
     memfd_name: Option<String>,
 }
 
-/// A bounded cache of sealed images keyed by resolved path and mtime.
+impl Key {
+    fn from_metadata(path: &Path, md: &std::fs::Metadata, opts: &Options) -> Key {
+        Key {
+            path: path.to_path_buf(),
+            dev: md.dev(),
+            ino: md.ino(),
+            mtime: (md.mtime(), md.mtime_nsec()),
+            ctime: (md.ctime(), md.ctime_nsec()),
+            size: md.size(),
+            hugetlb: opts.hugetlb,
+            memfd_name: opts.memfd_name.clone(),
+        }
+    }
+}
+
+/// A bounded cache of sealed images keyed by resolved path, inode identity,
+/// timestamps and size.
 ///
 /// The cache is shared by the builder (the first exec) and the tracer
 /// (later execs under `--exec-once`).  It holds the image descriptors
 /// open, so a later exec of the same file reuses the same inode instead
-/// of copying the bytes again.  The tracer uses [`Cache::get_temp`],
-/// because the non-dumpable supervisor cannot hand its memfd to the
-/// tracee.
+/// of copying the bytes again.  The tracer uses [`Cache::get_temp`] for a
+/// later exec: the image descriptor is `FD_CLOEXEC` and the tracee has
+/// no copy after its first exec, so the cached bytes are materialised as
+/// a guarded temporary file the tracee can name.
 #[derive(Debug, Default)]
 pub struct Cache {
+    #[cfg(test)]
     entries: HashMap<Key, Arc<Image>>,
+    #[cfg(test)]
     order: VecDeque<Key>,
     temp_entries: HashMap<Key, Arc<Image>>,
     temp_order: VecDeque<Key>,
@@ -696,18 +764,14 @@ impl Cache {
     /// Return the cached image for `path`, or prepare and cache one.
     ///
     /// The path is the file as the tracee sees it; the caller resolves
-    /// `/proc/<pid>/root` and `/proc/<pid>/cwd` first.  The key is the
-    /// path plus the file's mtime and size, so a replaced file gets a new
+    /// `/proc/<pid>/root` and `/proc/<pid>/cwd` first.  The key binds the
+    /// path, device, inode, mtime, ctime and size, so replacing a source
+    /// binary even with an identical size and forged mtime produces a new
     /// image.
+    #[cfg(test)]
     pub fn get(&mut self, path: &Path, label: &str, opts: Options) -> io::Result<Arc<Image>> {
         let md = std::fs::metadata(path).map_err(|e| with_context(e, "stat program for rexec"))?;
-        let key = Key {
-            path: path.to_path_buf(),
-            mtime: (md.mtime(), md.mtime_nsec()),
-            size: md.size(),
-            hugetlb: opts.hugetlb,
-            memfd_name: opts.memfd_name.clone(),
-        };
+        let key = Key::from_metadata(path, &md, &opts);
         if let Some(img) = self.entries.get(&key) {
             return Ok(img.clone());
         }
@@ -737,14 +801,13 @@ impl Cache {
     /// entry.
     pub fn get_temp(&mut self, path: &Path, label: &str, opts: Options) -> io::Result<Arc<Image>> {
         let md = std::fs::metadata(path).map_err(|e| with_context(e, "stat program for rexec"))?;
-        let key = Key {
-            path: path.to_path_buf(),
-            mtime: (md.mtime(), md.mtime_nsec()),
-            size: md.size(),
-            hugetlb: opts.hugetlb,
-            memfd_name: opts.memfd_name.clone(),
-        };
+        let key = Key::from_metadata(path, &md, &opts);
         if let Some(img) = self.temp_entries.get(&key) {
+            // The path is the identity a later exec uses, and a same-uid
+            // process can rename over it.  A cache hit that no longer
+            // names these bytes is a refusal, not a reason to run
+            // attacker bytes under the label (issue 001).
+            verify_carrier(img)?;
             return Ok(img.clone());
         }
         let c = CString::new(path.as_os_str().as_bytes())
@@ -782,6 +845,236 @@ impl Cache {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+}
+
+/// Refuse a carrier whose path no longer names the cached inode and
+/// bytes.
+///
+/// The check is deliberately two-part.  The inode comparison catches a
+/// `rename` of a different file over the path; the byte comparison
+/// catches a write through a descriptor that keeps the inode.  A missing
+/// path is the same refusal: the image the session promised is gone.
+/// The status change time of an open carrier descriptor, as `verify_carrier`
+/// compares it.  `None` when the descriptor cannot be stat'ed; the carrier
+/// is then verified by identity and bytes alone.
+fn stamp_of(fd: RawFd) -> Option<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(format!("/proc/self/fd/{fd}")).ok()?;
+    Some((m.ctime(), m.ctime_nsec()))
+}
+
+fn verify_carrier(img: &Image) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(path) = &img.path else {
+        return Ok(());
+    };
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} is not readable: {}",
+                    path.display(),
+                    e
+                ),
+            )
+        })?;
+    let by_path = opened.metadata()?;
+    let by_fd = std::fs::metadata(format!("/proc/self/fd/{}", img.fd))?;
+    if by_path.dev() != by_fd.dev() || by_path.ino() != by_fd.ino() || by_path.len() != by_fd.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "--exec-once carrier {} was replaced; refusing to exec it",
+                path.display()
+            ),
+        ));
+    }
+    // A writer that modifies this inode in place leaves the device, the
+    // inode and the length alone, and both reads below would then compare
+    // the same new bytes.  The status change time is written by the kernel
+    // on every modification and cannot be set back without privilege.  A
+    // filesystem with coarse timestamps can hide a rewrite inside one tick;
+    // the identity comparison above still catches every change of file.
+    if let Some((ctime, ctime_nsec)) = img.stamp {
+        if by_path.ctime() != ctime || by_path.ctime_nsec() != ctime_nsec {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} was modified after it was written; refusing to exec it",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    let mut a = std::fs::File::open(format!("/proc/self/fd/{}", img.fd))?;
+    let mut b = opened;
+    let mut ba = [0u8; 65536];
+    let mut bb = [0u8; 65536];
+    loop {
+        let na = read_full(&mut a, &mut ba)?;
+        let nb = read_full(&mut b, &mut bb)?;
+        if na != nb || ba[..na] != bb[..nb] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "--exec-once carrier {} changed its bytes; refusing to exec it",
+                    path.display()
+                ),
+            ));
+        }
+        if na == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// Read until the buffer is full or EOF.
+fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
+    use std::io::Read;
+    let mut done = 0;
+    while done < buf.len() {
+        match f.read(&mut buf[done..]) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(done)
+}
+
+/// The `--exec-once` carrier is refused when the file at its path is no
+/// longer the bytes the descriptor holds.  Issue 64: the old cache bound
+/// metadata, so a same-uid writer could rewrite the carrier's contents
+/// without changing the file's device, inode or length.
+#[cfg(test)]
+mod carrier_tests {
+    use super::{verify_carrier, Backing, Image};
+    use std::io::Write;
+    use std::os::fd::IntoRawFd;
+    use std::path::{Path, PathBuf};
+
+    /// A directory holding one carrier file, removed on drop.
+    struct Carrier {
+        dir: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Carrier {
+        fn new(tag: &str, bytes: &[u8]) -> Carrier {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "pmask-carrier-{}-{}-{}",
+                tag,
+                std::process::id(),
+                nanos
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let path = dir.join("carrier");
+            std::fs::write(&path, bytes).expect("write carrier");
+            Carrier { dir, path }
+        }
+
+        /// An `Image` naming this file.  It owns the descriptor and unlinks
+        /// the file when it drops.
+        fn image(&self) -> Image {
+            use std::os::fd::AsRawFd;
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .open(&self.path)
+                .expect("open carrier");
+            let stamp = super::stamp_of(f.as_raw_fd());
+            Image {
+                fd: f.into_raw_fd(),
+                backing: Backing::Memfd,
+                note: None,
+                path: Some(self.path.clone()),
+                stamp,
+                reaper_fd: None,
+            }
+        }
+    }
+
+    impl Drop for Carrier {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn an_untouched_carrier_verifies() {
+        let c = Carrier::new("ok", b"#!/bin/sh\necho carried\n");
+        let img = c.image();
+        verify_carrier(&img).expect("an unmodified carrier verifies");
+    }
+
+    #[test]
+    fn a_replaced_inode_is_refused() {
+        let c = Carrier::new("swap", b"payload-bytes");
+        let img = c.image();
+        // A new inode at the same path, with the same length.
+        std::fs::remove_file(&c.path).expect("unlink");
+        std::fs::write(&c.path, b"evil-bytes!!!").expect("write replacement");
+        let e = verify_carrier(&img).expect_err("a replaced carrier is refused");
+        assert!(format!("{e}").contains("replaced"), "{e}");
+    }
+
+    #[test]
+    fn a_carrier_rewritten_in_place_is_refused() {
+        let c = Carrier::new("inplace", b"payload-bytes");
+        let img = c.image();
+        // Same inode and same length: the device, inode and size all match,
+        // so only the byte comparison can tell this from the original.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&c.path)
+            .expect("reopen carrier");
+        f.write_all(b"evil-bytes!!!").expect("rewrite");
+        f.sync_all().expect("sync");
+        drop(f);
+        let e = verify_carrier(&img).expect_err("an in-place rewrite is refused");
+        assert!(
+            format!("{e}").contains("modified after it was written"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_carrier_is_refused() {
+        let c = Carrier::new("link", b"payload-bytes");
+        let img = c.image();
+        let other = c.dir.join("other");
+        std::fs::write(&other, b"payload-bytes").expect("write other");
+        std::fs::remove_file(&c.path).expect("unlink");
+        std::os::unix::fs::symlink(&other, &c.path).expect("symlink");
+        let e = verify_carrier(&img).expect_err("a symlinked carrier is refused");
+        // O_NOFOLLOW refuses the link itself rather than following it.
+        assert!(format!("{e}").contains("not readable"), "{e}");
+    }
+
+    /// The path is optional: a memfd carrier has no file to re-read.
+    #[test]
+    fn a_carrier_without_a_path_verifies() {
+        let f = std::fs::File::open(Path::new("/dev/null")).expect("open /dev/null");
+        let img = Image {
+            fd: f.into_raw_fd(),
+            backing: Backing::Memfd,
+            note: None,
+            path: None,
+            stamp: None,
+            reaper_fd: None,
+        };
+        verify_carrier(&img).expect("a carrier with no path verifies");
     }
 }
 
@@ -847,8 +1140,17 @@ fn fill_temp(
         return Err(e);
     }
     // Sealing is best effort on filesystems that do not support it; the
-    // O_TMPFILE inode or the 0600 named file is the guard there.
-    let _ = seal(fd);
+    // O_TMPFILE inode or the 0700 named file and runtime verification are
+    // the guards there.  Record the failure as a note so callers can report
+    // the degradation visibly instead of dropping it silently (Invariant 13).
+    let mut note = match seal(fd) {
+        Ok(()) => None,
+        Err(e) => Some(format!(
+            "temporary-file carrier in {} could not be sealed ({}); guarded by mode 0700 and runtime verification",
+            dir.display(),
+            e
+        )),
+    };
     // A file open for writing refuses to exec (ETXTBSY), so the carrier
     // the child receives must be a read-only descriptor.
     let ro = match reopen_readonly(fd, &path) {
@@ -869,9 +1171,154 @@ fn fill_temp(
         backing: Backing::TempFile { dir, named },
         note: None,
         path,
+        stamp: stamp_of(ro),
+        reaper_fd: None,
     };
     relocate(&mut img, IMAGE_FD_MIN + 10)?;
+    if let Some(p) = &img.path {
+        // A namespace init or a shell does not clean up after SIGKILL.
+        // The reaper holds only the path and a pipe, and it is
+        // double-forked so it is not a child of this process and cannot
+        // be mistaken for the payload by the session's `waitpid(-1)`.
+        // `img.reaper_fd` owns the write end so dropping `img` closes it
+        // and terminates the reaper cleanly.
+        match spawn_carrier_reaper(p) {
+            Ok(wr) => img.reaper_fd = Some(wr),
+            Err(e) => {
+                let msg = format!(
+                    "temporary-file carrier reaper could not be started ({}); {} may remain after SIGKILL",
+                    e,
+                    p.display()
+                );
+                note = Some(match note {
+                    Some(prev) => format!("{}; {}", prev, msg),
+                    None => msg,
+                });
+            }
+        }
+    }
+    img.note = note;
     Ok(img)
+}
+
+/// Unlink `path` when the supervisor's pipe closes.
+///
+/// The intermediate child exits immediately; the grandchild is
+/// reparented to init and holds the read end.  The caller stores the
+/// returned write end (close-on-exec) on `Image`, so dropping `Image`,
+/// `SIGKILL`, or an abort closes it and the reaper removes the carrier
+/// and exits.  A clean session removes the file first and the reaper's
+/// `unlink` is a harmless `ENOENT`.
+fn spawn_carrier_reaper(path: &Path) -> io::Result<RawFd> {
+    // Unified Linux syscall number for `close_range` (Linux >= 5.9) across
+    // x86_64, aarch64 and i386.
+    const SYS_CLOSE_RANGE: libc::c_long = 436;
+
+    let mut fds = [0i32; 2];
+    // SAFETY: pipe2 writes two descriptors into a two-element array.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (rd, wr) = (fds[0], fds[1]);
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
+    bytes.push(0);
+    // SAFETY: the child only calls async-signal-safe syscalls.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        unsafe {
+            libc::close(rd);
+            libc::close(wr);
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        unsafe {
+            libc::close(wr);
+            // Move `rd` above stdio if the caller ran with closed fds 0..=2.
+            let mut rd = rd;
+            if rd <= 2 {
+                let moved = libc::fcntl(rd, libc::F_DUPFD_CLOEXEC, 3);
+                if moved >= 0 {
+                    libc::close(rd);
+                    rd = moved;
+                }
+            }
+            // Redirect stdin/stdout/stderr to `/dev/null` so the detached
+            // reaper never pins a caller's stdout/stderr pipe open.
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+            if devnull >= 0 {
+                for std_fd in 0..=2 {
+                    if std_fd != rd && devnull != std_fd {
+                        libc::dup2(devnull, std_fd);
+                    }
+                }
+                if devnull > 2 && devnull != rd {
+                    libc::close(devnull);
+                }
+            } else {
+                for std_fd in 0..=2 {
+                    if std_fd != rd {
+                        libc::close(std_fd);
+                    }
+                }
+            }
+            // The child must not keep the supervisor's descriptors: they
+            // can name secrets, the payload or the report.  Keep only
+            // `/dev/null` on stdio and the read end.
+            let closed_via_range = if rd > 3 {
+                let r1 = libc::syscall(SYS_CLOSE_RANGE, 3usize, (rd - 1) as usize, 0usize);
+                let r2 = libc::syscall(
+                    SYS_CLOSE_RANGE,
+                    (rd + 1) as usize,
+                    u32::MAX as usize,
+                    0usize,
+                );
+                r1 == 0 && r2 == 0
+            } else {
+                libc::syscall(
+                    SYS_CLOSE_RANGE,
+                    (rd + 1) as usize,
+                    u32::MAX as usize,
+                    0usize,
+                ) == 0
+            };
+            if !closed_via_range {
+                for fd in 3..4096 {
+                    if fd != rd {
+                        libc::close(fd);
+                    }
+                }
+            }
+            // Detach from the session's process group and lose the
+            // intermediate parent.
+            libc::setsid();
+            if libc::fork() != 0 {
+                libc::_exit(0);
+            }
+            let mut b = 0u8;
+            loop {
+                let n = libc::read(rd, (&mut b as *mut u8).cast(), 1);
+                if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if n <= 0 {
+                    break;
+                }
+            }
+            libc::unlink(bytes.as_ptr().cast());
+            libc::_exit(0);
+        }
+    }
+    unsafe { libc::close(rd) };
+    let mut status = 0i32;
+    loop {
+        let w = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if w == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
+    Ok(wr)
 }
 
 /// Reopen `fd` read-only, through the procfs magic link or the name.
@@ -902,6 +1349,14 @@ fn reopen_readonly(fd: RawFd, path: &Option<PathBuf>) -> io::Result<RawFd> {
 fn temp_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("TMPDIR") {
+        if !d.is_empty() {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    // The per-user runtime directory is mode 0700 and is the least
+    // exposed place a carrier can live; `/dev/shm` is world-writable
+    // (sticky) and is the first place a same-uid scanner looks.
+    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
         if !d.is_empty() {
             dirs.push(PathBuf::from(d));
         }
@@ -1335,7 +1790,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock");
         let t = libc::timespec {
-            tv_sec: (now.as_secs() + 10) as libc::time_t,
+            tv_sec: (now.as_secs() + 10) as _,
             tv_nsec: 0,
         };
         let c = CString::new(file.as_os_str().as_bytes()).expect("no NUL");
@@ -1347,6 +1802,95 @@ mod tests {
             .expect("second get");
         assert_ne!(first.fd, second.fd, "a changed mtime must be a new image");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Issue 64: replacing a source binary with another file of identical size
+    // and forged mtime must not serve a stale cached image.
+    #[test]
+    fn cache_key_catches_replaced_file_with_same_size_and_mtime() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let dir = std::env::temp_dir().join(format!("pmask-rexec-ino-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("prog");
+        let replacement = dir.join("prog.new");
+        std::fs::copy(&exe, &file).expect("copy");
+        let md1 = std::fs::metadata(&file).expect("stat first");
+        let mut cache = Cache::new();
+        let first = match cache.get(&file, "ino", Options::default()) {
+            Ok(i) => i,
+            Err(e) if skip_on_memfd_refusal(&e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                eprintln!("skip: memfd refused: {}", e);
+                return;
+            }
+            Err(e) => panic!("cache get failed: {}", e),
+        };
+        // Create a distinct inode of identical size and stamp it with the
+        // exact same mtime before atomically renaming it into place.
+        std::fs::copy(&exe, &replacement).expect("copy replacement");
+        let ts = libc::timespec {
+            tv_sec: md1.mtime() as _,
+            tv_nsec: md1.mtime_nsec() as _,
+        };
+        let c = CString::new(replacement.as_os_str().as_bytes()).expect("no NUL");
+        // SAFETY: `c` is a valid path and both timespecs are initialized.
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [ts, ts].as_ptr(), 0) };
+        assert_eq!(rc, 0, "utimensat: {}", io::Error::last_os_error());
+        std::fs::rename(&replacement, &file).expect("rename replacement");
+        let md2 = std::fs::metadata(&file).expect("stat second");
+        assert_eq!(md1.size(), md2.size());
+        assert_eq!(
+            (md1.mtime(), md1.mtime_nsec()),
+            (md2.mtime(), md2.mtime_nsec())
+        );
+        assert_ne!(md1.ino(), md2.ino());
+        let second = cache
+            .get(&file, "ino", Options::default())
+            .expect("second get");
+        assert_ne!(
+            first.fd, second.fd,
+            "a replaced inode with matching size and mtime must not reuse the stale cache entry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Issue 64: dropping a named carrier Image must close its reaper pipe
+    // write end so the double-forked reaper wakes up, unlinks the carrier,
+    // and exits instead of leaking descriptors and processes.
+    #[test]
+    fn dropping_image_terminates_its_carrier_reaper() {
+        let dir = std::env::temp_dir().join(format!("pmask-reaper-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let target = dir.join("carrier");
+        std::fs::write(&target, b"carrier-bytes").expect("write");
+        let wr = spawn_carrier_reaper(&target).expect("spawn reaper");
+        // Keep `path: None` on the synthetic Image so `Image::drop` does NOT
+        // unlink `target` itself; only closing `reaper_fd` can cause the
+        // reaper to wake up, unlink `target`, and exit.
+        let img = Image {
+            fd: -1,
+            backing: Backing::Memfd,
+            note: None,
+            path: None,
+            stamp: None,
+            reaper_fd: Some(wr),
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            target.exists(),
+            "reaper unlinked the carrier while Image was still alive"
+        );
+        drop(img);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while target.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let existed_after = target.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !existed_after,
+            "reaper did not wake up and unlink the carrier after Image was dropped"
+        );
     }
 
     #[test]

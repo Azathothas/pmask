@@ -16,10 +16,10 @@ use crate::secret;
 use crate::store::{self, Passphrase, Store};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufRead, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The subcommand names.  `run` is handled by the caller (it is the mask
 /// parser with secret options), so it is not listed here.
@@ -89,7 +89,8 @@ Commands (the secret side; these work even where ptrace is refused):
                         Exit 0 when every requested guarantee is active, 3
                         when one is degraded, 4 when one is unavailable.
                         LIST is any of redact, exact, isolate, secret-mem,
-                        mlock, no-new-privs, non-dumpable, landlock.
+                        mlock, no-new-privs, non-dumpable, hidepid, hide-pid,
+                        encrypt-memory, landlock.
 ";
 
 // ------------------------------------------------------------------ probe
@@ -124,9 +125,10 @@ fn cmd_probe(args: &[OsString]) -> i32 {
 ///
 /// `--require` names guarantees the caller depends on: `redact`,
 /// `isolate`, `exact`, `secret-mem`, `mlock`, `no-new-privs`,
-/// `non-dumpable`, `landlock`.  The exit code is 0 when every requested
-/// guarantee is active, 3 when one is degraded, and 4 when one is
-/// unavailable, so a CI job asserts instead of assuming.
+/// `non-dumpable`, `hidepid`, `hide-pid`, `encrypt-memory`, `landlock`.
+/// The exit code is 0 when every requested guarantee is active, 3 when
+/// one is degraded, and 4 when one is unavailable, so a CI job asserts
+/// instead of assuming.
 fn cmd_doctor(args: &[OsString]) -> i32 {
     let mut json = false;
     let mut require: Vec<String> = Vec::new();
@@ -141,7 +143,7 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
             b"--json" => json = true,
             b"-h" | b"--help" => {
                 println!(
-                    "pmask doctor [--json] [--require redact,isolate,exact,secret-mem,mlock,no-new-privs,non-dumpable,landlock]"
+                    "pmask doctor [--json] [--require redact,isolate,exact,secret-mem,mlock,no-new-privs,non-dumpable,hidepid,hide-pid,encrypt-memory,landlock]"
                 );
                 return 0;
             }
@@ -176,7 +178,7 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
         eprintln!(
             "pmask: doctor: --require needs at least one guarantee name; an empty list \
              asserts nothing (drop --require, or name redact, isolate, exact, secret-mem, \
-             mlock, no-new-privs, non-dumpable or landlock)"
+             mlock, no-new-privs, non-dumpable, hidepid, hide-pid, encrypt-memory or landlock)"
         );
         return 255;
     }
@@ -276,6 +278,9 @@ fn guarantee(caps: &Caps, name: &str) -> Option<crate::caps::State> {
         "mlock" => row("mlock"),
         "no-new-privs" => row("no_new_privs"),
         "non-dumpable" => row("non-dumpable"),
+        "hidepid" => row("proc hidepid policy"),
+        "hide-pid" => row("hide-pid"),
+        "encrypt-memory" => row("memory encryption"),
         "landlock" => row("landlock"),
         // the report's own row names work too, so `--require` can name
         // whatever `probe` printed
@@ -689,6 +694,12 @@ fn open_or_create(path: &Path, pp: &Passphrase) -> io::Result<Store> {
 }
 
 fn resolve_passphrase(explicit: Option<&Path>, creating: bool) -> io::Result<Passphrase> {
+    // The passphrase is a secret, and its source can block (a FIFO, a
+    // terminal, a slow file).  Close the same-uid memory read before the
+    // first read, not after the value is in this process (issue 005).
+    for note in crate::mem::harden_self() {
+        eprintln!("pmask: warning: self-hardening incomplete: {}", note);
+    }
     if let Some(p) = explicit {
         return Passphrase::from_file(p);
     }
@@ -699,7 +710,8 @@ fn resolve_passphrase(explicit: Option<&Path>, creating: bool) -> io::Result<Pas
         eprintln!(
             "pmask: warning: PMASK_PASSPHRASE is set; it is visible in this process's environ"
         );
-        return Passphrase::new(v.as_bytes());
+        let bytes = Zeroizing::new(v.into_vec());
+        return Passphrase::new(&bytes);
     }
     prompt_passphrase(creating)
 }
@@ -735,7 +747,7 @@ fn prompt_passphrase(creating: bool) -> io::Result<Passphrase> {
     let _ = w.write_all(prompt.as_bytes());
     let _ = w.flush();
 
-    let mut line = String::new();
+    let mut line = Zeroizing::new(String::new());
     let mut r = io::BufReader::new(&tty);
     let res = r.read_line(&mut line);
     if have_term {
@@ -749,10 +761,7 @@ fn prompt_passphrase(creating: bool) -> io::Result<Passphrase> {
     if line.ends_with('\r') {
         line.pop();
     }
-    let pp = Passphrase::new(line.as_bytes())?;
-    use zeroize::Zeroize;
-    line.zeroize();
-    Ok(pp)
+    Passphrase::new(line.as_bytes())
 }
 
 // ------------------------------------------------------------------ agent
@@ -1159,6 +1168,30 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
         "--no-dumpable",
         "PR_SET_DUMPABLE=0 in every process of the tree",
     ),
+    (
+        "--allow-dumpable",
+        "keep the payload dumpable when a secret is delivered",
+    ),
+    (
+        "--strict-exec",
+        "refuse any exec that cannot be redacted at entry",
+    ),
+    (
+        "--allow-foreign",
+        "run a 32-bit (foreign-ABI) image unredacted",
+    ),
+    (
+        "--stealth",
+        "compose --rexec, --watch-rename and host-aware --no-dumpable",
+    ),
+    (
+        "--hide-pid",
+        "hide the tree's pids on hidepid=invisible/ptraceable hosts",
+    ),
+    (
+        "--encrypt-memory",
+        "encrypt supervisor at-rest copies and MADV_DONTDUMP block",
+    ),
     ("--no-new-privs", "set no_new_privs before exec"),
     ("--no-exact", "keep the original cmdline byte extent"),
     (
@@ -1167,7 +1200,7 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ),
     (
         "--watch-rename",
-        "keep the label as comm across PR_SET_NAME",
+        "keep the label as comm across PR_SET_NAME and comm writes",
     ),
     (
         "--rexec",
@@ -1182,10 +1215,15 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ("--exec-once", "reuse one sealed image per distinct program"),
     ("--hugetlb", "ask for a hugetlb-backed image"),
     (
+        "--memfd-name NAME",
+        "name the image memfd NAME instead of the label",
+    ),
+    (
         "--unshare",
         "new user, pid and mount namespaces with a private /proc",
     ),
     ("--scope-name NAME", "re-exec through systemd-run --scope"),
+    ("--daemon PATH", "run the job inside a running pmaskd"),
     ("-q, --quiet", "suppress diagnostics"),
     ("-v, --verbose", "trace every redaction event to stderr"),
     ("-V, --version", "print version"),
@@ -1223,6 +1261,10 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
         "close the descriptor in each descendant at its fork",
     ),
     ("--secret-burn", "let the reader truncate a value to zero"),
+    (
+        "--secret-fd-name NAME",
+        "name the delivered secret memfd NAME",
+    ),
     ("--report=json", "print the run as one JSON object"),
     (
         "--report-file PATH",

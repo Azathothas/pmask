@@ -1,8 +1,8 @@
 [package]
 name = "pmask"
-version = "0.1.0-beta.3"
+version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 description = "Confidential execution without trusted hardware: redact the /proc metadata of a process tree while programs keep their real arguments"
 license = "0BSD"
 repository = "https://github.com/Azathothas/pmask"
@@ -17,7 +17,6 @@ exclude = [
     "/.github",
     "/.gitignore",
     "/AGENTS.md",
-    "/APPLY.md",
     "/build.sh",
     "/CHANGELOG.md",
     "/contrib",
@@ -25,9 +24,7 @@ exclude = [
     "/docs",
     "/evidence",
     "/fuzz",
-    "/ISSUE-CLOSURE.md",
     "/measurements",
-    "/PR-BODY.md",
     "/scripts",
     "/tests",
     "/verify.sh",
@@ -46,6 +43,9 @@ crates-io = false
 [features]
 default = []
 testbins = []
+# Test-only fault switches and probe overrides.  Off in a release build, so
+# PMASK_FAULT_* and PMASK_PROBE_* cannot change a deployed binary.
+test-hooks = []
 
 [lib]
 name = "pmask"
@@ -73,7 +73,7 @@ required-features = ["testbins"]
 libc = "0.2"
 zeroize = "1"
 argon2 = "0.5"
-chacha20poly1305 = { version = "0.10", features = ["std"] }
+chacha20poly1305 = { version = "0.11", features = ["alloc"] }
 
 [profile.release]
 strip = true

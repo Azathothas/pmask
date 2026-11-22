@@ -38,7 +38,7 @@
 #   O27 the report carries the degradation counts and the dumpability
 #   O28 close-on-exec: the advice names the flag to drop, and a no-secret
 #       run says the flag has nothing to close
-#   O29 --report is refused before --args-from-fd is read
+#   O29 --report composes with --args-from-fd and the plain redaction run
 #   O30 --image PATH, --image - and --image-from-fd N run the bytes
 #   O32 a refused image is reported and the on-disk fallback is explicit
 #   O33 --hugetlb reports its backing and falls back
@@ -47,6 +47,9 @@
 #   O34 --rexec runs a program from a noexec mount that refuses a plain exec
 #   O35 --argv0 is the same on the disk and the image paths
 #   O36 --exec-once reuses one image across 100 execs in one tree
+#   O39 --exec-once installs the exec filter only where a tracer outlives
+#       the tree, and --no-exit-kill keeps it off and says why
+#   O40 --hide-pid refuses --no-follow and --detach
 # ============================================================================
 set -u
 cd "$(dirname "$0")"
@@ -278,8 +281,11 @@ sleep 0.8
 envtxt=""
 [ -n "$tr_pid" ] && envtxt=$(tr '\0' '\n' < "/proc/$tr_pid/environ" 2>/dev/null)
 reap "$SUP"
-if printf '%s\n' "$envtxt" | grep -q '^PATH='; then
-    fail "o10-control-default-redacts-path (PATH visible without --keep-env)"
+# The default window is a complete decoy environment now, so PATH is
+# present but the caller's value is not: the control asserts the caller's
+# exact value is hidden, not that the name is absent.
+if printf '%s\n' "$envtxt" | grep -qx 'PATH=/usr/bin:/bin'; then
+    fail "o10-control-default-redacts-path (caller PATH visible without --keep-env)"
 else
     pass o10-control-default-redacts-path
 fi
@@ -786,12 +792,17 @@ else
     fail "o27-refused-window-relocation-is-counted ($(head -c 300 "$T/rep2.json"))"
 fi
 
-# The child restores dumpability before its readiness byte, so a --secret
-# run is dumpable unless --no-dumpable is set.
+# A delivered secret closes the same-uid fd and memory reads by
+# default; --allow-dumpable is the explicit opt-out.
 out=$("$TOOL" --report=json --secret TOKEN=file:"$T/token" -- /bin/true 2>/dev/null)
 case "$out" in
-    *'"payload_dumpable": true'*) pass "o27-secret-run-is-dumpable" ;;
-    *) fail "o27-secret-run-is-dumpable ($(printf '%s' "$out" | head -c 300))" ;;
+    *'"payload_dumpable": false'*) pass "o27-secret-run-is-non-dumpable" ;;
+    *) fail "o27-secret-run-is-non-dumpable ($(printf '%s' "$out" | head -c 300))" ;;
+esac
+out=$("$TOOL" --report=json --allow-dumpable --secret TOKEN=file:"$T/token" -- /bin/true 2>/dev/null)
+case "$out" in
+    *'"payload_dumpable": true'*) pass "o27-allow-dumpable-is-honoured" ;;
+    *) fail "o27-allow-dumpable-is-honoured ($(printf '%s' "$out" | head -c 300))" ;;
 esac
 out=$("$TOOL" --report=json --secret TOKEN=file:"$T/token" --no-dumpable \
     -- /bin/true 2>/dev/null)
@@ -829,25 +840,26 @@ else
     fail "o28-help-says-when-the-flag-is-refused (the conditional refusal is not in --help)"
 fi
 
-# --------------------- O29: --report is refused before the fd is read
-# Catches: --args-from-fd consumed (and its own error printed) before the
-# report refusal.  fd 3 is closed here, so the old order dies in
-# load_args_fd with "Bad file descriptor".
-err=$("$TOOL" -q --args-from-fd 3 --report=json 3<&- 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q -- "--report=json: the plain mask path" \
-    && ! printf '%s' "$err" | grep -q "Bad file descriptor"; then
-    pass "o29-report-refused-before-args-from-fd"
+# --------------------- O29: a report composes with the plain paths
+# Catches: the report being refused on a default redaction run.  The
+# document is produced by the local runner, which every local path uses.
+printf '/bin/sh\0-c\0echo O29-RAN\0' >"$T/o29.argv"
+rm -f "$T/o29.json"
+out=$("$TOOL" -q --args-from-fd 3 --report-file "$T/o29.json" 3<"$T/o29.argv" 2>"$T/o29.err"); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = "O29-RAN" ] \
+    && grep -q '"mode": "redact"' "$T/o29.json" \
+    && grep -q '"execs": {"total": 1' "$T/o29.json"; then
+    pass "o29-report-composes-with-args-from-fd"
 else
-    fail "o29-report-refused-before-args-from-fd (rc=$rc err=[$err])"
+    fail "o29-report-composes-with-args-from-fd (rc=$rc out=[$out] err=[$(cat "$T/o29.err")])"
 fi
 
-# O29b: the plain refusal without --args-from-fd.  The report is produced
-# by the secret-side runner, so a plain mask run has none to print.
-err=$("$TOOL" -q --report=json -- /bin/true 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q -- "--report=json: the plain mask path"; then
-    pass "o29b-report-refused-on-a-plain-run"
+# O29b: the default redaction run has a report to print, on stdout.
+out=$("$TOOL" -q --report=json -- /bin/true 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q '"mode": "redact"'; then
+    pass "o29b-report-on-a-plain-run"
 else
-    fail "o29b-report-refused-on-a-plain-run (rc=$rc err=[$err])"
+    fail "o29b-report-on-a-plain-run (rc=$rc out=[$out])"
 fi
 
 # O29c: the --daemon arm.  The daemon owns the run, so the client has no
@@ -882,7 +894,7 @@ esac
 
 printf '#!/bin/sh\nexit 0\n' >"$T/notelf"
 err=$("$TOOL" -q --image "$T/notelf" 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q "not an ELF image"; then
+if [ "$rc" = 126 ] && printf '%s' "$err" | grep -q "not an ELF image"; then
     pass o30d-image-non-elf-refused
 else
     fail "o30d-image-non-elf-refused (rc=$rc err=[$err])"
@@ -1047,6 +1059,55 @@ if [ "$rc" = 255 ] && printf '%s' "$err" \
 else
     fail "o38-empty-env-key (rc=$rc err=[$err])"
 fi
+
+# ---------------------------------------- O39: --exec-once fast path
+# Catches: a seccomp exec filter installed where a survivor would keep it
+# with no tracer (--no-exit-kill), and the filter missing from the
+# --on-exit wait path.  The filter count is read by the payload itself, so
+# a host that already gives the control a filter is subtracted out.
+base=$("$TOOL" -q --rexec --label mk-o39b -- "$CASES" show-seccomp 2>"$T/o39b.err" \
+    | sed -n 's/^Seccomp_filters:[[:space:]]*\([0-9]*\)$/\1/p')
+if [ -z "$base" ]; then
+    fail "o39-exec-once-fast-path (the payload could not read Seccomp_filters: $(head -2 "$T/o39b.err" | tr '\n' '|'))"
+else
+    fp=$("$TOOL" --rexec --exec-once --on-exit wait --label mk-o39 -- \
+        /bin/sh -c '"$1" show-seccomp' sh "$CASES" 2>"$T/o39.err" \
+        | sed -n 's/^Seccomp_filters:[[:space:]]*\([0-9]*\)$/\1/p')
+    if [ -n "$fp" ] && [ "$fp" -gt "$base" ]; then
+        pass "o39-fast-path-installs-the-exec-filter ($base -> $fp)"
+    else
+        fail "o39-fast-path-installs-the-exec-filter (base=$base fast=${fp:-none} err=$(head -2 "$T/o39.err" | tr '\n' '|'))"
+    fi
+    grep -q -- 'syscall-supervised' "$T/o39.err" \
+        && fail o39-fast-path-is-quiet \
+        || pass o39-fast-path-is-quiet
+
+    nk=$("$TOOL" --rexec --exec-once --on-exit wait --no-exit-kill \
+        --label mk-o39nk -- /bin/sh -c '"$1" show-seccomp' sh "$CASES" \
+        2>"$T/o39nk.err" | sed -n 's/^Seccomp_filters:[[:space:]]*\([0-9]*\)$/\1/p')
+    if [ "$nk" = "$base" ]; then
+        pass "o39-no-exit-kill-keeps-the-filter-off ($nk)"
+    else
+        fail "o39-no-exit-kill-keeps-the-filter-off (base=$base no-exit-kill=${nk:-none} err=$(head -2 "$T/o39nk.err" | tr '\n' '|'))"
+    fi
+    grep -q -- 'stays syscall-supervised' "$T/o39nk.err" \
+        && pass o39-no-exit-kill-says-why \
+        || fail "o39-no-exit-kill-says-why (err=[$(head -2 "$T/o39nk.err" | tr '\n' '|')])"
+fi
+
+# ---------------------------------------- O40: --hide-pid composition
+# Catches: a tree-wide hide accepted with a shape that takes a process off
+# the completion path that re-applies PR_SET_DUMPABLE, which an exec
+# resets.  The check is composition, not mount policy, so it decides on
+# any host that can select the redaction mode.
+for spec in no-follow detach; do
+    err=$("$TOOL" --hide-pid "--$spec" -l mk-o40 -- /bin/true 2>&1 >/dev/null); rc=$?
+    if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q -- "--hide-pid and --$spec"; then
+        pass "o40-hide-pid-refuses-$spec"
+    else
+        fail "o40-hide-pid-refuses-$spec (rc=$rc err=[$(printf '%s' "$err" | head -1)])"
+    fi
+done
 
 echo "== VERDICT: FAIL=$FAIL =="
 [ "$FAIL" = 0 ]

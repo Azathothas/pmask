@@ -1,169 +1,125 @@
 # pmask
 
-**Confidential execution without trusted hardware.** Run a command, a
-binary or a job so that other local users and pasted `ps` output cannot
-read its command line or environment, while the program itself keeps its
-real arguments and environment and works normally. A same-uid monitoring
-agent still sees `exe`, `maps`, `fd/*` and `cwd` unless `--no-dumpable`
-is set.
+**Confidential execution without trusted hardware.** Run a command, binary, or job so other local users and pasted `ps` output cannot read its command line or environment. Every program keeps its real arguments and environment and runs normally. A same-uid monitoring agent still reads `exe`, `maps`, `fd/*`, and `cwd` unless you set `--no-dumpable`.
 
 ```sh
 pmask --label ci-runner ./deploy.sh --env prod
 ```
 
-`ps`, `top`, `htop`, `/proc/<pid>/cmdline` and `/proc/<pid>/comm` show
-`ci-runner` for that process and everything it spawns.
-`/proc/<pid>/environ` is empty. The program still reads its own `argv`,
-its own environment, its own stdin and its own exit code.
+`ps`, `top`, `htop`, `/proc/<pid>/cmdline`, and `/proc/<pid>/comm` display `ci-runner` for that process and every process it spawns. `/proc/<pid>/environ` displays a plausible decoy environment (110 bytes by default, or the variables named by `--keep-env`). The program still reads its own `argv`, its own environment, its own stdin, and its own exit code.
 
 ## Why
 
-Confidential computing today means a TEE: AMD SEV-SNP, Intel TDX, ARM
-CCA, SGX enclaves. Those protect memory against the host, and they are
-excellent at it. They also require hardware that supports them, a
-hypervisor or a guest OS that can launch and attest, an attestation
-service and a policy that trusts it, and, for the enclave models, a
-rewritten workload.
+Confidential computing usually requires a Trusted Execution Environment (TEE) such as AMD SEV-SNP, Intel TDX, ARM CCA, or SGX enclaves. TEEs protect memory against the host. They also require specialized hardware, a hypervisor or guest OS that can launch and attest, an attestation service, and a trust policy. Enclave models often require a rewritten workload.
 
-Most machines have none of that. A self-hosted CI runner, a shared build
-host, a lab box, a container, a laptop, a VPS: no TEE, and no way to get
-one. The secrets still have to run somewhere.
+Most machines lack TEE hardware. A self-hosted CI runner, a shared build host, a lab box, a container, a laptop, or a VPS has no TEE. Secrets still have to run on these machines.
 
-The leak in those environments is not memory. It is `/proc`:
+The primary leak in those environments is `/proc`, not memory:
 
 ```sh
 $ ps -eo user,args | grep deploy
 ci     ./deploy.sh --token ghp_9f3c... --env prod
 ```
 
-CI vendors document the same hazard: command-line arguments are visible
-to other local users through `ps` or captured by audit events. MITRE
-ATT&CK T1036.011, "Overwrite Process Arguments", catalogs the same
-mechanics.
+CI vendors document this exact hazard. Other local users read command-line arguments through `ps`, and audit subsystems capture them in exec events. MITRE ATT&CK T1036.011 ("Overwrite Process Arguments") catalogs these mechanics.
 
-`pmask` closes that specific disclosure surface, on hardware you already
-have, as an unprivileged user.
+`pmask` closes this `/proc` disclosure surface on standard Linux hardware as an unprivileged user.
 
-## What it is not
+## What pmask is not
 
-It is not a TEE and it does not encrypt memory. The limit table states the
-line exactly:
+`pmask` is not a TEE and does not encrypt payload memory. The limit table defines the exact trust boundary:
 
 | observer | sees |
 |---|---|
-| another uid | the label in `cmdline` and `comm`; no real argv or environ |
-| a monitoring agent of the same uid | the label, and also `exe`, `maps`, `fd/*` and `cwd`, which name the real binary, plus the real argv and environment in `/proc/<pid>/mem`, because the payload's own copies stay readable; a `pmaskd` job's child on the composed daemon path reads `environ` as 0 bytes, and the holder's `environ` is refused (`EACCES`) |
-| the same, with `--no-dumpable` | the label; `environ`, `maps`, `auxv`, `exe`, `fd` and `/proc/<pid>/mem` are refused, and the five refusals are themselves a signal |
-| `ps` output pasted into a ticket or a chat | the label |
+| another uid | the label in `cmdline` and `comm`, with no real `argv` or `environ` |
+| a monitoring agent of the same uid | the label, plus `exe`, `maps`, `fd/*`, and `cwd` (naming the real binary), plus the real `argv` and environment in `/proc/<pid>/mem`. A `--secret` run in redaction mode is non-dumpable by default, so `/proc` refuses those reads (`EACCES`) |
+| a monitoring agent of the same uid, with `--no-dumpable` | the label. `environ`, `maps`, `auxv`, `exe`, `fd`, and `/proc/<pid>/mem` return `EACCES`, and those six refusals are themselves a signal |
+| a monitoring agent of the same uid, with `--stealth` | on a `hidepid=0` host, the label and the `--no-dumpable` refusals (including `exe`, so only root sees `/memfd:<label>`). On `hidepid=invisible` or `hidepid=ptraceable`, the tree stays dumpable to avoid creating a hidden pid, so same-uid `environ` and memory reads stay open |
+| a monitoring agent of the same uid, with `--hide-pid` | the pid disappears from same-uid `/proc` `readdir` and `stat` when `/proc` uses `hidepid=invisible` or `hidepid=ptraceable`. On `hidepid=ptraceable`, an existing inode returns `EPERM`, which is a visible signal. `cgroup.procs`, `cgroup.threads`, `kill(0)`, `pidfd_open`, `sched_getaffinity`, `getpriority`, `prlimit`, and root still see the pid |
+| a monitoring agent of the same uid, with `--encrypt-memory` | the label. The supervisor seals its at-rest `argv` and environment with a per-session key in `memfd_secret` memory when available. The payload's redaction block stays anonymous and `MADV_DONTDUMP`, avoiding a `/secretmem` VMA fingerprint. The payload's heap and stack remain unchanged |
+| `ps` output pasted into a ticket or chat | the label |
 | root on the host | **that** a pid exists, its `/proc/<pid>/exe`, its `maps`, its open files, its cgroups, and its memory via `PTRACE_ATTACH` |
 | anyone with kernel access | everything |
 
-`cmdline` and `comm` carry no ptrace check, so every local account sees
-them. `environ`, `exe`, `maps`, `fd/*` and `cwd` require
-`PTRACE_MODE_READ_FSCREDS`, which a process of the same uid passes. Yama
-restricts `PTRACE_MODE_ATTACH` only, so it does not stop the same-uid
-read; `PR_SET_DUMPABLE=0` does. On the redaction and isolate paths the
-supervisor sets it for itself for the life of the session, because it
-holds the real argv of every tracee it has swapped, and `--no-dumpable`
-extends the treatment to the payload. A plain run with no secret holds
-none, does not mask itself, and says `mode=plain`; its supervisor is an
-ordinary process of the caller's uid. A plain run that holds a secret is
-made non-dumpable once the secret is loaded but does not mask its own
-`/proc` entry.
+Network identity is outside the mask. `ss -tnp`, `lsof`, and `/proc/net/tcp` still report the real pid, uid, inode, and descriptor, while showing the label as the process name. Use `--isolate=net` to place the payload in a private network namespace and keep its sockets out of the host socket table. The private namespace requires its own connectivity.
 
-So: confidentiality against other tenants and against casual inspection,
-not against the host operator. That is the same trust boundary a
-container gives you for the filesystem, applied to process metadata. An
-adversary with root on the same kernel needs a TEE or a separate
-machine; `pmask` does not address that case.
+`cmdline` and `comm` require no ptrace check, so every local account reads them. `environ`, `exe`, `maps`, `fd/*`, and `cwd` require `PTRACE_MODE_READ_FSCREDS`, which a same-uid process passes. Yama restricts `PTRACE_MODE_ATTACH` only and does not block same-uid reads. `PR_SET_DUMPABLE=0` blocks those same-uid reads.
 
-`pmask probe` reports each mechanism this host allows with an `active`,
-`degraded` or `unavailable` state and the cost of its absence, and a
-final `tier=` word. `pmask doctor --require redact,exact` exits 0 only
-when both are active, 3 when one is degraded and 4 when one is
-unavailable, so a CI job asserts on the deployment instead of assuming
-it.
+After forking the child, the supervisor scrubs the real `argv` and environment from its own memory. Because the supervisor holds no plaintext at rest, it stays dumpable by default. Staying dumpable prevents the supervisor from becoming a hidden pid on a `hidepid=invisible` host. `--no-dumpable` extends `PR_SET_DUMPABLE=0` to the payload and pins the supervisor non-dumpable. A plain run without secrets holds no secret, does not mask itself, reports `mode=plain`, and runs as an ordinary process of the caller's uid. A plain run with a secret makes itself non-dumpable before loading the secret, but does not mask its own `/proc` entry.
 
-## Three ways to use it
+`pmask` provides confidentiality against other local tenants and casual inspection, not against the host operator. That trust boundary matches what a container provides for the filesystem, applied to process metadata. An adversary with root on the same kernel requires a TEE or a separate machine.
 
-### 1. CLI: one command under a label
+Run `pmask probe` to report each host mechanism as `active`, `degraded`, or `unavailable`, along with its absence cost and a final `tier=` word. Run `pmask doctor --require redact,exact` to exit 0 when both mechanisms are active, 3 when one is degraded, and 4 when one is unavailable. CI jobs can assert on the host posture before running secrets.
+
+## Three ways to use pmask
+
+### 1. CLI: run one command under a label
 
 ```sh
 pmask --label 'ci-runner' ./deploy.sh --token "$TOKEN" --env prod
 ```
 
-Everything the command spawns inherits the label. A whole shell session
-can be wrapped once, and background jobs survive the shell exit:
+Every descendant of the command inherits the label. Wrap a full shell session once, and background jobs survive when the shell exits:
 
 ```sh
 exec pmask --label 'dev-shell' bash --login -i
 ```
 
-Options that matter most:
+Key options:
 
 | option | effect |
 |---|---|
-| `-l, --label NAME` | the presented command line and comm |
-| `--comm NAME` | a comm separate from the label, at most 15 bytes |
-| `--argv0 NAME` | argv[0] of the program; the default is the command as typed |
-| `--keep-env` | leave `environ` visible in full, values included, so every variable the caller passed is readable again; a later `--keep-env=NAME` narrows it to the named variables. It takes no value, so `--keep-env NAME -- CMD` runs NAME as the program; when NAME looks like a variable list, pmask warns and names `--keep-env=NAME` |
-| `--keep-env=NAME` | keep only the named variables visible, repeatable; each named value is readable again, at its original position inside a window that otherwise reads as NUL padding |
-| `--env K=V`, `--env-file PATH` | set the child environment |
-| `--args-from-fd N` | read the command from a NUL-separated vector on fd N, so the secret never enters the supervisor's own command line; the vector is capped at 8 MiB. pmask reads a duplicate, so the caller's descriptor stays open and `--args-from-fd 0` leaves the payload its stdin; the source is consumed, so its offset ends at the end of the vector |
-| `--on-exit detach\|wait\|kill` | what happens to descendants when the command exits |
-| `--detach` | `PTRACE_DETACH` each process once its exec settles, so `TracerPid` reads 0; a detached process is not followed at all, so nothing it forks and none of its own later execs are redacted |
-| `--no-exact` | leave the kernel's argv window where it is instead of relocating it; `cmdline` is the label plus one NUL per argument slot (measured: the extent is the label plus the slot count, not the original extent; a script payload keeps the original extent on its post-exec path), and `environ` is a NUL block |
-| `--no-dumpable` | `PR_SET_DUMPABLE=0` in the payload: same-uid observers lose `environ`, `maps`, `auxv`, `exe` and `fd`, and `/proc/<pid>/mem` is refused, so the real argv cannot be recovered from payload memory. The refusal is itself a fingerprint: five `EACCES` opens where an ordinary same-uid process succeeds. On the redaction and isolate paths the supervisor is non-dumpable for the session; a plain run with no secret holds none, does not mask itself, and its report says `mode=plain`; a plain run that holds a secret is made non-dumpable but leaves its own `/proc` entry unmasked |
-| `--no-new-privs` | set-uid and file capabilities gain nothing |
-| `--watch-rename` | keep the label when a program renames itself |
-| `--rexec` | run from a sealed memfd, so `exe` names the label; the ordered chain falls back to `/proc/self/fd/N`, then an `O_TMPFILE` or named temporary file on an executable mount, reporting each failed step |
-| `--rexec-allow-disk` | add the on-disk path as the explicit last resort of the `--rexec` chain; never automatic |
-| `--image PATH` | read the program bytes from PATH (or `-` for stdin) and exec them from a sealed image; implies `--rexec` |
-| `--image-from-fd N` | read the program bytes from descriptor N; implies `--rexec` |
-| `--exec-once` | reuse one sealed image per distinct program, keyed by resolved path and mtime, across the execs of the session; implies `--rexec` |
-| `--hugetlb` | ask for a hugetlbfs-backed image and report the backing; a failed huge-page write falls back to an ordinary memfd on every source, `--image -` included, so an empty huge-page pool does not fail the run; implies `--rexec` |
-| `--unshare` | private user, pid and mount namespaces with a private procfs, when the kernel allows it |
-| `--isolate[=LIST]` | on the isolate path, request fresh user, mount, UTS, IPC and cgroup namespaces, plus the `pid`, `net` and `tmp` axes that LIST names (default `all`); `none` means no isolation at all: no namespace, no `no_new_privs`, no Landlock; the private `/dev` carries `/dev/pts`, `/dev/ptmx` and a private `/dev/shm` when the host has them |
-| `--no-redact` | never touch `/proc` metadata, even where ptrace works |
-| `--scope-name NAME` | one transient systemd scope named NAME |
-| `--secret N=SRC` | deliver a secret on descriptor 3, 4, ...; `PMASK_SECRET_<NAME>=<fd>` names it in the child |
-| `--secret-burn` | let a cooperating reader truncate the value once and never grow it back |
-| `--secret-close-on-exec` | close the descriptor in each direct child of the payload at its fork, not in the payload; needs the ptrace supervisor, so plain and isolate modes refuse it |
-| `--secret-fd-name NAME` | name the delivered secret memfd NAME instead of `pmask-secret`, so a sweep for the default literal finds nothing; NAME is 1 to 200 bytes, no slash, no C0 control byte and no DEL |
-| `--memfd-name NAME` | name the image memfd NAME instead of the label; applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once` and `--hugetlb` |
-| `--allow-argv-secret` | keep a `literal:` or `env:` source in a mode that cannot redact, and warn instead of refusing |
-| `--report=json` | print the run as one JSON object on stdout, including `mode` and `mode_reason`; the payload shares fd 1, so a consumer that has to parse the document uses `--report-file` or `--report-fd`; needs `--secret`, `--isolate` or `--no-redact`, and a plain or `--daemon` run refuses it with exit 255 |
-| `--report-file PATH` | write the `--report` document to PATH instead of stdout; the payload keeps fd 1. It implies `--report=json`, so it needs the same secret-side run |
-| `--report-fd N` | write the `--report` document to descriptor N, which must be 3 or higher: 0, 1 and 2 are refused with exit status 255, so the payload keeps its stdio. Checked before the payload runs and not inherited by it. It implies `--report=json` |
-| `--audit` | print one residue row per tracee at each exec completion, then a residue count naming the interfaces the tree still discloses; needs the redaction mode |
+| `-l, --label NAME` | sets the presented `cmdline` and `comm` |
+| `--comm NAME` | sets a `comm` separate from the label, up to 15 bytes |
+| `--argv0 NAME` | sets `argv[0]` of the program. Defaults to the command as typed |
+| `--keep-env` | leaves `environ` visible in full, values included. A later `--keep-env=NAME` narrows visibility to the named variables. Takes no value, so `--keep-env NAME -- CMD` treats `NAME` as the program and warns when `NAME` looks like a variable list |
+| `--keep-env=NAME` | keeps only the named variables visible in `/proc/<pid>/environ`, repeatable. The environment window starts at `arg_end` and holds each named entry once without repetition |
+| `--env K=V`, `--env-file PATH` | sets variables in the child environment |
+| `--args-from-fd N` | reads a NUL-separated command vector (up to 8 MiB) from fd `N`, keeping secrets off the supervisor's command line. `pmask` reads a duplicate descriptor, so the caller's descriptor stays open and `--args-from-fd 0` preserves stdin. The source offset advances to the end of the vector |
+| `--on-exit detach\|wait\|kill` | selects how `pmask` handles surviving descendants when the master command exits |
+| `--detach` | calls `PTRACE_DETACH` on each process after its exec settles, setting `TracerPid` to 0. Detached processes are not followed, so their future forks and execs run unredacted |
+| `--no-exact` | leaves the kernel's `argv` and `environ` windows in place instead of relocating them. The completion stop overwrites the original extent with the label padded by spaces and one final NUL, and fills `environ` with a complete non-repeating decoy environment (or the `--keep-env` variables) |
+| `--no-dumpable` | sets `PR_SET_DUMPABLE=0` in every tracee and pins the supervisor non-dumpable. Same-uid observers receive `EACCES` on `environ`, `maps`, `auxv`, `exe`, `fd`, and `/proc/<pid>/mem`. Active by default for `--secret` runs in redaction mode (`--allow-dumpable` opts out). Plain and isolate modes note that they cannot apply the flag. `--hide-pid` and `--encrypt-memory` also pin the supervisor non-dumpable |
+| `--allow-dumpable` | keeps the payload dumpable during a `--secret` run. Same-uid descriptor and memory reads remain open |
+| `--strict-exec` | refuses exec shapes that cannot be redacted at syscall entry: `#!` scripts, `vfork` children, entry-redaction fallbacks, and settled re-execs. Also refuses `--detach`. Kills the refused process with `SIGKILL` (exit status 137) and prints `pmask: refused:` naming the shape even under `-q` |
+| `--hide-pid` | hides the tree's pids from same-uid `/proc` readers. Opt-in only. Requires `/proc` mounted with `hidepid=invisible` or `hidepid=ptraceable` and refuses weaker mounts. On `hidepid=ptraceable`, an existing dentry returns `EPERM` instead of `ENOENT`. `cgroup.procs`, `cgroup.threads`, `kill(0)`, `pidfd_open`, `sched_getaffinity`, `getpriority`, `prlimit`, and root still see the pid. Refused with `--no-follow`, `--detach`, and `--exec-once`. A descendant detached by the default `--on-exit detach` stays hidden only until its next exec resets `PR_SET_DUMPABLE` |
+| `--encrypt-memory` | seals the supervisor's at-rest `argv` and environment copies with XChaCha20-Poly1305 under a per-session key in `memfd_secret` memory when available. Marks the payload's separate anonymous redaction block `MADV_DONTDUMP` (not `memfd_secret`, avoiding a `/secretmem` VMA). Opt-in only. Does not encrypt the payload's heap or stack |
+| `--stealth` | composes `--rexec`, `--watch-rename`, and `--no-dumpable` on non-`hidepid` hosts. On `hidepid=invisible` or `hidepid=ptraceable` hosts, omits `--no-dumpable` so the tree does not become a hidden pid. Prints the chosen trade. Refused with `--exec-once` on non-`hidepid` hosts because `--no-dumpable` conflicts with `--exec-once` |
+| `--allow-foreign` | runs a 32-bit image unredacted. By default, `pmask` refuses 32-bit images because they keep their real `cmdline`, `environ`, and `comm` |
+| `--no-new-privs` | sets `PR_SET_NO_NEW_PRIVS` before exec so set-uid binaries and file capabilities gain nothing |
+| `--watch-rename` | keeps the label when a program renames itself. The seccomp filter traps `prctl(PR_SET_NAME)` plus `open`, `openat`, `openat2`, and `creat` (where supported) targeting `/proc/.../comm` after lexical path normalization. `--watch-rename=strict` also traps `write`, `writev`, `pwrite64`, `pwritev`, and `pwritev2` to check descriptor targets, catching symlink aliases and `SCM_RIGHTS` descriptors at the cost of one stop per write. Waits for the tree by default. Refuses `--detach` and `--on-exit detach` (exit 255). Warns if `readlink` fails with `EACCES` on a non-dumpable tracee |
+| `--rexec` | runs from a sealed memfd so `exe` names the label. Falls back in order to `/proc/self/fd/N`, then an `O_TMPFILE` or named temporary file on an executable mount, reporting each failed step. Fails closed with exit 126 (or 127 if the source is missing) unless you pass `--rexec-allow-disk` |
+| `--rexec-allow-disk` | enables the on-disk path as an explicit last resort in the `--rexec` carrier chain. Never automatic |
+| `--image PATH` | reads program bytes from `PATH` (or `-` for stdin) and executes them from a sealed image. Implies `--rexec` |
+| `--image-from-fd N` | reads program bytes from descriptor `N`. Implies `--rexec` |
+| `--exec-once` | caches one sealed image per distinct program, keyed by resolved path, device/inode/ctime, and mtime. Later execs use a guarded temporary-file carrier verified by inode and bytes before every reuse. Kills the exec if the carrier was replaced. Resolves `/proc/self/exe` in the tracee, not the supervisor. Refused with `--no-dumpable`, `--hide-pid`, `--stealth` (on non-`hidepid` hosts), and default non-dumpable `--secret` runs. Implies `--rexec` |
+| `--hugetlb` | requests a hugetlbfs-backed image and reports the backing. Falls back to an ordinary memfd on any source (including `--image -`) if the huge-page pool fails. Implies `--rexec` |
+| `--unshare` | creates private user, pid, and mount namespaces with a private procfs when the kernel allows it |
+| `--isolate[=LIST]` | creates fresh user, mount, UTS, IPC, and cgroup namespaces plus the `pid`, `net`, and `tmp` axes named in `LIST` (default `all`). `--isolate=none` disables all isolation (no namespace, no `no_new_privs`, no Landlock). The private `/dev` binds `/dev/pts` and `/dev/ptmx` and creates a private `/dev/shm` when available |
+| `--no-redact` | skips all `/proc` metadata redaction, even when `ptrace` is available |
+| `--scope-name NAME` | wraps the run in a transient systemd scope named `NAME` |
+| `--secret N=SRC` | delivers a secret on descriptor 3, 4, ... and sets `PMASK_SECRET_<NAME>=<fd>` in the child environment |
+| `--secret-burn` | allows a cooperating reader to truncate the secret memfd once and prevents regrowth |
+| `--secret-close-on-exec` | closes the secret descriptor in each direct child of the payload at fork while keeping it open in the payload. Requires the `ptrace` supervisor and is refused in plain and isolate modes |
+| `--secret-fd-name NAME` | names the secret memfd `NAME` instead of `pmask-secret`. Accepts 1 to 200 bytes with no `/`, C0 control bytes, or DEL |
+| `--memfd-name NAME` | names the image memfd `NAME` instead of the label. Applies to `--rexec`, `--image`, `--image-from-fd`, `--exec-once`, and `--hugetlb` |
+| `--allow-argv-secret` | keeps a `literal:` or `env:` secret source in a non-redacting mode and warns instead of refusing |
+| `--report=json` | prints one JSON report object to stdout, including `mode` and `mode_reason`. The payload shares fd 1, so use `--report-file` or `--report-fd` for clean parsing. Works on every local path and is refused with `--daemon` (exit 255) |
+| `--report-file PATH` | writes the JSON report to `PATH` instead of stdout so the payload keeps fd 1. Implies `--report=json`. Refused with `--daemon` |
+| `--report-fd N` | writes the JSON report to descriptor `N` (3 or higher; 0, 1, and 2 are refused with exit 255). Checked before execution and not inherited by the payload. Implies `--report=json` |
+| `--audit` | prints one residue row per tracee at each exec completion and a final residue count. Requires redaction mode |
 
-`--args-from-fd` matters for shell history as well: a command read from
-a descriptor never appears in `ps` or in `.bash_history`. How the
-descriptor is filled is the caller's business. `man pmask.1` has the full
-option list.
+`--args-from-fd` also keeps commands out of shell history files such as `.bash_history`. Fill the descriptor from your caller before invoking `pmask`. See `man pmask.1` for the complete option list.
 
-`--report=json` writes its document to standard output after the payload
-has exited, so a payload that writes to standard output shares fd 1 with
-the report. A consumer that parses the stream sees the payload's bytes
-first, and a `| tee` keeps both. Send the payload's own output somewhere
-else, or read the final JSON object, when a parser must have the document
-alone.
+`--report=json` writes to stdout after the payload exits. Because the payload shares fd 1, a parser sees payload output before the JSON object. Use `--report-file` or `--report-fd` when a consumer must parse the JSON document cleanly.
 
-The fresh `/dev` under `--isolate` is a tmpfs with `/dev/null`,
-`/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`.
-It also binds the host's `/dev/pts` and `/dev/ptmx` when the host has
-them, creates a private `/dev/shm`, and adds the `/dev/fd`, `/dev/stdin`,
-`/dev/stdout` and `/dev/stderr` links through `/proc/self/fd`. Each member
-is optional. A member the host does not have, or a mount the kernel
-refuses, is named in the isolation report and counted, so a pty-using
-payload fails with `out of pty devices` only when the report says
-`/dev/pts` is absent.
+Under `--isolate`, `pmask` mounts a tmpfs `/dev` containing `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, and `/dev/tty`. The setup also binds `/dev/pts` and `/dev/ptmx` from the host when present, creates a private `/dev/shm`, and links `/dev/fd`, `/dev/stdin`, `/dev/stdout`, and `/dev/stderr` through `/proc/self/fd`. Each optional member is reported and counted if absent or refused by the kernel.
 
 ### 2. Library: supervise from your own program
 
 ```toml
 [dependencies]
-pmask = { git = "https://github.com/Azathothas/pmask" }
+pmask = { git = "https://github.com/Azathothas/pmask", tag = "v0.1.0" }
 ```
 
 ```rust
@@ -175,20 +131,13 @@ let st = Mask::new()
 println!("exit: {} ({} of {} execs degraded)", st.code, st.stats.degraded, st.stats.execs);
 ```
 
-`Mask` is a builder. `run` blocks and supervises on the calling thread.
-`spawn` returns a `MaskedChild` immediately and runs the tracer on its
-own thread; `try_wait` and `wait_timeout` do not block forever, and
-`kill_tree` terminates the whole tree. `envs` and `env_clear` replace the
-child environment wholesale, `run_as` drops the child to a uid and gid,
-and `session_end` selects the policy for descendants.
+`Mask` is a builder. `Mask::run` blocks and supervises on the calling thread. `Mask::spawn` returns a `MaskedChild` immediately and runs the tracer on its own thread. Use `try_wait` and `wait_timeout` for non-blocking checks, and `kill_tree` to terminate the entire tree. Use `envs` and `env_clear` to replace the child environment, `run_as` to drop the child to a specific uid and gid, and `session_end` to pick the descendant policy.
 
-### 3. Daemon: the secret never enters the caller
+### 3. Daemon: keep the secret out of the caller
 
-This is the case that matters for CI runners. The runner needs a token.
-If the token is in the runner's environment, `/proc/<pid>/environ`
-publishes it. If it is on a command line, `/proc/<pid>/cmdline` does.
+CI runners often need a secret token. Placing that token in the runner's environment exposes `/proc/<pid>/environ`, and placing it on a command line exposes `/proc/<pid>/cmdline`.
 
-`pmaskd` holds the token instead:
+Run `pmaskd` to hold the token instead:
 
 ```sh
 # as the runner user, once:
@@ -204,412 +153,161 @@ pmaskd --label ci-runner --env-file ~/.config/pmask/runner.env \
 pmask --daemon "$XDG_RUNTIME_DIR/pmask.sock" -- ./deploy.sh --env prod
 ```
 
-Both sides name the same socket. A root daemon is the other shape: start it
-with `--socket /run/pmask.sock --allow-uid <runner-uid>`, and give the
-client the same path.
+Pass the same socket path to both sides. For a root daemon, start `pmaskd` with `--socket /run/pmask.sock --allow-uid <runner-uid>` and point the client at `/run/pmask.sock`.
 
-The client sends only the command. The daemon supplies the environment,
-supervises the job with the client's stdio, and returns the exit status.
-The token exists in the daemon's memory and in the job's redacted
-environment block. It does not exist in the client's argv, the client's
-environment, or the job's `/proc/<pid>/{cmdline,environ}`.
+The client sends only the command. The daemon supplies the environment, supervises the job with the client's stdio, and returns the exit status. The token lives only in the daemon's memory and in the job's redacted environment block. The token never appears in the client's `argv`, the client's environment, or the job's `/proc/<pid>/{cmdline,environ}`.
 
-The environment file is not the encrypted store. `pmaskd` accepts no
-`--store` and no `--passphrase-file`, and a unit that adds either exits
-255 with `unknown option --store`. The store belongs to `pmask agent`,
-which holds it unlocked and answers a `--secret NAME=agent:NAME` source
-over its own socket.
+The `--env-file` is not the encrypted store. `pmaskd` does not accept `--store` or `--passphrase-file` and exits 255 with `unknown option --store` if given either flag. The encrypted store belongs to `pmask agent`, which serves `--secret NAME=agent:NAME` requests over its own socket.
 
-Access is decided by `SO_PEERCRED`: the daemon's own uid and root only,
-plus whatever `--allow-uid` adds. The socket is mode 0600 and the client
-verifies the peer uid of the socket it connected to. Where the kernel
-offers `SO_PEERPIDFD` (Linux 6.5 and later), the daemon pins the
-accepted peer with a pidfd and checks it again before the job starts;
-without one it falls back to the peer's pid and start time, which is
-best effort.
+`pmaskd` authorizes peers through `SO_PEERCRED`. By default, `pmaskd` accepts only its own uid and root, plus any uid added with `--allow-uid`. The socket defaults to mode `0600`, and the client verifies the daemon's peer uid. On Linux 6.5 and newer, `pmaskd` pins the connecting peer with `SO_PEERPIDFD` and re-verifies it before starting the job. On older kernels, `pmaskd` falls back to checking the peer's pid and `/proc` start time on a best-effort basis.
 
-`--daemon` refuses the flags it cannot honour. `--secret`, `--isolate`,
-`--no-redact`, `--image` and `--image-from-fd` change what this process would do locally,
-and the daemon owns the masking policy and the job environment, so the
-client exits 255 and names the flag rather than dropping it. `--report`
-is refused the same way: a daemon job returns the exit status only. Mask
-options other than `--label` and `--label-empty` print one warning and
-have no effect.
+`--daemon` refuses local-only flags that the daemon cannot honor. Passing `--secret`, `--isolate`, `--no-redact`, `--hide-pid`, `--encrypt-memory`, `--image`, `--image-from-fd`, or `--report*` with `--daemon` exits 255 and names the refused flag. Other mask options besides `--label` and `--label-empty` print one warning and have no effect.
 
-**Warning:** an allowed uid may execute arbitrary programs with the
-daemon's privileges and inherit its environment. Grant `--allow-uid` only
-to uids that may already do that. On a root daemon, `--run-as-uid` runs
-each job with the client's own uid and gid instead.
+**Warning:** Any allowed uid can execute arbitrary programs with the daemon's privileges and environment. Grant `--allow-uid` only to trusted uids. On a root daemon, pass `--run-as-uid` to run each job under the client's own uid and gid.
 
 ## Secret delivery without a daemon: `--secret`
 
-`--secret NAME=SRC` delivers a value to the job on a sealed memfd
-descriptor at fd 3, 4, ... and sets `PMASK_SECRET_<NAME>=<fd>` in the
-child's environment. The value never enters the child's `argv` or
-`environ`. The program reads it with `pmask read NAME` inside the payload
-or from the descriptor. Sources are `file:PATH`, `env:VAR`,
-`agent:NAME`, `stdin` and `literal:VALUE`; a bare value is a literal.
+`--secret NAME=SRC` delivers a value on a sealed memfd at descriptor 3, 4, ... and sets `PMASK_SECRET_<NAME>=<fd>` in the child's environment. The secret value never enters the child's `argv` or `environ`. Inside the payload, read the secret with `pmask read NAME` or read the descriptor directly. Supported sources are `file:PATH`, `env:VAR`, `agent:NAME`, `stdin`, and `literal:VALUE` (a bare value is a literal).
 
 ```sh
 token=$(pmask read DEPLOY_TOKEN)
 ```
 
-That works inside a masked payload. The requirement is that the payload
-runs a `pmask` that snapshots its own arguments from the runtime's copy
-before it zeroes the kernel argv block. A build that reads
-`/proc/self/cmdline` instead sees only the label when it runs under a
-mask, finds no subcommand, prints the help text and exits 255. Reading
-the descriptor directly works in every mode and has no such requirement.
+`pmask read` works inside a masked payload because `pmask` snapshots its own arguments from the runtime before zeroing the kernel `argv` block. A binary that reads `/proc/self/cmdline` instead sees only the label, finds no subcommand, and exits 255. Reading the file descriptor directly works in every mode without calling `pmask`.
 
-The source decides what the host can still read. `file:`, `agent:` and
-`stdin` keep the value out of every command line that starts pmask;
-`--args-from-fd` keeps the payload's own argument vector out of it. A
-`literal:` value travels in pmask's own argv until pmask masks itself,
-and the kernel audit subsystem writes the exec record
-(`type=EXECVE` and `type=PROCTITLE`) before that point. The cleartext
-value is therefore in the audit log for the retention of the log, not for
-the life of the run. The same string is in the
-`/proc/<pid>/cmdline` of any wrapper that held the command line, `sudo`
-included, for as long as the wrapper lives, and in the interactive
-shell's history file. An `env:` source travels in the caller's
-environment instead: the exec record carries argv and not environ, so the
-value is not in that record, but the shell and every wrapper on the way
-already hold it. Use `file:` or `agent:` where the value can be read from
-a path or the agent, `stdin` where it can be piped, and `--args-from-fd`
-where the whole payload vector must stay off pmask's command line.
-`--secret-burn` lets a cooperating reader truncate the value once and
-never grow it back.
-`--secret-close-on-exec` closes the descriptor in each of the payload's
-direct children at its fork, while the payload keeps it. The guarantee is
-for an ordinary fork/exec tree: a process that shares the payload's
-descriptor table (`clone(CLONE_FILES)` without `CLONE_THREAD`) cannot be
-closed without removing the payload's copy, so the run reports a
-degradation and the session counts it. It needs the ptrace supervisor;
-plain and isolate modes refuse the combination rather than start the
-payload without its secret. The descriptor is readable through
-`/proc/<pid>/fd/N` by a same-uid peer unless the payload is non-dumpable;
-`--no-dumpable` closes that, and `--secret-burn` narrows the window for a
-reader that cooperates. `literal:` and `env:` sources are refused in a
-mode that cannot redact unless `--allow-argv-secret` is given.
+The source type determines what the host can still observe:
 
-## Modes: what each one redacts
+- `file:`, `agent:`, and `stdin` keep the secret out of every command line that invokes `pmask`.
+- `--args-from-fd` keeps the payload's argument vector off `pmask`'s command line.
+- `literal:` travels in `pmask`'s `argv` until self-masking runs. The kernel audit subsystem logs `type=EXECVE` and `type=PROCTITLE` before self-masking, so the cleartext persists in the audit log, in any wrapper's `/proc/<pid>/cmdline` (such as `sudo`), and in interactive shell history.
+- `env:` travels in the caller's environment. Kernel exec audit records omit `environ`, but the shell and wrappers still hold the variable.
 
-pmask selects one of three modes. A run on the secret or isolation path
-prints `mode=` and, at the default verbosity, one note per request the
-mode could not apply. A run with no secret and no isolation takes the
-redaction path directly and prints no mode line; its summary counts the
-execs that degraded. The JSON report carries the same `mode` and a
-`mode_reason` naming the axis that kept the run below the strongest
-available one.
+Use `file:`, `agent:`, or `stdin` whenever possible, and add `--args-from-fd` when the payload vector must stay off the command line.
+
+Add `--secret-burn` to let a cooperating reader truncate the memfd once without allowing regrowth. Add `--secret-close-on-exec` to close the secret descriptor in each direct child of the payload at fork while keeping it open in the payload. That guarantee covers standard fork/exec trees. A child created with `clone(CLONE_FILES)` without `CLONE_THREAD` shares the payload's descriptor table, so closing it would break the payload. `pmask` reports and counts that degradation. `--secret-close-on-exec` requires the `ptrace` supervisor and is refused in plain and isolate modes.
+
+In redaction mode, `--secret` makes the payload non-dumpable by default so same-uid peers cannot read `/proc/<pid>/fd/N` or payload memory. Pass `--allow-dumpable` to opt out. `literal:` and `env:` sources are refused in non-redacting modes unless you pass `--allow-argv-secret`.
+
+## Modes: what each mode redacts
+
+`pmask` selects one of three execution modes. Runs on the secret or isolation path print `mode=` and one note per unapplied option at default verbosity. Direct redaction runs without secrets or isolation omit the `mode=` line and print a degradation summary when needed. `--report=json` always includes `mode` and `mode_reason`.
 
 | mode | selected by | redacts | does not |
 |---|---|---|---|
-| redact | the default on a host that allows `ptrace`; `--redact` names it | `cmdline`, `comm` and `environ` for every process of the tree, at the exec-entry stop or, for a script or a re-exec, at exec completion, with the windows relocated by default | `exe`, `maps`, `fd/*` and `cwd` name the real binary unless `--rexec` is added, and the payload's memory holds its real argv unless `--no-dumpable` is added |
-| isolate | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm` and `environ` | the host still sees the supervisor and the intermediate process under the label (two labelled processes); the namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
-| plain | `--no-redact`, or a host that does not allow `ptrace` for a run that needs the runner | nothing | the run prints `mode=plain` and says the label was not applied; the payload is an ordinary process with the caller's environment |
+| `redact` | default when the host permits `ptrace`, or `--redact` | `cmdline`, `comm`, and `environ` for every process in the tree, at exec entry (or exec completion for scripts and re-execs), relocating windows by default | `exe`, `maps`, `fd/*`, and `cwd` still name the real binary unless `--rexec` is set. Payload memory still holds real `argv` unless `--no-dumpable` is set |
+| `isolate` | `--isolate[=LIST]`, or `--no-redact --isolate` | nothing: the payload inside the namespaces keeps its real `cmdline`, `comm`, and `environ` | the host sees the supervisor and helper under the label. The namespace leaves a private `hidepid=invisible` procfs in `mountinfo` and an `NSpid` chain |
+| `plain` | `--no-redact`, or a host that denies `ptrace` on the runner path | nothing | prints `mode=plain` and notes that the label was not applied. The payload runs as an ordinary process with the caller's environment |
 
-- `--redact --isolate=LIST` composes the two. It redacts the tree and
-  gives the payload exactly the namespaces the list names (`pid`, `net`,
-  `tmp`; `all` is the default). It does not substitute `--unshare` for
-  the list. A list the host cannot grant is reported as a degradation; it
-  is never replaced by a different namespace set.
-- `--isolate=none` means no isolation at all: no namespace, no
-  `no_new_privs`, no Landlock, and the payload runs with the host's view
-  unchanged. A bare `--isolate` asks for `all`.
-- `--no-redact --isolate` runs the isolation path. Isolation does not
-  need `ptrace`, and dropping the namespaces would be a silent fallback,
-  so the namespaces are applied and the run reports `mode=isolate`.
-- `--unshare` is the redaction path with private user, pid and mount
-  namespaces and a private procfs. The host-side entry is the label.
-- Every mask option that the plain or isolate mode cannot apply prints
-  one note naming the option and the reason. `--no-dumpable` is one of
-  them: the plain and isolate paths do not change the payload's
-  dumpability, and the report's `payload_dumpable` is computed from the
-  selected mode rather than from the request.
-- `--audit` needs the redaction mode. It is refused with exit 255 for
-  `--no-redact`, for `--isolate`, and on a host that selects plain
-  because `ptrace` is unavailable. `--report=json` needs `--secret`,
-  `--isolate` or `--no-redact`; a plain mask run and a `--daemon` job
-  refuse it with exit 255.
-- A 32-bit image is refused, not redacted: one warning names it, the
-  session counts it, and the payload keeps its real `cmdline`, `comm` and
-  `environ`.
-- `-q` suppresses the `mode=` line, every note and the summary. It does
-  not suppress the `--audit` rows or a `--report` document, which were
-  requested explicitly.
+Mode composition rules:
 
-## How it works
+- `--redact --isolate=LIST` composes redaction with the exact namespaces in `LIST` (`pid`, `net`, `tmp`, default `all`). `pmask` never substitutes `--unshare` for `LIST` and reports any unavailable namespace as a degradation.
+- `--isolate=none` disables all isolation (no namespace, no `no_new_privs`, no Landlock). It still runs on the redaction path, so the payload gets the label and a plausible decoy `environ` in the host namespace view. A bare `--isolate` requests `all`.
+- `--no-redact --isolate` selects `mode=isolate` and applies the namespaces without requiring `ptrace`.
+- `--unshare` runs the redaction path inside private user, pid, and mount namespaces with a private procfs.
+- Plain and isolate modes print one note for every mask option they cannot apply, including `--no-dumpable`. The JSON report derives `payload_dumpable` from the active mode rather than the requested flag.
+- `--audit` requires redaction mode and exits 255 under `--no-redact`, bare `--isolate`, or a host that falls back to `plain`. Every local mode supports `--report`. Only `--daemon` refuses it (exit 255).
+- `pmask` refuses 32-bit images before execution by default, prints one warning, counts the refusal, and kills the exec with `SIGKILL` unless you pass `--allow-foreign`.
+- `-q` suppresses the `mode=` line, notes, and the session summary. `-q` does not suppress `--audit` rows, `--report` output, or `pmask: refused:` lines.
 
-`pmask` is a `ptrace` supervisor and the parent of the tree:
+## How pmask works
 
-1. **Follow everything.** `PTRACE_O_TRACE{FORK,VFORK,CLONE,EXEC,EXIT}`
-   attaches to children, grandchildren, threads, `posix_spawn()`,
-   `system()`, double-forking daemons, static binaries, Go runtimes and
-   `#!` scripts. No `LD_PRELOAD`, no libc dependency.
-2. **Zero exposure at exec entry.** Each process is syscall-supervised
-   until its first exec settles, so `execve`/`execveat` stops at syscall
-   entry. The supervisor swaps the `argv`/`envp` pointer arrays in the
-   old image to point at the label and at empty strings. The kernel
-   never copies the real command line into the new image of an ELF
-   target. The child's old image holds the parent's argv bytes from the
-   fork until this stop; the kernel never copies them.
-3. **The program still gets its arguments.** At exec completion the
-   saved strings are written into an injected anonymous mapping inside
-   the tracee and the stack's inline arrays are repointed there. `argc`,
-   the stack layout and the auxiliary vector are untouched, so glibc,
-   musl and static binaries start normally.
-4. **The process name is set too.** `prctl(PR_SET_NAME)` runs inside the
-   tracee, through a `syscall` instruction in its own vDSO, so
-   `/proc/<pid>/comm` shows the label. No writable-and-executable memory
-   is created anywhere.
-5. **The environment is redacted** from `/proc/<pid>/environ` by the
-   same swap, except variables named by `--keep-env=NAME`.
-6. **The kernel's own windows are moved, not just filled.** After the
-   swap, one `prctl(PR_SET_MM, PR_SET_MM_MAP)` call inside the tracee
-   points `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` at a
-   compact presentation block this tool owns, and rewrites the
-   `AT_EXECFN` entry of `saved_auxv` to the label. So `/proc/<pid>/cmdline`
-   is exactly the label with no padding, `/proc/<pid>/environ` is empty,
-   `/proc/<pid>/stat` fields 48 to 51 report that same extent, and
-   `/proc/<pid>/auxv` names the label. The one-shot map is not gated by
-   `CAP_SYS_RESOURCE`; the bare `PR_SET_MM_ARG_*` operations are, and the
-   capability check sits after the map dispatch. `--no-exact` keeps the
-   in-place redaction: the window is the label plus one NUL per argument,
-   and `/proc/<pid>/environ` reads back as a NUL block instead of an
-   empty file. The program's own argv was never in that window, because
-   the entry swap replaces it before the kernel copies it.
-7. **Job control works.** Group-stops are answered with
-   `PTRACE_LISTEN`, so `Ctrl-Z`, `kill -STOP` and `SIGCONT` behave in a
-   masked shell.
-8. **Session end is explicit.** By default, descendants still running
-   when the command exits are detached: they keep the label and their
-   redacted image, and a later exec in them is not redacted because no
-   supervisor watches them any more. `--on-exit wait` and
-   `--on-exit kill` are the other two policies.
-9. **`TracerPid` is zero only with `--detach`.** A supervisor has to
-   exist for the tree to stay redacted. `--detach` releases each process
-   once its exec has settled, which brings `TracerPid` to 0 and costs
-   coverage: a detached process is not followed at all, so nothing it
-   forks and none of its own later execs are redacted. The session
-   summary counts each detach, and the tree below the detach runs
-   unredacted for the rest of its life.
+`pmask` operates as a `ptrace` supervisor and parent of the process tree:
 
-Scripts and re-execs fall back to post-exec redaction: the kernel needs
-the real argv to build an interpreter line, and a settled process no
-longer stops at syscall entry. The kernel copies the interpreter command
-line, including the script's arguments, and the real environment unless
-`--keep-env`; the completion stop zeroes that region. `tests/compare.sh`
-prints the duration of that window for the host it runs on.
+1. **Follow every descendant.** `PTRACE_O_TRACE{FORK,VFORK,CLONE,EXEC,EXIT}` auto-attaches children, grandchildren, threads, `posix_spawn()`, `system()`, double-forking daemons, static binaries, Go runtimes, and `#!` scripts. `pmask` uses no `LD_PRELOAD` and requires no libc in the tracee.
+2. **Swap pointers at exec entry for zero exposure.** Each new process runs under `PTRACE_SYSCALL` until its first exec settles. At `execve`/`execveat` entry, the tracer replaces the old image's `argv` and `envp` pointer arrays with the label and presentation-sized filler strings. The kernel never copies the real command line into the new image of an ELF target.
+3. **Restore real arguments before execution begins.** At exec completion (`PTRACE_EVENT_EXEC`), the tracer injects an anonymous mapping into the tracee, writes the saved real strings there, and repoints the stack's inline `argv`/`envp` arrays. `argc`, stack layout, and auxiliary vector structure stay intact, so glibc, musl, and static binaries start normally.
+4. **Set `comm` inside the tracee.** The tracer injects `prctl(PR_SET_NAME)` through a `syscall` instruction in the tracee's own vDSO (or executable mapping). `pmask` never creates writable-and-executable memory.
+5. **Present a decoy environment.** The entry swap and completion stop replace `/proc/<pid>/environ` with a plausible decoy environment, keeping only variables named by `--keep-env=NAME`.
+6. **Relocate the kernel's windows in `[stack]`.** At completion, one unprivileged `prctl(PR_SET_MM, PR_SET_MM_MAP)` call points `mm->arg_start`/`arg_end` and `mm->env_start`/`env_end` at the presentation block inside the kernel-copied `[stack]` region (falling back to the anonymous block only if the stack region is too small). `cmdline` becomes the label plus one NUL, `arg_end == env_start`, `environ` holds the decoy or kept entries, and a second label copy sits at `env_end`. `start_stack` stays at the kernel value and the `[stack]` VMA keeps its normal size and `gd` flag. The completion stop also rewrites `AT_EXECFN` in `saved_auxv` and on the tracee's stack so `/proc/<pid>/auxv` and `getauxval(AT_EXECFN)` both return the label. `--no-exact` skips relocation and overwrites the original extent in place. Unlike bare `PR_SET_MM_ARG_*`, `PR_SET_MM_MAP` does not require `CAP_SYS_RESOURCE`.
+7. **Preserve job control.** The tracer answers group-stops with `PTRACE_LISTEN`, so `Ctrl-Z`, `kill -STOP`, and `SIGCONT` work normally inside a masked shell.
+8. **Enforce an explicit session-end policy.** By default (`--on-exit detach`), surviving descendants are detached when the master exits. Detached processes keep their label and redacted image, but later execs are not redacted. `--on-exit wait` and `--on-exit kill` are the other two policies.
+9. **Trade `TracerPid` explicitly.** Active supervision sets `TracerPid` to the tracer thread id. `--detach` detaches each tracee after its exec settles, resetting `TracerPid` to 0 at the cost of losing coverage for all later forks and execs.
 
-A 32-bit program is refused, not redacted: one warning names it and the
-session summary counts it. The program keeps its real arguments, because
-a supervisor that cannot read 32-bit registers must not swap them.
+Scripts (`#!`), `vfork` children, and settled re-execs take the post-exec path. The kernel needs the real `argv` to parse `#!` interpreters, `vfork` children share parent memory, and settled processes do not stop at syscall entry. On the post-exec path, the kernel briefly copies the real strings before the completion stop overwrites them. Run `tests/compare.sh` to measure that window on your host. Use `--strict-exec` to refuse post-exec fallbacks instead of allowing them.
+
+32-bit images are refused before execution by default. A 64-bit tracer cannot safely rewrite 32-bit registers for an entry swap, so `pmask` kills the exec with `SIGKILL`, prints one warning, and counts it in the summary unless you pass `--allow-foreign`.
 
 ## Privilege ladder
 
-Higher privileges buy more privacy in defined steps. Nothing below rung
-2 needs any privilege, and the effect of rung 2 is available at rung 0
-because the one-shot map is not gated.
+Higher privileges unlock stronger privacy in defined steps. Every rung 0 feature runs unprivileged.
 
 | rung | requirement | what it adds | limit |
 |---|---|---|---|
-| 0 | none | entry swap, label, comm, per-variable environment policy | same-uid observers read `exe`, `maps`, `fd/*`, `cwd` |
-| 0 | none | the argv and environment windows moved with `prctl(PR_SET_MM_MAP)` | a kernel built without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter denying `prctl`; `--no-exact` turns it off |
-| 0 | none | `--detach`: `TracerPid` 0 for the payload | the detached process and its descendants are not redacted at later execs |
-| 0 | none | `--no-dumpable` makes `environ`, `maps`, `fd/*` and `exe` refused for the same uid | core dumps and debugger attach stop |
-| 0 | none | `--rexec`: `exe` names the memfd, not the file | `map_files` resolves to a `/memfd:` target (asserted by `tests/compare.sh`); the full `/memfd:<label> (deleted)` text is what `readlink /proc/<pid>/exe` shows; `vm.memfd_noexec` may refuse |
-| 0 | a kernel that allows unprivileged user namespaces | `--unshare`: private pid namespace and private procfs | unavailable on hosts that gate user namespaces; opportunistic by design |
-| 0 | none | `--watch-rename`: comm stays the label after a self-rename | traps `prctl(PR_SET_NAME)` only; implies `no_new_privs` |
-| 2 | `CAP_SYS_RESOURCE` | the bare `PR_SET_MM_ARG_START`/`_ARG_END` operations, which would resize the window without rewriting the rest of the map | not used; the one-shot map at rung 0 already reaches the same result |
-| 3 | root on the host | `hidepid=2,gid=` on the system `/proc` removes the tree from every other account | polkit and distribution defaults; Yama scope needs `CAP_SYS_PTRACE`, and scope 3 lasts until reboot |
+| 0 | none | entry swap, label, `comm`, per-variable environment policy | same-uid observers still read `exe`, `maps`, `fd/*`, and `cwd` |
+| 0 | none | `prctl(PR_SET_MM_MAP)` window relocation in `[stack]` | unavailable without `CONFIG_CHECKPOINT_RESTORE` or when seccomp blocks `prctl`. `--no-exact` turns it off |
+| 0 | none | `--detach`: sets `TracerPid` to 0 for settled payloads | detached processes and their descendants run unredacted at later execs |
+| 0 | none | `--no-dumpable`: blocks same-uid reads of `environ`, `maps`, `auxv`, `exe`, `fd`, and `mem` | disables core dumps and debugger attach |
+| 0 | none | `--rexec`: moves `exe` to `/memfd:<label> (deleted)` | `map_files` resolves to `/memfd:` (asserted by `tests/compare.sh`). `vm.memfd_noexec` may block memfd execution |
+| 0 | unprivileged user namespaces | `--unshare`: private pid namespace and private procfs | unavailable on hosts that disable user namespaces. Opportunistic by design |
+| 0 | none | `--watch-rename`: keeps `comm` at the label across self-renames | traps `prctl(PR_SET_NAME)` and `open`/`openat`/`openat2`/`creat` on `/proc/.../comm` (plus write syscalls under `=strict`). Implies `no_new_privs` and refuses `--on-exit detach` |
+| 2 | `CAP_SYS_RESOURCE` | bare `PR_SET_MM_ARG_START`/`_ARG_END` calls | unused. One-shot `PR_SET_MM_MAP` achieves the same result at rung 0 |
+| 3 | root on the host | `hidepid=2,gid=` on system `/proc` hides the tree from other accounts | conflicts with some polkit and distro defaults. Yama scope requires `CAP_SYS_PTRACE`, and scope 3 lasts until reboot |
 
 ## Verification
 
-The detection suites do not ask you to trust this README. Each detection
-suite runs its battery *without* `pmask` first and requires the observer
-to find the markers. A detector that cannot detect proves nothing, so the
-negative control comes first. Then zero sightings under the mask,
-liveness under the label, and functional checks on argv, environment,
-stdio, signals and exit codes.
+Each detection suite proves its detector works before testing `pmask`. First, the suite runs the workload without `pmask` and requires the observer to detect the markers (negative control). Next, the suite requires zero sightings under the mask, verifies process liveness under the label, and checks `argv`, environment, stdio, signals, and exit codes.
 
 ```sh
 sh tests/run.sh      # on a host that permits ptrace
-sh vm/run.sh         # anywhere: the nine staged suites in a QEMU micro-VM
+sh vm/run.sh         # anywhere: 11 staged suites in a QEMU micro-VM
 ```
 
-Run the native gate as an unprivileged uid. As root, `CAP_SYS_PTRACE`
-lets the observer read what a same-uid peer cannot, so the same-uid
-refusal cases cannot be decided. They print `SKIP` and name the root case
-instead of failing. `vm/run.sh` runs the suites as root and as uid 1000.
+Run the native gate (`tests/run.sh`) as an unprivileged uid. As root, `CAP_SYS_PTRACE` bypasses same-uid refusals, so those cases print `SKIP` instead of asserting refusal. `vm/run.sh` runs both root and uid-1000 passes automatically.
 
-`tests/run.sh` runs seventeen suites: validate, suite, stress, edge,
-daemon, daemon_neg, options, core, audit, store, isolation, lease,
-secrets, compare, conformance, regressions and the per-issue QA fragment
-dispatcher (`tests/qa.sh`). `vm/run.sh` fetches a
-pinned kernel and static busybox by sha256, builds the musl binaries,
-packs an initramfs and boots it under QEMU: KVM when the host provides a
-usable `/dev/kvm` for the guest architecture, TCG otherwise
-(`PMASK_VM_KVM=0|1` forces the choice). It runs the staged suites twice,
-as root and as uid 1000, and exits 0 only when both passes report
-`FINAL: ALL-PASS`.
+`tests/run.sh` runs 18 suites plus the per-issue QA dispatcher (`tests/qa.sh`): `validate`, `suite`, `stress`, `edge`, `daemon`, `daemon_neg`, `options`, `redteam`, `blueteam`, `core`, `audit`, `store`, `isolation`, `lease`, `secrets`, `compare`, `conformance`, and `regressions`.
 
-`measurements/` holds the speed comparison and the zapper comparison
-harnesses. They are not part of the gate; run them on a quiet host and
-read the conditions they print.
+`vm/run.sh` stages 11 suites (`validate`, `suite`, `stress`, `edge`, `daemon`, `daemon_neg`, `options`, `redteam`, `blueteam`, `core`, and `audit`). The VM harness downloads a pinned Alpine kernel and static busybox verified by SHA-256, compiles static musl binaries, packs an initramfs, and boots QEMU. It uses KVM when `/dev/kvm` is usable for the guest architecture and TCG otherwise (`PMASK_VM_KVM=0|1` overrides). `vm/run.sh` runs all staged suites as root and as uid 1000 and exits 0 only when both passes report `FINAL: ALL-PASS`.
+
+`measurements/` contains the speed and zapper comparison harnesses. Run them on a quiet host and check the environment conditions they print.
 
 ## Honest limits
 
-- Root on the host sees that a pid exists and can read its memory. The
-  tool removes *what* a pid is, not *that* it is.
-- `cmdline` and `comm` are readable by every local account. `environ`,
-  `exe`, `maps`, `fd/*` and `cwd` are readable by the same uid and root,
-  unless `--no-dumpable` is set.
-- `/proc/<pid>/exe`, `maps`, open files, sockets and cgroups describe
-  the real binary unless `--rexec` is set. With `--rexec` the `exe` link,
-  the executable map and the `map_files/<range>` entry all name
-  `/memfd:<label> (deleted)`; the open files, sockets and cgroup path
-  still name the real thing. When the descriptor exec is refused, the
-  chain's later carriers name `/proc/self/fd/N` or a guarded temporary
-  file instead. With `--exec-once`, a later exec of a program runs from a
-  guarded temporary-file image on an executable mount, because the
-  non-dumpable supervisor cannot hand its descriptor to the tracee; the
-  file is mode 0700, sealed where the filesystem supports it, and
-  removed at session end.
-- Set-uid and set-gid programs do not gain privileges under supervision,
-  with or without `--no-new-privs`.
-- A `#!` script, a second exec in one process, and a 32-bit image take
-  the post-exec path or no redaction. The script window covers the
-  interpreter command line including the script's arguments and the
-  environment, until the completion stop zeroes them; `tests/compare.sh`
-  prints its duration.
-- `AT_EXECFN` is rewritten in `saved_auxv` when the window relocation
-  runs, so `/proc/<pid>/auxv` and anything reading it report the label;
-  `--no-exact` and a refused `PR_SET_MM_MAP` leave the auxv alone.
-  `getauxval(AT_EXECFN)` inside the
-  payload still returns the real path, because glibc reads the vector the
-  kernel copied onto the stack at startup rather than the saved copy.
-- The relocating `prctl` is a single unprivileged call, but a kernel
-  without `CONFIG_CHECKPOINT_RESTORE`, or a seccomp filter that denies
-  `prctl`, refuses it. The label still replaces the arguments in place,
-  the extent in `/proc/<pid>/stat` becomes the label plus one NUL per
-  argument rather than the original byte length, and the session summary
-  prints how many execs kept their extent. `pmask probe` reports the
-  same thing as the `exact cmdline window` row.
-- The real `argv` and environment strings live in the tracee's memory for
-  the life of the process, in the injected block its own libc reads. A
-  reader with `ptrace` permission over it, which means the same uid when
-  the payload is dumpable, recovers them from `/proc/<pid>/mem`;
-  `--no-dumpable` closes that for the same uid. The cost is the `EACCES`
-  shape: `environ`, `maps`, `auxv`, `exe` and `fd` are refused where an
-  ordinary same-uid process allows them, and `/proc/<pid>/stat` fields 48
-  to 51 read `0 0 0 0`. The zeros alone are not specific, because other
-  daemons report them too; the five-file refusal set is.
-- `--keep-env` re-exposes the whole environment and `--keep-env=NAME`
-  re-exposes the named values. A secret in either is readable by the same
-  uid, and `--keep-env` is indistinguishable from an ordinary process with
-  a large environment. A later `--keep-env=NAME` narrows an earlier
-  `--keep-env`; a later `--keep-env` widens it again.
-- What still tells the truth after the window moves is listed one
-  interface at a time in `docs/research/detection-residue.md`, with the
-  condition that reveals it in each row.
-- A `literal:` secret is in pmask's own argv until the self-mask runs,
-  and the kernel audit record for that exec is written before the
-  self-mask. `type=EXECVE` and `type=PROCTITLE` hold the value in
-  cleartext for the retention of the log. The value is also in the
-  `/proc/<pid>/cmdline` of a wrapper such as `sudo` for the wrapper's
-  whole life, and in the interactive shell's history file. `--args-from-fd`
-  keeps the payload vector out of pmask's argv; `file:`, `agent:` and
-  `stdin` sources never put the value in pmask's own argv. An `env:`
-  source is in the caller's environment, which is where the shell and the
-  wrapper already hold it.
-- A delivered `--secret` value is absent from the payload's `cmdline`,
-  `environ` and `ps`. It is still readable by the host: the payload holds
-  it on an inherited descriptor whose `FD_CLOEXEC` is cleared on purpose,
-  so every descendant inherits it, and `/proc/<child>/fd/<N>` names a
-  sealed `memfd` that a same-uid peer can open.
-  `--secret-close-on-exec` closes it in each of the payload's direct
-  children at its fork, while the payload keeps it; a process that shares
-  the payload's descriptor table
-  (`clone(CLONE_FILES)` without `CLONE_THREAD`) is reported as a
-  degradation. `--detach` cannot enforce the close below the payload, and
-  the run warns. `--secret-burn` narrows the window to the reader's own
-  `ftruncate(fd, 0)` call: the descriptor is sealed without
-  `F_SEAL_SHRINK`, so the reader can truncate it once and cannot grow it
-  back. It is enforced for a reader that cooperates; a reader that keeps
-  a copy defeats it, and a peer that opens the memfd before the burn sees
-  the value.
-- The label is cut at three places: `comm` keeps 15 bytes, the exec entry
-  scratch keeps 254 bytes, and the post-exec path cuts it to the argument
-  area the kernel copied. A warning prints once when a label is longer
-  than 254 bytes. The completion block carries the whole label, so with
-  the default `PR_SET_MM_MAP` relocation `/proc/<pid>/cmdline` is the
-  whole label; with `--no-exact` the visible window keeps the 254-byte
-  entry copy. The kernel refuses an argument over 131072 bytes with
-  `E2BIG`.
-- Without `--detach`, every process of the tree carries the supervisor's
-  pid in `/proc/<pid>/status` `TracerPid`, and a reader can see that the
-  tree is supervised. That id is the tracer thread, not the supervisor
-  process: the thread's `comm` is the session's label (or its `--comm`),
-  and its `Tgid` is the supervisor's pid while its `Pid` is the thread
-  id, so the task directory still shows a second thread for every
-  supervised tree. `--detach` brings `TracerPid` to 0 and gives up
-  later-exec coverage; the session summary counts each detach.
-- A session consumes the `SIGCHLD` notifications `CLD_STOPPED`,
-  `CLD_TRAPPED`, `CLD_CONTINUED` and `CLD_DUMPED` for its tracees, so a
-  program that watches those codes sees fewer of them.
-- Linux 5.3 or newer (`PTRACE_GET_SYSCALL_INFO`), x86-64 or aarch64.
-- A masking session owns the calling process's `waitpid(-1)` domain, so
-  sessions in one process are serialized.
+- Root sees that a pid exists and reads its memory. `pmask` hides *what* a process is doing, not *that* the process exists.
+- Every local account reads `cmdline` and `comm`. Same-uid processes and root also read `environ`, `exe`, `maps`, `fd/*`, and `cwd` unless `--no-dumpable` is set.
+- `/proc/<pid>/exe`, `maps`, open files, sockets, and cgroups reflect the real binary unless you pass `--rexec`. With `--rexec`, `exe`, the executable mapping, and `map_files/<range>` name `/memfd:<label> (deleted)`, while open files, sockets, and cgroups remain real. Fallback carriers name `/proc/self/fd/N` or a guarded mode-`0700` temporary file. Under `--exec-once`, later execs use a verified temporary-file carrier in `$XDG_RUNTIME_DIR` (or `/dev/shm`) that is unlinked at session end.
+- Set-uid and set-gid binaries do not elevate privileges under `ptrace` supervision, with or without `--no-new-privs`.
+- `#!` scripts, `vfork` children, and settled re-execs take the post-exec path unless `--strict-exec` refuses them. On the post-exec path, the interpreter command line and environment remain briefly visible until the completion stop overwrites them. `tests/compare.sh` measures that window.
+- In exact mode, the completion stop rewrites `AT_EXECFN` in both `saved_auxv` and the stack auxiliary vector so `/proc/<pid>/auxv` and `getauxval(AT_EXECFN)` both report the label. `--no-exact` and a refused `PR_SET_MM_MAP` leave the real executable path in both locations.
+- A kernel without `CONFIG_CHECKPOINT_RESTORE` or a seccomp filter blocking `prctl` refuses `PR_SET_MM_MAP`. `pmask` then falls back to in-place overwriting: `/proc/<pid>/stat` keeps the original extent, `cmdline` shows the label padded with spaces and one NUL, and the session summary counts each affected exec. `pmask probe` reports this capability on the `exact cmdline window` row.
+- The real `argv` and environment strings live in the tracee's injected anonymous mapping for the life of the process. A same-uid reader recovers them from `/proc/<pid>/mem` while the tracee is dumpable. `--no-dumpable` blocks that read at the cost of a six-file `EACCES` fingerprint (`environ`, `maps`, `auxv`, `exe`, `fd`, and `mem`) and `0 0 0 0` in `/proc/<pid>/stat` fields 48 to 51.
+- `--keep-env` re-exposes the full environment, and `--keep-env=NAME` re-exposes named variables. Secrets in kept variables become readable to same-uid observers. A later `--keep-env=NAME` narrows an earlier `--keep-env`, and a later `--keep-env` widens it again.
+- `docs/research/detection-residue.md` lists every surviving `/proc` and kernel interface and the condition that reveals it.
+- A `literal:` secret enters `pmask`'s `argv` before self-masking, so kernel audit records (`type=EXECVE`, `type=PROCTITLE`), wrappers such as `sudo`, and interactive shell history capture it. An `env:` secret stays in the caller's shell and wrapper environments. Use `file:`, `agent:`, `stdin`, and `--args-from-fd` to keep secrets off command lines.
+- A `--secret` value never enters the payload's `cmdline`, `environ`, or `ps`. In redaction mode, the payload is non-dumpable by default, blocking same-uid reads of `/proc/<child>/fd/<N>` and payload memory (`--allow-dumpable` opts out). The descriptor clears `FD_CLOEXEC` so the payload can read it after exec. `--secret-close-on-exec` closes the descriptor in direct children at fork, except for processes sharing the descriptor table via `clone(CLONE_FILES)` without `CLONE_THREAD` (reported and counted). `--detach` warns because no tracer remains to close descriptors in descendants. `--secret-burn` clears `F_SEAL_SHRINK` so a cooperating reader can truncate the memfd once without regrowth, though a reader that copies the value or a peer that reads before the burn defeats it.
+- Labels truncate at three boundaries: 15 bytes for `comm`, 254 bytes for the exec-entry scratch buffer, and the kernel's copied argument span on the post-exec path. `pmask` warns once when a label exceeds 254 bytes. Under default `PR_SET_MM_MAP` relocation, the settled `/proc/<pid>/cmdline` holds the full label. Under `--no-exact`, the visible window keeps the 254-byte entry copy. The kernel rejects arguments over 131072 bytes with `E2BIG`.
+- Without `--detach`, every tracee reports the tracer thread id in `/proc/<pid>/status` `TracerPid`. That thread uses the session's `comm` or label, has `Tgid` equal to the supervisor's pid, and has `Pid` equal to its thread id, so `/proc/<sup>/task/` shows two threads. `--detach` sets `TracerPid` to 0 at the cost of losing later-exec coverage.
+- A supervision session consumes `SIGCHLD` notifications (`CLD_STOPPED`, `CLD_TRAPPED`, `CLD_CONTINUED`, `CLD_DUMPED`) for its tracees.
+- `pmask` requires Linux 5.3 or newer (`PTRACE_GET_SYSCALL_INFO`) on `x86_64` or `aarch64`.
+- A masking session owns the calling process's `waitpid(-1)` domain, so sessions inside one process are serialized.
 
 ## What a defender still sees
 
-The rewrite is of `/proc` content, not of the process table. These
-signals survive, and each is a one-line read. The measured detail, with
-the command and the host for each row, is in
-`docs/research/detection-residue.md` and
-`docs/research/detection-measured.md`.
+`pmask` rewrites `/proc` content, not the kernel process table. The signals below survive and are readable in one line. Measured details, commands, and host conditions live in `docs/research/detection-residue.md` and `docs/research/detection-measured.md`. The red-team review fixes and shape comparisons against `zapper` and `psgen` live in `docs/REDTEAM-RESULTS.md` and `docs/COMPETITORS.md`.
 
 | signal | what it shows | when |
 |---|---|---|
-| the tracer thread | a second thread of the supervisor whose `comm` is the session's label, not the retired `pmask-tracer`; its `Tgid` is the supervisor's pid and its `Pid` is the thread id, so the pair `Tgid != Pid` is visible in `/proc/<sup>/task/<tid>/status` | every mode that redacts; `--isolate` and `--no-redact` have no tracer, and `--detach` zeroes each tracee's `TracerPid` while the supervisor's thread lives for the session |
-| `TracerPid` | the tracer's thread id in `/proc/<pid>/status`, which is not the payload's parent and is absent from `readdir("/proc")` | every attached mode; `0` under `--detach` |
-| the label and `exe` split | `comm` and `cmdline` say the label, while `exe` and `maps` name the real binary | default; `--rexec` moves `exe` to `memfd:<label>` and leaves the open files and cgroup real |
-| the memfd names | `/proc/<pid>/exe -> /memfd:<label> (deleted)` for the image family, `/proc/<pid>/fd/N -> /memfd:pmask-secret (deleted)` for a delivered secret, `/secretmem (deleted)` for the supervisor's copy | `--rexec` and `--image`, `--secret`; the supervisor's secret buffer in the CLI path |
-| the empty `environ` | 0 bytes for a live, non-kernel process, or a NUL run under `--no-exact`; `--keep-env` makes it an ordinary environment again | default, `--no-dumpable`, `--detach`, `--rexec` |
-| the supervisor's own entry | a labelled process with an argv window of the label plus one NUL, 0-byte `environ`, a non-dumpable descriptor table and two threads | every mask run; `PMASK_NO_SELFMASK=1` is the escape |
-| the launch window | the supervisor's argv, an interpreter command line and the payload's real `comm` are readable for a few hundred microseconds at exec | every mode; the `comm` window measured a median 307.6 us (min 257.9, max 394.2) for a script payload on Debian 13, kernel 6.12.113, uid 1000, LXC (`sh measurements/launch-window.sh`, `WINDOW_ROUNDS=3`, `WINDOW_N=60`) |
-| the audit record | the supervisor's `EXECVE`/`PROCTITLE` record holds the real argv and a `literal:` secret; the payload's record holds the label and one empty string per remaining argument | any host with the kernel audit subsystem enabled |
-| modes that do not redact | the real `cmdline`, `comm` and `environ`, because there is no rewrite at all | a 32-bit image, `--no-redact`, `--isolate`, and a host that cannot `ptrace`; the run prints its mode |
+| the tracer thread | a second thread inside the supervisor whose `comm` is the session label (never the retired `pmask-tracer`). Its `Tgid` is the supervisor pid and its `Pid` is the thread id, exposing `Tgid != Pid` in `/proc/<sup>/task/<tid>/status` | every redacting mode. `--isolate` and `--no-redact` have no tracer. `--detach` zeroes each tracee's `TracerPid` while keeping the supervisor's thread for the session |
+| `TracerPid` | the tracer thread id in `/proc/<pid>/status`, which differs from the parent pid and is absent from `readdir("/proc")` | every attached mode. `0` under `--detach` |
+| the label and `exe` split | `comm` and `cmdline` show the label, while `exe` and `maps` name the real binary | default. `--rexec` moves `exe` to `/memfd:<label> (deleted)` while open files and cgroups stay real |
+| memfd and carrier names | `/proc/<pid>/exe -> /memfd:<label> (deleted)` for images and `/proc/<pid>/fd/N -> /memfd:pmask-secret (deleted)` for secrets. Later `--exec-once` execs use a named carrier in `$XDG_RUNTIME_DIR` or `/dev/shm/.pmask-rexec-<label>-<pid>-<hex>-0` | `--rexec`, `--image`, `--secret`, `--exec-once` |
+| the `environ` window | a complete plausible decoy environment (110 bytes by default), or the `--keep-env` entries. The payload keeps its real environment | default and exact runs. `--no-exact` fills the original extent with the same entries |
+| the supervisor's own entry | a labelled process with a compact `argv` window, a decoy `environ`, a dumpable descriptor table at rest, and two threads. `auxv` `AT_EXECFN` matches the label when `PR_SET_MM_MAP` succeeds, and names `pmask` otherwise | every mask run. `--no-dumpable`, `--hide-pid`, `--encrypt-memory`, `--secret`, and `--report` pin the supervisor non-dumpable. `PMASK_NO_SELFMASK=1` is the debug escape |
+| the launch window | the supervisor's `argv`, an interpreter command line, and a script's real `comm` stay readable for a few hundred microseconds at exec | every mode. The script `comm` window measured a median 307.6 us (min 257.9, max 394.2) on Debian 13, kernel 6.12.113, uid 1000, LXC (`sh measurements/launch-window.sh`, `WINDOW_ROUNDS=3`, `WINDOW_N=60`) |
+| the seccomp status fingerprint | `/proc/<pid>/status` shows `NoNewPrivs: 1` and one filter per active feature: `Seccomp_filters: 1` for `--watch-rename` or the `--exec-once` exec filter, and `2` when both are active. Compare deltas in containers that already attach a filter | `--exec-once` (with `--on-exit wait` or `kill` and without `--no-exit-kill`), `--watch-rename`, and `--stealth` |
+| the audit record | the supervisor's `EXECVE`/`PROCTITLE` record holds its real `argv` (including any `literal:` secret). The payload's record holds the label plus one empty string per extra argument | any host with Linux audit enabled |
+| non-redacting modes | real `cmdline`, `comm`, and `environ`, with no rewrite | `--no-redact`, bare `--isolate`, or a host denying `ptrace`. 32-bit images are refused by default and run unredacted only with `--allow-foreign` |
 
-None of these is specific on its own. `TracerPid != 0` fires on every
-`strace` user, and stat fields 48 to 51 reading `0 0 0 0` also appear on
-ordinary daemons. A detector that combines the tracer thread, the
-label/`exe` disagreement and the empty `environ` is the one that
-identifies a masked tree.
+No single signal is unique to `pmask`. `TracerPid != 0` matches `strace`, and `0 0 0 0` in stat fields 48 to 51 appears on ordinary non-dumpable daemons. A detector identifies a masked tree by combining the tracer thread, the label/`exe` split, and the decoy `environ`.
 
 ## Prior art
 
-`zapper` is the closest tool: it acts at the exec stop, zeroes argv and
-environ in place, repairs the auxv pointers, and detaches (or follows
-children with `-f`). `mimic` execs the real binary with a
-fake `argv`/`envp` and injects the real arguments at `main()`. `memexec`
-writes a binary to a memfd and execs it through `execveat`, so a `noexec`
-mount cannot refuse the exec; it redacts nothing. `hidepid=2` is a
-system-wide `/proc` policy and does not help a same-uid observer.
-`setproctitle` rewrites the title in process, which on Linux shares the
-area with `environ`.
+`zapper` acts at exec completion, zeroes `argv` and `environ` in place, repairs `auxv` pointers, and detaches (or follows children with `-f`). `mimic` executes the binary with fake `argv`/`envp` and injects the real arguments at `main()`. `memexec` runs a binary from a memfd through `execveat` to bypass `noexec` mounts and redacts nothing. `hidepid=2` is a system-wide `/proc` policy that does not stop same-uid observers. `setproctitle` rewrites the title in-process inside the shared `environ` region.
 
-`pmask`'s difference is the exec-entry swap plus the relocation of the
-kernel's own windows: the program keeps its real `argv` and `environ`,
-and `/proc` shows the label with no padding. The field survey in
-`docs/research/survey-2025/` records the comparison, and
-`measurements/vs-zapper.sh` reproduces the zapper rows on a host that has
-a C compiler and network access.
+`pmask` combines exec-entry pointer swapping with `PR_SET_MM_MAP` window relocation. Every program keeps its real `argv` and `environ`, while `/proc` shows the label with no padding. See `docs/research/survey-2025/` for the full comparison, and run `measurements/vs-zapper.sh` on a host with a C compiler and network access to reproduce the `zapper` benchmarks.
 
 ## Build
 
-Any Linux 5.3 or newer, x86-64 or aarch64, glibc or musl. Rust 1.85 or
-newer (`rust-version` in `Cargo.toml`, checked by a CI job).
+`pmask` builds on Linux 5.3 or newer (`x86_64` or `aarch64`, glibc or musl) with Rust 1.87 or newer (`rust-version` in `Cargo.toml`).
 
 ```sh
 ./build.sh            # glibc build
@@ -617,7 +315,7 @@ newer (`rust-version` in `Cargo.toml`, checked by a CI job).
 ./build.sh --test     # also run cargo test --lib and the unwrap audit
 ```
 
-Manual equivalent:
+Manual build commands:
 
 ```sh
 cargo build --locked --release
@@ -628,35 +326,32 @@ cargo test --locked --lib
 cargo package --list
 ```
 
-Dependencies are pinned by `Cargo.lock`. The first build reads crates.io;
-a later build with the same lock and a warm cargo cache needs no network.
+`Cargo.lock` pins all dependencies. The first build fetches crates from crates.io. Subsequent builds with a warm cargo cache work offline.
 
-Binaries: `pmask` (CLI), `pmaskd` (daemon), and, with
-`--features testbins`, `pmask-testcases` and `pmask-protocases` (probes
-the suites use). Copy the binaries you want to a directory on `PATH`; no
-config file is read. The package also ships `man/pmask.1`,
-`man/pmaskd.8` and completions for bash, zsh and fish. The systemd units
-under `contrib/systemd/` use `ExecStart=/usr/bin/pmask` for
-`pmask-run@.service` and `ExecStart=/usr/bin/pmaskd` for
-`pmaskd@.service`; for a portable install, copy the binaries to `/usr/bin`
-or edit `ExecStart` to the installed path.
+The build produces `pmask` (CLI) and `pmaskd` (daemon). Passing `--features testbins` also builds `pmask-testcases` and `pmask-protocases` for the test suites. Copy the release binaries into a directory on `PATH`. Neither binary reads a configuration file. The repository also ships `man/pmask.1`, `man/pmaskd.8`, and shell completions for bash, zsh, and fish. The systemd units under `contrib/systemd/` set `ExecStart=/usr/bin/pmask` for `pmask-run@.service` and `ExecStart=/usr/bin/pmaskd` for `pmaskd@.service`. Install the binaries into `/usr/bin` or adjust `ExecStart` to match your path.
 
 ## Install
 
-Release binaries are static musl, for x86-64 and ARM64. Every tag so far
-carries a suffix, and GitHub publishes a suffixed tag as a prerelease,
-which `releases/latest` skips: name the tag in the URL.
+`pmask` is distributed through GitHub Releases (not crates.io) as static musl binaries for `x86_64` and `aarch64`.
+
+Download the latest release (`v0.1.0` and newer):
 
 ```sh
-V=v0.1.0-beta.3
+curl -fLO "https://github.com/Azathothas/pmask/releases/latest/download/pmask-x86_64-unknown-linux-musl"
+chmod +x pmask-x86_64-unknown-linux-musl
+./pmask-x86_64-unknown-linux-musl --version
+```
+
+Pin a specific release tag:
+
+```sh
+V=v0.1.0
 curl -fLO "https://github.com/Azathothas/pmask/releases/download/$V/pmask-x86_64-unknown-linux-musl"
 chmod +x pmask-x86_64-unknown-linux-musl
 ./pmask-x86_64-unknown-linux-musl --version
 ```
 
-Each release also has `pmaskd-<target>`, the manual pages, a tarball with
-the completions and systemd units, `SHA256SUMS`, and a Sigstore
-provenance bundle. Check a download with:
+Each release also provides `pmaskd-<target>`, manual pages, a tarball with shell completions and systemd units, `SHA256SUMS`, and a Sigstore provenance bundle. Verify downloads before use:
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS
@@ -680,4 +375,4 @@ scripts/          the CI guards and verify.sh, the gate wrapper
 
 ## License
 
-0BSD. See `LICENSE`. Use it, ship it, no attribution required.
+0BSD. See `LICENSE`. Use and distribute `pmask` without attribution.

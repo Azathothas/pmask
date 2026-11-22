@@ -109,6 +109,19 @@ fn main() {
         die(&format!("cannot open /dev/null: {}", e));
     }
     let args = parse();
+    // `--env-file` can hold secrets, and a large file takes long enough
+    // that a same-uid scanner reads the staging copy while it loads.  A
+    // daemon that carries job environment values is hardened before the
+    // first read; a host that refuses the call still gets the run, and
+    // the existing warnings say what is open.
+    if !args.env_files.is_empty() {
+        let notes = pmask::mem::harden_self();
+        if !args.cfg.quiet {
+            for note in notes {
+                eprintln!("pmaskd: warning: self-hardening incomplete: {}", note);
+            }
+        }
+    }
     let mut overrides: Vec<(OsString, OsString)> = Vec::new();
     for f in &args.env_files {
         let path = std::path::Path::new(f);

@@ -1,0 +1,159 @@
+FIELDS uname nproc uid capeff kernel kvm date_ns zapper rounds start_n exec_n syscall_n
+HOST  uname=Linux 6.12.113+deb13-amd64 x86_64
+HOST  nproc=8
+HOST  uid=1000
+HOST  capeff=0000000000000000
+HOST  kernel=6.12.113+deb13-amd64
+HOST  kvm=usable
+HOST  date_ns=yes
+HOST  zapper=v1.1
+HOST  rounds=5
+HOST  start_n=100
+HOST  exec_n=50
+HOST  syscall_n=100000
+STARTUP variant=baseline round=1 n=100 median_us=2160 p95_us=3003
+STARTUP variant=baseline round=2 n=100 median_us=1971 p95_us=2895
+STARTUP variant=baseline round=3 n=100 median_us=1991 p95_us=2800
+STARTUP variant=baseline round=4 n=100 median_us=2027 p95_us=2627
+STARTUP variant=baseline round=5 n=100 median_us=2087 p95_us=2974
+STARTUP-MEDIAN variant=baseline median_us=2027 spread_pct=9
+STARTUP variant=zapper round=1 n=100 median_us=5350 p95_us=7865
+STARTUP variant=zapper round=2 n=100 median_us=5425 p95_us=7617
+STARTUP variant=zapper round=3 n=100 median_us=5470 p95_us=7614
+STARTUP variant=zapper round=4 n=100 median_us=5373 p95_us=6971
+STARTUP variant=zapper round=5 n=100 median_us=5730 p95_us=8324
+STARTUP-MEDIAN variant=zapper median_us=5425 spread_pct=7
+STARTUP variant=zapper-f round=1 n=100 median_us=5110 p95_us=7579
+STARTUP variant=zapper-f round=2 n=100 median_us=4862 p95_us=6365
+STARTUP variant=zapper-f round=3 n=100 median_us=5155 p95_us=7130
+STARTUP variant=zapper-f round=4 n=100 median_us=5057 p95_us=7308
+STARTUP variant=zapper-f round=5 n=100 median_us=5331 p95_us=7376
+STARTUP-MEDIAN variant=zapper-f median_us=5110 spread_pct=9
+STARTUP variant=pmask round=1 n=100 median_us=4693 p95_us=6307
+STARTUP variant=pmask round=2 n=100 median_us=4620 p95_us=5777
+STARTUP variant=pmask round=3 n=100 median_us=5121 p95_us=6801
+STARTUP variant=pmask round=4 n=100 median_us=4831 p95_us=6634
+STARTUP variant=pmask round=5 n=100 median_us=4869 p95_us=6511
+STARTUP-MEDIAN variant=pmask median_us=4831 spread_pct=10
+STARTUP variant=pmask-detach round=1 n=100 median_us=4812 p95_us=5822
+STARTUP variant=pmask-detach round=2 n=100 median_us=4755 p95_us=6331
+STARTUP variant=pmask-detach round=3 n=100 median_us=5040 p95_us=6254
+STARTUP variant=pmask-detach round=4 n=100 median_us=5280 p95_us=7452
+STARTUP variant=pmask-detach round=5 n=100 median_us=4958 p95_us=7151
+STARTUP-MEDIAN variant=pmask-detach median_us=4958 spread_pct=11
+STARTUP variant=pmask-fast round=1 n=100 median_us=5630 p95_us=7725
+STARTUP variant=pmask-fast round=2 n=100 median_us=5585 p95_us=7544
+STARTUP variant=pmask-fast round=3 n=100 median_us=5516 p95_us=7373
+STARTUP variant=pmask-fast round=4 n=100 median_us=5657 p95_us=7884
+STARTUP variant=pmask-fast round=5 n=100 median_us=5946 p95_us=8446
+STARTUP-MEDIAN variant=pmask-fast median_us=5630 spread_pct=7
+EXEC variant=baseline round=1 n=50 ok=50 total_us=41685 per_exec_us=833
+EXEC variant=baseline round=2 n=50 ok=50 total_us=42723 per_exec_us=854
+EXEC variant=baseline round=3 n=50 ok=50 total_us=41277 per_exec_us=825
+EXEC variant=baseline round=4 n=50 ok=50 total_us=40580 per_exec_us=811
+EXEC variant=baseline round=5 n=50 ok=50 total_us=42550 per_exec_us=851
+EXEC-MEDIAN variant=baseline per_exec_us=833 spread_pct=5
+EXEC variant=zapper round=1 n=50 ok=50 total_us=42078 per_exec_us=841
+EXEC variant=zapper round=2 n=50 ok=50 total_us=42352 per_exec_us=847
+EXEC variant=zapper round=3 n=50 ok=50 total_us=39466 per_exec_us=789
+EXEC variant=zapper round=4 n=50 ok=50 total_us=39737 per_exec_us=794
+EXEC variant=zapper round=5 n=50 ok=50 total_us=41202 per_exec_us=824
+EXEC-MEDIAN variant=zapper per_exec_us=824 spread_pct=7
+EXEC variant=zapper-f round=1 n=50 ok=50 total_us=147179 per_exec_us=2943
+EXEC variant=zapper-f round=2 n=50 ok=50 total_us=148644 per_exec_us=2972
+EXEC variant=zapper-f round=3 n=50 ok=50 total_us=147202 per_exec_us=2944
+EXEC variant=zapper-f round=4 n=50 ok=50 total_us=153295 per_exec_us=3065
+EXEC variant=zapper-f round=5 n=50 ok=50 total_us=143823 per_exec_us=2876
+EXEC-MEDIAN variant=zapper-f per_exec_us=2944 spread_pct=6
+EXEC variant=pmask round=1 n=50 ok=50 total_us=88222 per_exec_us=1764
+EXEC variant=pmask round=2 n=50 ok=50 total_us=87313 per_exec_us=1746
+EXEC variant=pmask round=3 n=50 ok=50 total_us=89072 per_exec_us=1781
+EXEC variant=pmask round=4 n=50 ok=50 total_us=88362 per_exec_us=1767
+EXEC variant=pmask round=5 n=50 ok=50 total_us=93281 per_exec_us=1865
+EXEC-MEDIAN variant=pmask per_exec_us=1767 spread_pct=6
+EXEC variant=pmask-detach round=1 n=50 ok=50 total_us=40185 per_exec_us=803
+EXEC variant=pmask-detach round=2 n=50 ok=50 total_us=35008 per_exec_us=700
+EXEC variant=pmask-detach round=3 n=50 ok=50 total_us=40139 per_exec_us=802
+EXEC variant=pmask-detach round=4 n=50 ok=50 total_us=42409 per_exec_us=848
+EXEC variant=pmask-detach round=5 n=50 ok=50 total_us=44380 per_exec_us=887
+EXEC-MEDIAN variant=pmask-detach per_exec_us=803 spread_pct=26
+EXEC variant=pmask-fast round=1 n=50 ok=50 total_us=111056 per_exec_us=2221
+EXEC variant=pmask-fast round=2 n=50 ok=50 total_us=118742 per_exec_us=2374
+EXEC variant=pmask-fast round=3 n=50 ok=50 total_us=111678 per_exec_us=2233
+EXEC variant=pmask-fast round=4 n=50 ok=50 total_us=111818 per_exec_us=2236
+EXEC variant=pmask-fast round=5 n=50 ok=50 total_us=114511 per_exec_us=2290
+EXEC-MEDIAN variant=pmask-fast per_exec_us=2236 spread_pct=6
+SYSCALL variant=baseline round=1 n=100000 total_us=21216 per_call_ns=212
+SYSCALL variant=baseline round=2 n=100000 total_us=21196 per_call_ns=211
+SYSCALL variant=baseline round=3 n=100000 total_us=20842 per_call_ns=208
+SYSCALL variant=baseline round=4 n=100000 total_us=21820 per_call_ns=218
+SYSCALL variant=baseline round=5 n=100000 total_us=20701 per_call_ns=207
+SYSCALL-MEDIAN variant=baseline total_us=21196 spread_pct=5
+SYSCALL variant=zapper round=1 n=100000 total_us=20788 per_call_ns=207
+SYSCALL variant=zapper round=2 n=100000 total_us=20700 per_call_ns=207
+SYSCALL variant=zapper round=3 n=100000 total_us=22260 per_call_ns=222
+SYSCALL variant=zapper round=4 n=100000 total_us=20742 per_call_ns=207
+SYSCALL variant=zapper round=5 n=100000 total_us=21765 per_call_ns=217
+SYSCALL-MEDIAN variant=zapper total_us=20788 spread_pct=7
+SYSCALL variant=zapper-f round=1 n=100000 total_us=22136 per_call_ns=221
+SYSCALL variant=zapper-f round=2 n=100000 total_us=21292 per_call_ns=212
+SYSCALL variant=zapper-f round=3 n=100000 total_us=21241 per_call_ns=212
+SYSCALL variant=zapper-f round=4 n=100000 total_us=21285 per_call_ns=212
+SYSCALL variant=zapper-f round=5 n=100000 total_us=21078 per_call_ns=210
+SYSCALL-MEDIAN variant=zapper-f total_us=21285 spread_pct=5
+SYSCALL variant=pmask round=1 n=100000 total_us=21174 per_call_ns=211
+SYSCALL variant=pmask round=2 n=100000 total_us=21395 per_call_ns=213
+SYSCALL variant=pmask round=3 n=100000 total_us=21508 per_call_ns=215
+SYSCALL variant=pmask round=4 n=100000 total_us=21158 per_call_ns=211
+SYSCALL variant=pmask round=5 n=100000 total_us=21282 per_call_ns=212
+SYSCALL-MEDIAN variant=pmask total_us=21282 spread_pct=1
+SYSCALL variant=pmask-detach round=1 n=100000 total_us=21136 per_call_ns=211
+SYSCALL variant=pmask-detach round=2 n=100000 total_us=20944 per_call_ns=209
+SYSCALL variant=pmask-detach round=3 n=100000 total_us=20839 per_call_ns=208
+SYSCALL variant=pmask-detach round=4 n=100000 total_us=21557 per_call_ns=215
+SYSCALL variant=pmask-detach round=5 n=100000 total_us=21509 per_call_ns=215
+SYSCALL-MEDIAN variant=pmask-detach total_us=21136 spread_pct=3
+SYSCALL variant=pmask-fast round=1 n=100000 total_us=21242 per_call_ns=212
+SYSCALL variant=pmask-fast round=2 n=100000 total_us=21415 per_call_ns=214
+SYSCALL variant=pmask-fast round=3 n=100000 total_us=22302 per_call_ns=223
+SYSCALL variant=pmask-fast round=4 n=100000 total_us=21331 per_call_ns=213
+SYSCALL variant=pmask-fast round=5 n=100000 total_us=21600 per_call_ns=216
+SYSCALL-MEDIAN variant=pmask-fast total_us=21415 spread_pct=4
+BUILD variant=baseline round=1 n=3 total_ms=118
+BUILD variant=baseline round=2 n=3 total_ms=119
+BUILD variant=baseline round=3 n=3 total_ms=121
+BUILD variant=baseline round=4 n=3 total_ms=117
+BUILD variant=baseline round=5 n=3 total_ms=123
+BUILD-MEDIAN variant=baseline total_ms=119 spread_pct=5
+BUILD variant=zapper round=1 n=3 total_ms=125
+BUILD variant=zapper round=2 n=3 total_ms=125
+BUILD variant=zapper round=3 n=3 total_ms=124
+BUILD variant=zapper round=4 n=3 total_ms=123
+BUILD variant=zapper round=5 n=3 total_ms=122
+BUILD-MEDIAN variant=zapper total_ms=124 spread_pct=2
+BUILD variant=zapper-f round=1 n=3 total_ms=157
+BUILD variant=zapper-f round=2 n=3 total_ms=164
+BUILD variant=zapper-f round=3 n=3 total_ms=162
+BUILD variant=zapper-f round=4 n=3 total_ms=151
+BUILD variant=zapper-f round=5 n=3 total_ms=157
+BUILD-MEDIAN variant=zapper-f total_ms=157 spread_pct=8
+BUILD variant=pmask round=1 n=3 total_ms=134
+BUILD variant=pmask round=2 n=3 total_ms=154
+BUILD variant=pmask round=3 n=3 total_ms=156
+BUILD variant=pmask round=4 n=3 total_ms=146
+BUILD variant=pmask round=5 n=3 total_ms=141
+BUILD-MEDIAN variant=pmask total_ms=146 spread_pct=16
+BUILD variant=pmask-detach round=1 n=3 total_ms=128
+BUILD variant=pmask-detach round=2 n=3 total_ms=118
+BUILD variant=pmask-detach round=3 n=3 total_ms=117
+BUILD variant=pmask-detach round=4 n=3 total_ms=119
+BUILD variant=pmask-detach round=5 n=3 total_ms=124
+BUILD-MEDIAN variant=pmask-detach total_ms=119 spread_pct=9
+BUILD variant=pmask-fast round=1 n=3 total_ms=141
+BUILD variant=pmask-fast round=2 n=3 total_ms=151
+BUILD variant=pmask-fast round=3 n=3 total_ms=143
+BUILD variant=pmask-fast round=4 n=3 total_ms=147
+BUILD variant=pmask-fast round=5 n=3 total_ms=145
+BUILD-MEDIAN variant=pmask-fast total_ms=145 spread_pct=7
+
+BENCH: OK

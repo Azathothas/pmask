@@ -4,6 +4,8 @@
 //!   debug-mask KEY VALUE         print `{:?}` of a Mask that holds KEY=VALUE
 //!   as-uid UID CMD [ARGS...]     drop to UID (and gid UID), then exec CMD
 //!   show-nnp                     print the NoNewPrivs line of /proc/self/status
+//!   show-seccomp                 print the Seccomp_filters line of
+//!                                /proc/self/status
 //!   renamer                      rename itself with PR_SET_NAME, report comm
 //!   evilrename [SECONDS]         rename itself with PR_SET_NAME to the
 //!                                fixed name `evil-name`, print the
@@ -30,8 +32,10 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "debug-mask" => Some(debug_mask(rest)),
         "as-uid" => Some(as_uid(rest)),
         "show-nnp" => Some(show_nnp()),
+        "show-seccomp" => Some(show_seccomp()),
         "renamer" => Some(renamer()),
         "evilrename" => Some(evilrename(rest)),
+        "commwrite" => Some(commwrite(rest)),
         "count-proc" => Some(count_proc()),
         "exe-id" => Some(exe_id()),
         "procviews" => Some(procviews(rest)),
@@ -40,8 +44,26 @@ pub fn dispatch(cmd: &str, rest: &[String]) -> Option<i32> {
         "holdptrs" => Some(holdptrs(rest)),
         "holdscan" => Some(holdscan(rest)),
         "forkexec" => Some(forkexec(rest)),
+        "exec64" => Some(exec64()),
+        "selfexec" => Some(selfexec()),
         _ => None,
     }
+}
+
+/// Sleep briefly, then exec a 64-bit program.  The 32-bit build of this
+/// binary is used by the 32-bit later-exec test: the first image is
+/// 32-bit and the second is native.
+fn exec64() -> i32 {
+    // SAFETY: a short sleep, then execv of a fixed path.
+    unsafe {
+        libc::usleep(200_000);
+        let path = c"/bin/sleep";
+        let arg0 = c"sleep";
+        let arg1 = c"2";
+        let argv = [arg0.as_ptr(), arg1.as_ptr(), std::ptr::null()];
+        libc::execv(path.as_ptr(), argv.as_ptr());
+    }
+    127
 }
 
 /// A label with a NUL byte must fail at run and at spawn with
@@ -142,20 +164,33 @@ fn as_uid(args: &[String]) -> i32 {
 }
 
 fn show_nnp() -> i32 {
+    print_status_field("NoNewPrivs:", "show-nnp", "no NoNewPrivs line")
+}
+
+fn show_seccomp() -> i32 {
+    print_status_field(
+        "Seccomp_filters:",
+        "show-seccomp",
+        "no Seccomp_filters line",
+    )
+}
+
+/// Print the `/proc/self/status` line that starts with `prefix`.
+fn print_status_field(prefix: &str, who: &str, absent: &str) -> i32 {
     let status = match std::fs::read_to_string("/proc/self/status") {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("show-nnp: {}", e);
+            eprintln!("{}: {}", who, e);
             return 1;
         }
     };
     for line in status.lines() {
-        if line.starts_with("NoNewPrivs:") {
+        if line.starts_with(prefix) {
             println!("{}", line);
             return 0;
         }
     }
-    eprintln!("show-nnp: no NoNewPrivs line");
+    eprintln!("{}: {}", who, absent);
     1
 }
 
@@ -205,6 +240,103 @@ fn evilrename(args: &[String]) -> i32 {
     println!("comm={}", own_comm());
     let _ = std::io::stdout().flush();
     std::thread::sleep(std::time::Duration::from_secs(secs));
+    0
+}
+
+/// Wait briefly, then write a fixed hostile name through
+/// `/proc/self/comm` (the kernel's `comm_write` path, not `prctl`).
+/// Prints the syscall result and the comm the process can read itself.
+fn commwrite(args: &[String]) -> i32 {
+    let secs = args
+        .first()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5);
+    // `dirfd` names the comm through a descriptor, so the path the trap
+    // sees is `comm` with no `/proc/` in it.  `symlink` names it through a
+    // symlink whose path the trap also cannot resolve by shape; only the
+    // write-time descriptor check (`--watch-rename=strict`) reaches it.
+    // The default mode is the literal path.
+    let how = args.get(1).map(|a| a.as_str()).unwrap_or("");
+    let by_dirfd = how == "dirfd";
+    let by_symlink = how == "symlink";
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let path = b"/proc/self/comm\0";
+    let dir = b"/proc/self\0";
+    let mut link = std::env::temp_dir();
+    link.push(format!("pmask-comm-link-{}", std::process::id()));
+    let link_c = std::ffi::CString::new(link.as_os_str().as_encoded_bytes()).unwrap_or_default();
+    // SAFETY: both paths are NUL terminated; the descriptors are closed
+    // below.
+    let fd = unsafe {
+        if by_dirfd {
+            let d = libc::open(dir.as_ptr().cast(), libc::O_PATH | libc::O_DIRECTORY);
+            if d < 0 {
+                -1
+            } else {
+                let f = libc::openat(d, path.as_ptr().cast(), libc::O_WRONLY);
+                libc::close(d);
+                f
+            }
+        } else if by_symlink {
+            libc::symlink(path.as_ptr().cast(), link_c.as_ptr());
+            let f = libc::open(link_c.as_ptr(), libc::O_WRONLY);
+            libc::unlink(link_c.as_ptr());
+            f
+        } else {
+            libc::open(path.as_ptr().cast(), libc::O_WRONLY)
+        }
+    };
+    if fd < 0 {
+        println!(
+            "commwrite-open-errno={}",
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        );
+    } else {
+        let name = b"evil-write";
+        // SAFETY: fd is open for writing and name is a valid buffer.
+        let n = unsafe { libc::write(fd, name.as_ptr().cast(), name.len()) };
+        println!(
+            "commwrite-write={} errno={}",
+            n,
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        );
+        // SAFETY: the descriptor is ours.
+        unsafe { libc::close(fd) };
+    }
+    println!("comm={}", own_comm());
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    0
+}
+
+/// Fork and exec the literal path `/proc/self/exe` with a marker
+/// argument.  Under `--exec-once` the cache must copy the payload image,
+/// not the pmask supervisor; the child prints the marker, the parent
+/// prints the child's status.
+fn selfexec() -> i32 {
+    // SAFETY: fork and exec in the child; the parent waits.
+    unsafe {
+        let pid = libc::fork();
+        if pid == 0 {
+            let path = c"/proc/self/exe";
+            let arg0 = c"self-second";
+            let arg1 = c"selfchild";
+            let argv = [arg0.as_ptr(), arg1.as_ptr(), std::ptr::null()];
+            libc::execv(path.as_ptr(), argv.as_ptr());
+            libc::_exit(111);
+        }
+        if pid < 0 {
+            return 1;
+        }
+        let mut st = 0;
+        libc::waitpid(pid, &mut st, 0);
+        if libc::WIFEXITED(st) {
+            println!("selfexec-child={}", libc::WEXITSTATUS(st));
+            if libc::WEXITSTATUS(st) == 0 {
+                println!("SELF-SECOND");
+            }
+        }
+    }
     0
 }
 

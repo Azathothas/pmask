@@ -11,6 +11,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::FromRawFd;
 use std::path::PathBuf;
 use std::process::exit;
+use zeroize::{Zeroize, Zeroizing};
 
 pub const HELP: &str = r#"
 pmask {version} ({arch}) - redact the /proc metadata of a whole process tree
@@ -77,13 +78,51 @@ Options:
       --no-dumpable    Set PR_SET_DUMPABLE=0 in every process of the tree.
                        Same-uid observers cannot read environ, maps, exe or
                        fd.  Core dumps and debugger attach stop working.
+      --allow-dumpable Keep the payload dumpable when a secret is delivered.
+      --strict-exec    Refuse any exec that cannot be redacted at entry (a
+                       script, vfork child, entry-swap failure or settled
+                       re-exec); kills the payload instead of falling back to
+                       post-exec redaction.  Refused with --detach.
+      --allow-foreign  Run a 32-bit (foreign-ABI) image unredacted.  The
+                       default refuses it: a 32-bit payload keeps its real
+                       command line, environment and comm.
+      --stealth        Compose the strongest shape: --rexec (the exe link
+                       is a memfd), --watch-rename (comm stays the label),
+                       and --no-dumpable (the same-uid memory read is
+                       refused) unless /proc uses hidepid=invisible or ptraceable,
+                       where a non-dumpable process is a hidden pid.  Prints the
+                       trade it chose.  The network identity is not part
+                       of the mask; add --isolate=net for that.
+                       It is not
+                       the write-time variant: a symlink alias or an fd
+                       received over SCM_RIGHTS still reaches comm, and the
+                       filter shows in /proc/<pid>/status as Seccomp: 2.
+                       Add --watch-rename=strict to close the first; the
+                       second no flag can close.
+      --hide-pid       Hide the tree's pids from same-uid /proc readers.
+                       Opt in, never the default.  Needs /proc mounted
+                       with hidepid=invisible or hidepid=ptraceable; the
+                       run is refused on a weaker mount.  cgroup.procs,
+                       cgroup.threads, kill(0), pidfd, sched_getaffinity,
+                       getpriority, prlimit and root still see the pid.
+                       Refused with
+                       --no-follow or --detach, which take a process off
+                       the path that re-applies the flag; a descendant
+                       left running by --on-exit detach stays hidden only
+                       until its next exec.
+      --encrypt-memory Encrypt the supervisor's at-rest argv/environ
+                       with XChaCha20-Poly1305 under a key in
+                       memfd_secret when the kernel offers it, and keep
+                       the payload's block anonymous and
+                       MADV_DONTDUMP.  Opt in, never the default.  The
+                       payload's heap and stack are not encrypted.
       --no-new-privs   Set no_new_privs before exec.  Set-uid and file
                        capabilities give nothing, for the whole tree.
       --no-exact       Leave the kernel's argv window where it is: the
-                       label is written over the real arguments and one NUL
-                       is left per original argument slot, so the window is
-                       the label plus the slot count rather than the
-                       original extent, and environ becomes a NUL block.
+                       label is written over the real arguments and padded
+                       with spaces, so the window reads as one command line
+                       rather than a NUL run; environ gets a plausible
+                       decoy (or the --keep-env variables).
                        By default
                        the kernel's argv and environment windows are moved
                        onto the label with prctl(PR_SET_MM_MAP), so the
@@ -100,7 +139,16 @@ Options:
                        (prctl PR_SET_NAME).  Uses a seccomp filter; implies
                        --no-new-privs.  If the filter cannot be installed,
                        the run exits 126 naming the failure instead of
-                       running without the promise.
+                       running without the promise.  The filter traps a
+                       write-mode open of /proc/.../comm; a symlink alias
+                       or a descriptor received over SCM_RIGHTS reaches
+                       comm without that path, so
+                       --watch-rename=strict also checks the descriptor
+                       target on every write at one stop per write.  The
+                       filter is kernel state: /proc/<pid>/status then
+                       reports Seccomp: 2 and NoNewPrivs: 1, which names
+                       the process as filtered.  Neither mode hides that,
+                       and no flag can.
       --rexec          Exec the program from a sealed memfd so that
                        /proc/<pid>/exe names the label, not the file.  The
                        child tries execveat(AT_EMPTY_PATH), then
@@ -126,8 +174,11 @@ Options:
       --exec-once      Reuse one sealed image per distinct program, keyed
                        by the resolved path and its mtime, across the
                        execs of the session.  Later execs use a guarded
-                       temporary-file image, because the supervisor is
-                       non-dumpable.  Implies --rexec.
+                       temporary-file image, because the image descriptor
+                       is CLOEXEC and the tracee has no copy after its
+                       first exec.  With --on-exit wait or kill, a
+                       seccomp filter traps only execve, so the tracee
+                       runs free between execs.  Implies --rexec.
       --hugetlb        Ask for a hugetlbfs-backed image and report the
                        backing it got.  When huge pages are unavailable
                        the run reports it and uses an ordinary memfd.
@@ -141,6 +192,9 @@ Options:
                        runs in a transient scope named NAME.  The name is
                        visible in /proc/<pid>/cgroup.  Without systemd one
                        line is printed and the run continues.
+      --daemon PATH    Send the job to a running pmaskd on socket PATH.  The
+                       daemon owns the masking policy and the environment;
+                       only --label and --label-empty are forwarded.
   -q, --quiet          Suppress diagnostics.
   -v, --verbose        Trace every redaction event to stderr.
   -V, --version        Print version.
@@ -232,10 +286,9 @@ Secret side (works even where ptrace is refused):
                        written after the payload has exited, so a payload
                        that writes to stdout shares fd 1 with it: use
                        --report-file PATH or --report-fd N when a consumer
-                       has to parse the document.  The report describes a
-                       secret-side run, so it needs --secret, --isolate or
-                       --no-redact; a plain mask run and a --daemon job
-                       refuse the flag.
+                       has to parse the document.  Every local path
+                       produces one, including plain redaction; only a
+                       --daemon job refuses the flag.
   --report-file PATH   write the --report document to PATH instead of
                        stdout; the payload keeps fd 1 to itself.
   --report-fd N        write the --report document to descriptor N, which
@@ -316,6 +369,16 @@ pub struct Cli {
     /// `--no-dumpable`: the redaction mode makes `payload_dumpable` false;
     /// isolate and plain mode ignore it and leave the payload dumpable.
     pub no_dumpable: bool,
+    /// `--allow-dumpable`: keep the payload dumpable even when a secret
+    /// is delivered.  The same-uid fd and memory reads stay open.
+    pub allow_dumpable: bool,
+    /// `--hide-pid`: hide the tree from same-uid `/proc` readers.  Needs
+    /// a `hidepid=invisible` or `hidepid=ptraceable` mount.
+    pub hide_pid: bool,
+    /// `--encrypt-memory`: encrypt the supervisor's at-rest copies and
+    /// keep the payload's redaction block anonymous and
+    /// `MADV_DONTDUMP`.
+    pub encrypt_memory: bool,
     /// `--report=json`: print the run as one JSON object.
     pub report_json: bool,
     /// `--report-file PATH`: write that object to PATH instead of stdout.
@@ -326,14 +389,54 @@ pub struct Cli {
 
 impl Cli {
     /// True when the run needs the secret machinery rather than the plain
-    /// mask path: any secret, isolation, or an explicit `--no-redact`.
+    /// mask path: any secret, isolation, an explicit `--no-redact`, a
+    /// redaction option the runner owns, or a run report.
     ///
-    /// `--report` is not part of this decision.  The report is produced by
-    /// the runner, so the plain mask path and the `--daemon` client refuse
-    /// the flag instead of dropping it (`main`).
+    /// A report is produced by the runner on every local path, including
+    /// plain redaction; the `--daemon` client still refuses it because
+    /// the daemon owns the run and has no document to return.
     pub fn needs_runner(&self) -> bool {
-        !self.secrets.is_empty() || self.isolate.is_some() || self.no_redact
+        self.needs_runner_without_report() || self.report_json
     }
+
+    /// True when a secret, isolation, or a redaction option selects the
+    /// runner.  A report alone does not: on a host that cannot redact, a
+    /// report must not turn the run into plain mode.
+    pub fn needs_runner_without_report(&self) -> bool {
+        !self.secrets.is_empty()
+            || self.isolate.is_some()
+            || self.no_redact
+            || self.hide_pid
+            || self.encrypt_memory
+    }
+
+    /// Zero the argument and environment values this process still holds
+    /// after the child's exec plan has been built.  The child has its own
+    /// copy; the supervisor does not need the plaintext, and a supervisor
+    /// that keeps it would have to stay non-dumpable for the session.
+    pub fn scrub_values(&mut self) {
+        for a in &mut self.args {
+            scrub_os_string(a);
+        }
+        for a in &mut self.reexec_argv {
+            scrub_os_string(a);
+        }
+        for (_, v) in &mut self.env_overrides {
+            scrub_os_string(v);
+        }
+        for (_, src) in &mut self.secrets {
+            src.scrub();
+        }
+    }
+}
+
+/// Overwrite an `OsString`'s bytes in place, then replace it with an
+/// empty string.  The original allocation is dropped after the bytes are
+/// zeroed.
+pub fn scrub_os_string(s: &mut OsString) {
+    let mut bytes = std::mem::take(s).into_vec();
+    bytes.zeroize();
+    *s = OsString::new();
 }
 
 fn die(msg: &str) -> ! {
@@ -344,13 +447,18 @@ fn die(msg: &str) -> ! {
 /// Fetch an option value: the attached bytes when present, otherwise the
 /// next argv element whatever it looks like (`-l -x` labels the process
 /// `-x`, matching the C tool).
-fn take_value(flag: &str, inline: Option<Vec<u8>>, argv: &[OsString], i: &mut usize) -> Vec<u8> {
+fn take_value(
+    flag: &str,
+    inline: Option<Zeroizing<Vec<u8>>>,
+    argv: &[OsString],
+    i: &mut usize,
+) -> Zeroizing<Vec<u8>> {
     match inline {
         Some(v) => v,
         None => {
             *i += 1;
             match argv.get(*i) {
-                Some(v) => v.as_bytes().to_vec(),
+                Some(v) => Zeroizing::new(v.as_bytes().to_vec()),
                 None => {
                     eprintln!("pmask: option {} needs a value", flag);
                     exit(255);
@@ -433,7 +541,7 @@ fn note_opt(list: &mut Vec<&'static str>, name: &'static str) {
 /// block, so option parsing never depends on the process's own /proc
 /// entry.  The vector is `args_os` style: `std::env::args()` panics on a
 /// non-UTF-8 argument, and a supervisor must forward bytes exactly.
-pub fn parse_from(argv: Vec<OsString>) -> Cli {
+pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     let mut mask = Mask::new();
     let mut daemon: Option<OsString> = None;
     let mut remote_label = RemoteLabel::Default;
@@ -457,6 +565,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut secret_burn = false;
     let mut secret_close_on_exec = false;
     let mut no_dumpable = false;
+    let mut allow_dumpable = false;
+    let mut no_dumpable_hidepid = false;
+    let mut hide_pid = false;
+    let mut encrypt_memory = false;
+    let mut stealth = false;
+    let mut stealth_hidepid_warn = false;
+    let mut stealth_nodumpable = false;
     let mut report_json = false;
     let mut report_file: Option<PathBuf> = None;
     let mut report_fd: Option<libc::c_int> = None;
@@ -469,13 +584,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
     let mut i = 1usize;
 
     while i < argv.len() {
-        let bytes = argv[i].as_bytes().to_vec();
+        let bytes = Zeroizing::new(argv[i].as_bytes().to_vec());
         // A token is an option only if it starts with '-' and has another
         // byte; "-" alone is the command word.
         if end_opts || bytes.len() < 2 || bytes[0] != b'-' {
             break;
         }
-        if bytes == b"--" {
+        if bytes.as_slice() == b"--" {
             end_opts = true;
             i += 1;
             continue;
@@ -483,7 +598,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         if bytes.starts_with(b"--") {
             let body = &bytes[2..];
             let (name_b, inline) = match body.iter().position(|&b| b == b'=') {
-                Some(p) => (&body[..p], Some(body[p + 1..].to_vec())),
+                Some(p) => (&body[..p], Some(Zeroizing::new(body[p + 1..].to_vec()))),
                 None => (body, None),
             };
             let Ok(name) = std::str::from_utf8(name_b) else {
@@ -501,16 +616,16 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     mask = mask.label(text);
                 }
                 "daemon" => {
-                    let v = take_value("--daemon", inline, &argv, &mut i);
-                    daemon = Some(OsString::from_vec(v));
+                    let mut v = take_value("--daemon", inline, &argv, &mut i);
+                    daemon = Some(OsString::from_vec(std::mem::take(&mut *v)));
                 }
                 "label-empty" => {
                     mask = mask.label("");
                     remote_label = RemoteLabel::Empty;
                 }
                 "argv0" => {
-                    let v = take_value("--argv0", inline, &argv, &mut i);
-                    mask = mask.argv0(OsString::from_vec(v));
+                    let mut v = take_value("--argv0", inline, &argv, &mut i);
+                    mask = mask.argv0(OsString::from_vec(std::mem::take(&mut *v)));
                     note_opt(&mut mask_opts, "--argv0");
                 }
                 "comm" => {
@@ -652,9 +767,51 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--no-exit-kill");
                 }
                 "no-dumpable" => {
-                    mask = mask.no_dumpable();
+                    mask = mask.no_dumpable().supervisor_non_dumpable(true);
                     no_dumpable = true;
+                    no_dumpable_hidepid = pmask::caps::proc_hidepid().hides_non_dumpable();
                     note_opt(&mut mask_opts, "--no-dumpable");
+                }
+                "allow-dumpable" => {
+                    allow_dumpable = true;
+                    note_opt(&mut mask_opts, "--allow-dumpable");
+                }
+                "strict-exec" => {
+                    mask = mask.strict_exec();
+                    note_opt(&mut mask_opts, "--strict-exec");
+                }
+                "allow-foreign" => {
+                    mask = mask.allow_foreign(true);
+                    note_opt(&mut mask_opts, "--allow-foreign");
+                }
+                "hide-pid" => {
+                    mask = mask.hide_pid(true);
+                    hide_pid = true;
+                    note_opt(&mut mask_opts, "--hide-pid");
+                }
+                "encrypt-memory" => {
+                    mask = mask.encrypt_memory(true);
+                    encrypt_memory = true;
+                    if pmask::caps::proc_hidepid().hides_non_dumpable() && !quiet {
+                        eprintln!(
+                            "pmask: --encrypt-memory: the supervisor is non-dumpable to protect \
+                             the key; on this hidepid mount it can be named by chkproc/unhide"
+                        );
+                    }
+                    note_opt(&mut mask_opts, "--encrypt-memory");
+                }
+                "stealth" => {
+                    mask = mask.rexec().watch_rename();
+                    let hidepid = pmask::caps::proc_hidepid();
+                    if hidepid.hides_non_dumpable() {
+                        stealth_hidepid_warn = true;
+                    } else {
+                        mask = mask.no_dumpable().supervisor_non_dumpable(true);
+                        no_dumpable = true;
+                        stealth_nodumpable = true;
+                    }
+                    stealth = true;
+                    note_opt(&mut mask_opts, "--stealth");
                 }
                 "no-new-privs" => {
                     mask = mask.no_new_privs();
@@ -669,7 +826,14 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--detach");
                 }
                 "watch-rename" => {
-                    mask = mask.watch_rename();
+                    match inline.as_deref().map(Vec::as_slice) {
+                        None => mask = mask.watch_rename(),
+                        Some(b"strict") => mask = mask.watch_rename_strict(),
+                        Some(other) => die(&format!(
+                            "--watch-rename takes 'strict' or no value, not '{}'",
+                            String::from_utf8_lossy(other)
+                        )),
+                    }
                     note_opt(&mut mask_opts, "--watch-rename");
                 }
                 "rexec" => {
@@ -677,15 +841,15 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--rexec");
                 }
                 "image" => {
-                    let v = take_value("--image", inline, &argv, &mut i);
+                    let mut v = take_value("--image", inline, &argv, &mut i);
                     if image_program.is_some() {
                         die("--image and --image-from-fd are exclusive");
                     }
-                    if v == b"-" {
+                    if v.as_slice() == b"-" {
                         mask = mask.image_stdin();
                         image_program = Some(OsString::from("-"));
                     } else {
-                        let path = OsString::from_vec(v);
+                        let path = OsString::from_vec(std::mem::take(&mut *v));
                         mask = mask.image_path(path.clone());
                         image_program = Some(path);
                     }
@@ -755,7 +919,14 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "secret" => {
                     let v = take_value("--secret", inline, &argv, &mut i);
-                    match Source::parse_spec(&String::from_utf8_lossy(&v)) {
+                    let spec = Zeroizing::new(String::from_utf8_lossy(&v).into_owned());
+                    let parsed = Source::parse_spec(&spec);
+                    // `take_value` and the lossy decode are `Zeroizing`
+                    // copies the parser owns; drop them now so both are
+                    // wiped before continuing.
+                    drop(spec);
+                    drop(v);
+                    match parsed {
                         Ok((name, source, unknown)) => {
                             if let Some(scheme) = unknown {
                                 unknown_schemes.push((name.clone(), scheme));
@@ -766,8 +937,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     }
                 }
                 "socket" => {
-                    let v = take_value("--socket", inline, &argv, &mut i);
-                    agent_socket = Some(PathBuf::from(OsString::from_vec(v)));
+                    let mut v = take_value("--socket", inline, &argv, &mut i);
+                    agent_socket = Some(PathBuf::from(OsString::from_vec(std::mem::take(&mut *v))));
                 }
                 "isolate" => {
                     isolate = match inline {
@@ -814,7 +985,7 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                 }
                 "report" => {
                     let v = take_value("--report", inline, &argv, &mut i);
-                    match &v[..] {
+                    match v.as_slice() {
                         b"json" => report_json = true,
                         // `text` and `plain` used to be accepted and did
                         // nothing, which made `--report=text` look like a
@@ -829,11 +1000,11 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
                     }
                 }
                 "report-file" => {
-                    let v = take_value("--report-file", inline, &argv, &mut i);
+                    let mut v = take_value("--report-file", inline, &argv, &mut i);
                     if v.is_empty() {
                         die("--report-file needs a path");
                     }
-                    report_file = Some(PathBuf::from(OsString::from_vec(v)));
+                    report_file = Some(PathBuf::from(OsString::from_vec(std::mem::take(&mut *v))));
                     report_json = true;
                 }
                 "report-fd" => {
@@ -889,8 +1060,8 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
             match bytes[j] {
                 b'l' | b'a' => {
                     let flag = if bytes[j] == b'l' { "-l" } else { "-a" };
-                    let inline: Option<Vec<u8>> = if j + 1 < bytes.len() {
-                        Some(bytes[j + 1..].to_vec())
+                    let inline: Option<Zeroizing<Vec<u8>>> = if j + 1 < bytes.len() {
+                        Some(Zeroizing::new(bytes[j + 1..].to_vec()))
                     } else {
                         None
                     };
@@ -984,6 +1155,35 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
             eprintln!("pmask: warning: {}", warning);
         }
     }
+    if !quiet && no_dumpable_hidepid && !hide_pid {
+        eprintln!(
+            "pmask: warning: --no-dumpable on a hidepid=invisible or ptraceable host hides the tree \
+             from same-uid observers; chkproc and unhide can name it as a hidden pid. \
+             --stealth picks the other trade."
+        );
+    }
+    if !quiet && stealth_hidepid_warn && !hide_pid {
+        eprintln!(
+            "pmask: --stealth: /proc uses hidepid={}; --no-dumpable is not applied, because \
+             a non-dumpable process is hidden from same-uid observers and chkproc/unhide can \
+             name it.  The same-uid memory read stays open.",
+            pmask::caps::proc_hidepid().as_word()
+        );
+    }
+    if !quiet && stealth_nodumpable && !hide_pid {
+        eprintln!(
+            "pmask: --stealth: /proc uses hidepid={}; --no-dumpable is applied, so a same-uid \
+             reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES \
+             refusals are themselves a signal.",
+            pmask::caps::proc_hidepid().as_word()
+        );
+    }
+    if !quiet && stealth && hide_pid {
+        eprintln!(
+            "pmask: --stealth and --hide-pid: --hide-pid wins; the tree is non-dumpable and \
+             hidden from same-uid /proc readers, and the hidden-pid sweepers can name it."
+        );
+    }
 
     let (program, args) = if args_fd.is_some() {
         if i < argv.len() {
@@ -1006,6 +1206,13 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         (argv[i].clone(), argv[i + 1..].to_vec())
     };
 
+    // The parser's own copies are no longer needed.  Zero every option
+    // value (including the `--secret` spec) before the vector is dropped,
+    // so a delivered literal does not linger in a freed allocation.
+    for a in &mut argv {
+        scrub_os_string(a);
+    }
+
     Cli {
         mask,
         program,
@@ -1026,6 +1233,9 @@ pub fn parse_from(argv: Vec<OsString>) -> Cli {
         secret_burn,
         secret_close_on_exec,
         no_dumpable,
+        allow_dumpable,
+        hide_pid,
+        encrypt_memory,
         report_json,
         report_file,
         report_fd,
@@ -1072,7 +1282,7 @@ impl Cli {
         // SAFETY: `dup` is the duplicate above.  The File closes it after
         // the read.
         let file = unsafe { std::fs::File::from_raw_fd(dup) };
-        let mut data = Vec::new();
+        let mut data = Zeroizing::new(Vec::new());
         // Read one byte past the limit so an oversize vector is detected
         // without buffering all of it.
         let mut limited = file.take(ARGS_FD_MAX + 1);
@@ -1087,7 +1297,10 @@ impl Cli {
                 ARGS_FD_MAX / (1024 * 1024)
             ));
         }
-        let mut parts: Vec<Vec<u8>> = data.split(|&b| b == 0).map(|s| s.to_vec()).collect();
+        let mut parts: Vec<Zeroizing<Vec<u8>>> = data
+            .split(|&b| b == 0)
+            .map(|s| Zeroizing::new(s.to_vec()))
+            .collect();
         if data.last() == Some(&0) {
             parts.pop(); // the empty piece after the final NUL
         }
@@ -1095,8 +1308,14 @@ impl Cli {
             die(&format!("--args-from-fd {}: no program given", fd));
         }
         let mut it = parts.into_iter();
-        self.program = OsString::from_vec(it.next().unwrap_or_default());
-        self.args = it.map(OsString::from_vec).collect();
+        self.program = OsString::from_vec(
+            it.next()
+                .map(|mut p| std::mem::take(&mut *p))
+                .unwrap_or_default(),
+        );
+        self.args = it
+            .map(|mut p| OsString::from_vec(std::mem::take(&mut *p)))
+            .collect();
     }
 }
 

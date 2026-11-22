@@ -928,12 +928,14 @@ E21_DISSENT=""
 case "$E21_OWN" in
     *testcases*) E21_DISSENT="$E21_DISSENT execfn" ;;
 esac
+# beta.5 closes the in-process `getauxval` dissent: the stack copy of
+# AT_EXECFN is rewritten with the served one, so every channel names the
+# label.  The old row accepted the dissent as the boundary; the row now
+# asserts its absence and keeps the same arms as negative controls.
 if [ -z "$E21_DISSENT" ]; then
-    fail "e21-masked-dissent (no channel dissented; auxv/own both named the label)"
-elif [ "$E21_DISSENT" = " execfn" ]; then
-    pass "e21-masked-dissent-is-the-in-process-execfn (cmd=[$E21_CMD] span=[$E21_SPAN] auxv=[$E21_AUX] own=[$E21_OWN])"
+    pass "e21-no-dissent (cmd=[$E21_CMD] span=[$E21_SPAN] auxv=[$E21_AUX] own=[$E21_OWN])"
 else
-    fail "e21-masked-dissent (dissent=[$E21_DISSENT] cmd=[$E21_CMD] span=[$E21_SPAN] auxv=[$E21_AUX] own=[$E21_OWN])"
+    fail "e21-no-dissent (dissent=[$E21_DISSENT] cmd=[$E21_CMD] span=[$E21_SPAN] auxv=[$E21_AUX] own=[$E21_OWN])"
 fi
 
 # ------------------------------------------------ E22: Mao PATH-resolved check

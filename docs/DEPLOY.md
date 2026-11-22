@@ -1,16 +1,12 @@
 # Deployment
 
-Three shapes, in increasing order of what an attacker has to do. Pick the
-one the host allows, and read `docs/THREAT-MODEL.md` for the row each one
-closes.
+Choose one of the three deployment shapes below based on the host's capabilities. Read `docs/THREAT-MODEL.md` to see which adversary rows each shape closes.
 
-Everything here is a statement about what the code in this tree does. The
-units under `contrib/` were written against that code, and the two
-directives that would break this workload are called out below.
+Every statement here matches the `v0.1.0` codebase and the units under `contrib/`. Two systemd directives that break execution if misconfigured are highlighted in Shape 3.
 
 ## 1. One account, no privilege
 
-The default. Nothing needs a capability.
+This is the default deployment. No special capability is required.
 
 ```sh
 pmask store init --passphrase-file ~/.config/pmask/pass
@@ -20,29 +16,16 @@ pmask run --label ci-runner \
     -- ./deploy.sh
 ```
 
-Two things to know before relying on this:
+Observe these operational rules before relying on this shape:
 
-- `pmask agent` must be running for an `agent:` source, and it must own
-  a directory it created. With `XDG_RUNTIME_DIR` set to a directory this
-  account owns at `0700`, that is `$XDG_RUNTIME_DIR/pmask.sock`. The
-  agent refuses a socket in a directory owned by another account.
-- The supervisor holds the value for the life of the run. `--secret-burn`
-  lets the payload destroy it once it has read it, and a lease
-  (`PMASK_AGENT_LEASE`) bounds how long the agent will serve it.
-
-What this shape does not close: another process of the same account can
-open `/proc/<payload>/fd/3` and read the value, because the payload is
-dumpable after `exec`. `--no-dumpable` closes that for the payload at the
-cost of the payload's own ability to debug itself. The run report's
-`payload_dumpable` describes the payload's `PR_GET_DUMPABLE`, not the
-flag: it is `true` in plain and isolate modes even with `--no-dumpable`,
-because those modes do not apply the flag, and the run says so in a note.
+- Start `pmask agent` before using an `agent:` source. The agent must own its socket directory. When `XDG_RUNTIME_DIR` points to a mode-`0700` directory owned by the account, the default socket is `$XDG_RUNTIME_DIR/pmask.sock`. The agent refuses to bind in a directory owned by another account.
+- The supervisor holds the secret descriptor for the life of the run. Pass `--secret-burn` so a cooperating payload can truncate the secret after reading it, and set a lease (`PMASK_AGENT_LEASE`) to bound how long the agent serves the secret.
+- In redaction mode, `--secret` makes both the supervisor and the payload non-dumpable (`PR_SET_DUMPABLE=0`) by default, blocking same-uid reads of `/proc/<payload>/fd/3` and `/proc/<payload>/mem`. Pass `--allow-dumpable` only when the payload must remain debuggable.
+- Plain and isolate modes cannot set `PR_SET_DUMPABLE=0` on the payload. In those modes, the run prints a note, `payload_dumpable` in the JSON report is `true`, and another process of the same account can read `/proc/<payload>/fd/3`.
 
 ## 2. A dedicated holder account
 
-Move the secret to a uid the workload does not share, and let DAC do the
-work. This is the cheapest real improvement, and it needs `CAP_SETUID`
-once, at setup.
+Move the encrypted store and agent to a dedicated uid that the workload does not share. Standard DAC permissions then isolate the holder. This setup requires `CAP_SETUID` (root) once at installation time.
 
 ```sh
 # as root, once
@@ -54,34 +37,21 @@ sudo -u pmask pmask agent --store /var/lib/pmask/store.enc \
     --passphrase-file /etc/pmask/pass --socket /run/pmask/pmask.sock
 ```
 
-`/run` is a tmpfs, so the `/run/pmask` directory has to be recreated at
-every boot: a `tmpfiles.d` entry of your own, or a unit with
-`RuntimeDirectory=pmask`, does it. Without the directory the agent's
-`mkdir` fails with `EACCES` and it refuses to bind.
+Because `/run` is a tmpfs, recreate `/run/pmask` at every boot using a `tmpfiles.d` entry or a systemd unit with `RuntimeDirectory=pmask`. Without that directory, the agent fails with `EACCES` and refuses to bind.
 
-The workload then runs as its own account and asks the agent for the
-value over the socket. A same-account peer of the workload can no longer
-read the holder's memory, because it is not the same account.
+Run the workload under its own unprivileged account and fetch secrets from the agent socket. Same-account peers of the workload cannot inspect the holder's memory because the holder runs under a different uid.
 
-What this does not close: root, and any process of the holder's account.
+This shape does not protect against root or processes running as the `pmask` holder account.
 
 ## 3. A systemd unit with `ProtectProc=invisible`
 
-This is the shape that does the most, and almost none of it is pmask.
-A service with its own procfs instance does not see other accounts'
-processes at all.
+This shape provides the strongest host isolation, mostly through systemd's kernel sandboxing. A service with `ProtectProc=invisible` gets a private procfs view and cannot see other accounts' processes.
 
-The daemon unit, `pmaskd@.service`, sets `DynamicUser=yes`: the daemon
-runs as a uid nobody else has, and `RuntimeDirectory=pmask` creates
-`/run/pmask` at `0700` owned by that user, which is the ownership check
-`pmaskd` makes before it binds.
+The daemon unit (`contrib/systemd/pmaskd@.service`) sets `DynamicUser=yes` and `RuntimeDirectory=pmask`. Systemd allocates an isolated uid and creates `/run/pmask` at mode `0700` owned by that user, satisfying `pmaskd`'s ownership check.
 
-The payload unit, `pmask-run@.service`, does **not** set `User=` or
-`DynamicUser=`. It runs as the unit's default user, which is root. That
-is deliberate: the example payload reads `/usr/local/bin/job.sh` and a
-credential, and it may need the caller's files. If the payload should be
-unprivileged, add `User=` or `DynamicUser=yes` to that unit and make the
-payload's files readable by that account.
+The payload unit (`contrib/systemd/pmask-run@.service`) omits `User=` and `DynamicUser=` by default so it can read `/usr/local/bin/job.sh` and loaded credentials. To run the payload unprivileged, add `User=` or `DynamicUser=yes` and grant read access to the payload files.
+
+Install and start the units:
 
 ```sh
 install -D -m 0644 contrib/systemd/pmaskd@.service /etc/systemd/system/
@@ -93,72 +63,39 @@ systemctl enable --now pmaskd@default.service
 systemctl start pmask-run@ci-runner
 ```
 
-`pmaskd@.service` is `Type=simple`, because `pmaskd` does not call
-`sd_notify`; a `Type=notify` unit would wait for a `READY=1` that never
-arrives. Start the service directly. There is no socket unit: `pmaskd`
-does not adopt a socket passed by systemd (it never reads `LISTEN_FDS`), and
-a socket unit's `DirectoryMode=0700` would create `/run/pmask` as root,
-which `DynamicUser=` cannot then own.
+Follow these unit rules:
 
-The daemon's whole command line is
-`/usr/bin/pmaskd --socket %t/pmask/pmask.sock`. Do not add `--store` or
-`--passphrase-file` to it. `pmaskd` accepts neither: it takes the job
-environment from `--env-file` and has no encrypted store of its own, so a
-unit that adds `--store` exits 255 with `unknown option --store` and never
-starts. The store belongs to `pmask agent`, which holds the unlocked store
-and answers a `--secret NAME=agent:NAME` source over its own socket. Run
-the agent as a separate unit or as a sibling process, and give the job the
-agent's socket path.
+- Keep `Type=simple` in `pmaskd@.service`. `pmaskd` does not call `sd_notify`, so `Type=notify` hangs waiting for `READY=1`.
+- Do not add a systemd `.socket` unit for `pmaskd`. `pmaskd` ignores `LISTEN_FDS`, and a socket unit creates `/run/pmask` owned by root, which fails `DynamicUser=` ownership checks.
+- Keep the daemon `ExecStart` as `/usr/bin/pmaskd --socket %t/pmask/pmask.sock` (plus `--env-file` as needed). Never pass `--store` or `--passphrase-file` to `pmaskd`: `pmaskd` has no encrypted store and exits `255` with `unknown option --store`. Run `pmask agent` separately to serve `--secret NAME=agent:NAME`.
+- Keep `contrib/tmpfiles.d/pmask.conf` creating only the `/var/lib/pmask` directory. Never add a tmpfiles `f` line for `store.enc`. A pre-created zero-byte file causes `pmask store init` to refuse with `already exists` (`255`) and `store set` to reject the truncated header.
+- `pmask-run@.service` loads the secret with `LoadCredential=` into a mode-`0400` file on a private tmpfs and passes `--secret TOKEN=file:%d/token`. It also sets `ProtectProc=invisible` so the payload cannot enumerate other accounts' processes.
 
-The tmpfiles entry creates `/var/lib/pmask` only. It deliberately has no
-`f` line for `store.enc`: a tmpfiles `f` entry creates a zero-byte file at
-boot, and `pmask store init` then refuses with "already exists" (255) while
-`store set` refuses the truncated header. `pmask store init` creates the
-file, its mode and its header itself. If a host still carries an `f` line
-for the store, remove it before the first `store init`.
+Verify these two critical directives in any customized unit:
 
-`pmask-run@.service` is the payload side. It loads the token with
-`LoadCredential=`, which puts a `0400` file in a private tmpfs, and passes
-it as `--secret TOKEN=file:%d/token`. It sets `ProtectProc=invisible`,
-which is the half pmask cannot provide from inside a process: the
-payload cannot enumerate other accounts' processes at all.
+- `SystemCallFilter=` must allow `ptrace`. Both shipped units use `SystemCallFilter=@system-service ptrace` because `@system-service` excludes `ptrace`. Blocking `ptrace` forces `pmask-run@.service` into `mode=plain` (no redaction) and prevents `pmaskd@.service` from seizing jobs.
+- `RestrictNamespaces=` must include `user pid net mnt ipc uts cgroup` whenever `--unshare` or `--isolate` is used.
 
-Two directives matter more than the rest, and both break the workload if
-they are wrong:
-
-- `SystemCallFilter=` must permit `ptrace`. Both shipped units name it on
-  the allow line (`SystemCallFilter=@system-service ptrace`), because
-  `@system-service` excludes it: the payload unit traces the job from
-  inside the unit, and the daemon unit traces every job it runs
-  (`Mask::spawn` seizes the child with `PTRACE_SEIZE`). In the payload
-  unit a preset that denies `ptrace` turns redaction off and the run
-  reports `mode=plain` rather than pretending. In the daemon unit it
-  makes the seize fail, so the daemon cannot start a job at all.
-- `RestrictNamespaces=` must permit `user pid net mount ipc uts cgroup`
-  when `--unshare` or `--isolate` is used.
-
-`MemoryDenyWriteExecute=` is safe to set for the daemon and unsafe for a
-payload with a JIT.
+`MemoryDenyWriteExecute=yes` is safe for `pmaskd@.service` but breaks payloads that use a JIT compiler.
 
 ## Which shape closes which row
 
 | row in the threat model | 1 | 2 | 3 |
 |---|---|---|---|
-| cmdline is the label | yes | yes | yes |
-| cmdline byte length is not the original | yes | yes | yes |
-| environ shows nothing | yes | yes | yes |
-| a delivered secret is not in `cmdline` or `environ` | yes | yes | yes |
-| a same-uid peer cannot read `/proc/<pid>/mem` | with `--no-dumpable` | with `--no-dumpable` | yes |
-| a same-uid peer cannot read the holder's memory | with `--no-dumpable` | yes | yes |
-| the payload cannot enumerate other accounts' processes | no | no | yes, from `ProtectProc=invisible` |
-| the payload cannot reach another job's descriptor | no | no | yes |
+| `cmdline` is the label | yes | yes | yes |
+| `cmdline` byte length is not the original | yes | yes | yes |
+| `environ` hides real variables (shows plausible decoy) | yes | yes | yes |
+| delivered secret is absent from `cmdline` and `environ` | yes | yes | yes |
+| same-uid peer cannot read `/proc/<pid>/mem` | yes (default for `--secret` in redaction mode; `--no-dumpable` otherwise) | yes (default for `--secret` in redaction mode; `--no-dumpable` otherwise) | yes |
+| same-uid peer cannot read the holder's memory | yes (hardened before load) | yes | yes |
+| payload cannot enumerate other accounts' processes | no | no | yes, via `ProtectProc=invisible` |
+| payload cannot reach another job's descriptor | no | no | yes |
 | `TracerPid` is 0 for the payload | with `--detach` | with `--detach` | with `--detach` |
 | root cannot read the value | no | no | no |
 
 ## What to verify on the target
 
-Run these on the host that will run the units; the scores depend on the
-systemd version and on the directives that version knows:
+Run these commands on the target host to validate the installed units. Sandboxing scores depend on the installed systemd version:
 
 ```sh
 systemd-analyze verify --man=no /etc/systemd/system/pmaskd@.service
@@ -166,19 +103,8 @@ systemd-analyze verify --man=no /etc/systemd/system/pmask-run@.service
 systemd-analyze security --offline=yes pmaskd@default.service
 ```
 
-`verify` parses and loads the units; `security` scores the sandbox
-directives. Neither boots a unit, and the score is that of the
-directives, not of a running job. Treat a directive this document names
-but the installed systemd does not know as a version mismatch to resolve
-rather than a line to delete.
+`systemd-analyze verify` checks unit syntax and loading. `systemd-analyze security` scores static sandbox directives without starting a job. If the host's systemd version does not recognize a directive, resolve the version difference rather than deleting hardening lines blindly.
 
-Run the test gate as an unprivileged uid, not as root. `CAP_SYS_PTRACE`
-lets a root observer read what a same-uid peer cannot, so the suites that
-assert a same-uid refusal (`tests/isolation.sh`, `tests/conformance.sh`)
-cannot be decided as root. They print `SKIP` and name the root case
-instead of failing. `vm/run.sh` runs both passes, as root and as uid
-1000.
+Run the native test gate (`sh tests/run.sh`) as an unprivileged uid, not as root. Root holds `CAP_SYS_PTRACE`, which bypasses same-uid refusals so `tests/isolation.sh` and `tests/conformance.sh` print `SKIP` on those checks. `sh vm/run.sh` runs both root and uid-1000 passes automatically.
 
-The `contrib/` directory is excluded from the published crate; it is
-deployment material, not a build dependency. It ships in the release
-tarball and in the repository.
+The `contrib/` directory is deployment material excluded from the crate package. It ships in the repository and in the GitHub release tarball.

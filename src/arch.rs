@@ -8,6 +8,11 @@
 use std::io;
 
 pub const NT_PRSTATUS: usize = 1;
+/// `NT_ARM_SYSTEM_CALL` (`<linux/elf.h>`): writes `regs->syscallno` on
+/// aarch64, where `NT_PRSTATUS` ignores `x8` at syscall entry and
+/// `PTRACE_EVENT_SECCOMP`.
+#[cfg(target_arch = "aarch64")]
+pub const NT_ARM_SYSTEM_CALL: usize = 0x404;
 
 // PTRACE_GETREGSET / PTRACE_SETREGSET (uapi <linux/ptrace.h> since 2.6.14)
 pub const PTRACE_GETREGSET: libc::c_uint = 0x4204;
@@ -96,6 +101,11 @@ impl SyscallInfo {
 #[derive(Clone, Copy)]
 pub struct Regs {
     pub raw: RawRegs,
+    /// On aarch64, Linux ignores `x8` in `NT_PRSTATUS` when deciding whether
+    /// to skip a syscall at entry or `PTRACE_EVENT_SECCOMP`; `Regs::put`
+    /// must also write `-1` to `NT_ARM_SYSTEM_CALL`.
+    #[cfg(target_arch = "aarch64")]
+    denied: bool,
 }
 
 // ------------------------------------------------------------------ x86_64
@@ -113,6 +123,18 @@ mod imp {
     pub const SYS_MMAP: u64 = 9;
     pub const SYS_BRK: u64 = 12;
     pub const SYS_CLOSE: u64 = 3;
+    pub const SYS_MADVISE: u64 = 28;
+    pub const SYS_CLONE: u64 = 56;
+    pub const SYS_CLONE3: u64 = 435;
+    pub const SYS_OPEN: u64 = 2;
+    pub const SYS_OPENAT: u64 = 257;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_CREAT: u64 = 85;
+    pub const SYS_WRITE: u64 = 1;
+    pub const SYS_WRITEV: u64 = 20;
+    pub const SYS_PWRITE64: u64 = 18;
+    pub const SYS_PWRITEV: u64 = 296;
+    pub const SYS_PWRITEV2: u64 = 328;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee
@@ -168,6 +190,10 @@ mod imp {
         pub fn retval(&self) -> i64 {
             self.raw.rax as i64
         }
+        /// System call number currently executing (valid at entry / event stop).
+        pub fn syscall_nr(&self) -> u64 {
+            self.raw.orig_rax
+        }
         /// 1-based system call argument (arg(1) is the first).
         pub fn arg(&self, n: usize) -> u64 {
             match n {
@@ -199,6 +225,11 @@ mod imp {
                 self.set_arg(i + 1, *a);
             }
         }
+        /// Skip the syscall and return `-errno` without executing it.
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.raw.orig_rax = u64::MAX;
+            self.raw.rax = (-(errno as i64)) as u64;
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.rip = ip;
         }
@@ -225,6 +256,18 @@ mod imp {
     pub const SYS_MMAP: u64 = 90;
     pub const SYS_BRK: u64 = 45;
     pub const SYS_CLOSE: u64 = 6;
+    pub const SYS_MADVISE: u64 = 219;
+    pub const SYS_CLONE: u64 = 120;
+    pub const SYS_CLONE3: u64 = 435;
+    pub const SYS_OPEN: u64 = 5;
+    pub const SYS_OPENAT: u64 = 295;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_CREAT: u64 = 8;
+    pub const SYS_WRITE: u64 = 4;
+    pub const SYS_WRITEV: u64 = 146;
+    pub const SYS_PWRITE64: u64 = 181;
+    pub const SYS_PWRITEV: u64 = 334;
+    pub const SYS_PWRITEV2: u64 = 379;
 
     /// `struct user_regs_struct` of i386, all fields 32 bits.
     #[repr(C)]
@@ -266,6 +309,9 @@ mod imp {
         pub fn retval(&self) -> i64 {
             self.raw.eax as i32 as i64
         }
+        pub fn syscall_nr(&self) -> u64 {
+            self.raw.orig_eax as u64
+        }
         pub fn arg(&self, n: usize) -> u64 {
             match n {
                 1 => self.raw.ebx as u64,
@@ -294,6 +340,11 @@ mod imp {
                 self.set_arg(i + 1, *a);
             }
         }
+        /// Skip the syscall and return `-errno` without executing it.
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.raw.orig_eax = u32::MAX;
+            self.raw.eax = (-errno) as u32;
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.eip = ip as u32;
         }
@@ -315,6 +366,20 @@ mod imp {
     pub const SYS_MMAP: u64 = 222;
     pub const SYS_BRK: u64 = 214;
     pub const SYS_CLOSE: u64 = 57;
+    pub const SYS_MADVISE: u64 = 233;
+    pub const SYS_CLONE: u64 = 220;
+    pub const SYS_CLONE3: u64 = 435;
+    /// aarch64 has no `open` or `creat`; distinct high sentinels never match
+    /// a real syscall and keep match arms distinct.
+    pub const SYS_OPEN: u64 = u64::MAX;
+    pub const SYS_OPENAT: u64 = 56;
+    pub const SYS_OPENAT2: u64 = 437;
+    pub const SYS_CREAT: u64 = u64::MAX - 1;
+    pub const SYS_WRITE: u64 = 64;
+    pub const SYS_WRITEV: u64 = 66;
+    pub const SYS_PWRITE64: u64 = 68;
+    pub const SYS_PWRITEV: u64 = 70;
+    pub const SYS_PWRITEV2: u64 = 287;
     /// Audit arch of native syscalls.
     pub const NATIVE_AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
     /// `(audit arch, execve nr, execveat nr)` of every foreign ABI a tracee
@@ -348,6 +413,10 @@ mod imp {
         pub fn retval(&self) -> i64 {
             self.raw.x[0] as i64
         }
+        /// System call number currently executing (valid at entry / event stop).
+        pub fn syscall_nr(&self) -> u64 {
+            self.raw.x[8]
+        }
         /// 1-based system call argument (arg(1) is the first).
         pub fn arg(&self, n: usize) -> u64 {
             match n {
@@ -363,10 +432,21 @@ mod imp {
         /// Stage a system call for injection: number goes to `x8`,
         /// arguments to x0..x5.
         pub fn set_syscall(&mut self, nr: u64, args: [u64; 6]) {
+            self.denied = false;
             self.raw.x[8] = nr;
             for (i, a) in args.iter().enumerate() {
                 self.set_arg(i + 1, *a);
             }
+        }
+        /// Skip the syscall and return `-errno` without executing it.
+        ///
+        /// On aarch64 the kernel ignores `x8` in `NT_PRSTATUS` at entry and
+        /// `PTRACE_EVENT_SECCOMP`; `Regs::put` writes `-1i32` to
+        /// `NT_ARM_SYSTEM_CALL` alongside `NT_PRSTATUS` (`x[0] = -errno`).
+        pub fn deny_syscall(&mut self, errno: i32) {
+            self.denied = true;
+            self.raw.x[8] = u64::MAX;
+            self.raw.x[0] = (-(errno as i64)) as u64;
         }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.pc = ip;
@@ -394,6 +474,7 @@ pub fn classify_exec(arch: u32, nr: u64) -> ExecClass {
         if nr == SYS_EXECVE || nr == SYS_EXECVEAT {
             return ExecClass::Native;
         }
+        #[allow(clippy::bad_bit_mask)]
         if X32_BIT != 0 && nr & X32_BIT != 0 {
             let low = nr & !X32_BIT;
             if low == X32_EXECVE || low == X32_EXECVEAT {
@@ -439,11 +520,38 @@ impl Regs {
                 "foreign register layout (32-bit tracee)",
             ));
         }
-        Ok(Regs { raw: regs })
+        Ok(Regs {
+            raw: regs,
+            #[cfg(target_arch = "aarch64")]
+            denied: false,
+        })
     }
 
-    /// `PTRACE_SETREGSET(NT_PRSTATUS)`.
+    /// `PTRACE_SETREGSET(NT_PRSTATUS)` (and `NT_ARM_SYSTEM_CALL = -1` on
+    /// aarch64 when `deny_syscall` was requested).
     pub fn put(&self, pid: libc::pid_t) -> io::Result<()> {
+        #[cfg(target_arch = "aarch64")]
+        if self.denied {
+            let mut nr: i32 = -1;
+            let mut sc_iov = libc::iovec {
+                iov_base: &mut nr as *mut i32 as *mut libc::c_void,
+                iov_len: std::mem::size_of::<i32>(),
+            };
+            // SAFETY: pid is a stopped tracee we are attached to; sc_iov
+            // points at a valid 4-byte syscall number for the duration of
+            // the call.
+            let rc = unsafe {
+                libc::ptrace(
+                    PTRACE_SETREGSET as _,
+                    pid,
+                    NT_ARM_SYSTEM_CALL as *mut libc::c_void,
+                    &mut sc_iov as *mut libc::iovec as *mut libc::c_void,
+                )
+            };
+            if rc == -1 {
+                return Err(io::Error::last_os_error());
+            }
+        }
         let mut iov = libc::iovec {
             iov_base: &self.raw as *const _ as *mut libc::c_void,
             iov_len: std::mem::size_of::<RawRegs>(),
@@ -513,5 +621,27 @@ mod tests {
             classify_exec(NATIVE_AUDIT_ARCH, X32_BIT | SYS_EXECVE),
             ExecClass::NotExec
         );
+    }
+
+    #[test]
+    fn deny_syscall_sets_negative_errno_and_skip_marker() {
+        let mut regs = Regs {
+            raw: unsafe { std::mem::zeroed() },
+            #[cfg(target_arch = "aarch64")]
+            denied: false,
+        };
+        regs.deny_syscall(libc::EACCES);
+        assert_eq!(regs.retval(), -(libc::EACCES as i64));
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(regs.raw.orig_rax, u64::MAX);
+        #[cfg(target_arch = "x86")]
+        assert_eq!(regs.raw.orig_eax, u32::MAX);
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert!(regs.denied);
+            assert_eq!(regs.raw.x[8], u64::MAX);
+            regs.set_syscall(SYS_PRCTL, [0; 6]);
+            assert!(!regs.denied);
+        }
     }
 }
