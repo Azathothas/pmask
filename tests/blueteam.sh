@@ -37,13 +37,18 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # The window an exact-mode payload presents when the caller passed no
-# environment through (src/execimg.rs DECOY_ENV).  A detector may know a
+# environment through (src/execimg.rs decoy_env).  A detector may know a
 # signature by heart; the question this file answers is whether it is
 # still there.
-DECOY='PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-HOME=/root
+if [ "$(id -u)" = 0 ]; then
+    DECOY_HOME=/root
+else
+    DECOY_HOME=/tmp
+fi
+DECOY="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=$DECOY_HOME
 LANG=C.UTF-8
-TERM=xterm-256color'
+TERM=xterm-256color"
 
 carriers() {
     for p in /proc/[0-9]*; do
@@ -232,8 +237,8 @@ score_mode watch bt-watch --watch-rename
     || fail "bt-fleet-sweep-finds-the-watch-run ($before -> $SWEEP)"
 score_mode strict bt-strict --watch-rename=strict
 score_mode stealth bt-stealth --stealth
-score_mode detach bt-detach --on-exit detach
-score_mode rexec bt-rexec --rexec
+score_mode detach bt-detach --profile tree --on-exit detach
+score_mode rexec bt-rexec --profile compat --rexec
 score_mode noexact bt-noexact --no-exact
 
 echo "BT: FAIL=$FAIL"

@@ -51,7 +51,7 @@ fi
 # than pass/fail suites, so they run near the end and their verdict line
 # decides.  The speed and zapper comparisons live in measurements/ and are
 # not part of this gate.
-for suite in validate suite stress edge daemon daemon_neg options redteam blueteam core audit store isolation lease secrets compare conformance regressions; do
+for suite in validate profiles suite stress edge daemon daemon_neg options redteam blueteam core audit store isolation lease secrets compare conformance regressions; do
     if [ ! -f "$suite.sh" ]; then
         # The micro-VM stages a subset of the suites and marks the tree with
         # `.vm-staged`, so an absent suite there is expected.  In the native

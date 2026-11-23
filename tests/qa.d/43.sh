@@ -123,12 +123,16 @@ if kill -0 "$plain" 2>/dev/null; then
     read -r pa pe pss pee <<EOT
 $(spans "$plain")
 EOT
-    case "$served" in
-        */testcases)
-            pass "a1-control-plain-execfn-is-the-real-path ($served)" ;;
-        *)
-            fail "a1-control-plain-execfn-is-the-real-path (served=[$served] rep=[$rep])" ;;
-    esac
+    if printf '%s\n' "$rep" | grep -q '^mem=denied'; then
+        echo "SKIP a1-control-plain-execfn-is-the-real-path (a same-uid reader cannot open /proc/$plain/mem here)"
+    else
+        case "$served" in
+            */testcases)
+                pass "a1-control-plain-execfn-is-the-real-path ($served)" ;;
+            *)
+                fail "a1-control-plain-execfn-is-the-real-path (served=[$served] rep=[$rep])" ;;
+        esac
+    fi
     if [ -n "$ptr" ] && [ "$ptr" = "$pee" ]; then
         pass "a1b-control-plain-execfn-equals-env-end"
     else
@@ -142,7 +146,7 @@ fi
 
 # ------------------------------ A2..A6: a masked payload
 L=qa43
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L" -- "$CASES" execfn 20 \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$L" -- "$CASES" execfn 20 \
     > "$D/masked.out" 2>&1 &
 SUP=$!
 PAY=""
@@ -231,7 +235,7 @@ stop_sup
 # here so a change in the layout is visible without reading the note.
 for n in 4 12; do
     lab=$(printf 'q%.0s' $(seq "$n"))
-    env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$lab" -- "$CASES" execfn 20 \
+    env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$lab" -- "$CASES" execfn 20 \
         >/dev/null 2>&1 &
     SUP=$!
     PAY=""
@@ -269,7 +273,7 @@ done
 # PR_SET_MM_MAP call that --no-exact skips, so the served view is the real
 # exec path and the two views agree.  That is a correction to the issue,
 # not a defect, and it is asserted here so a future change is visible.
-env -i PATH=/usr/bin:/bin "$TOOL" -q --no-exact -l "$L" -- "$CASES" execfn 20 \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --no-exact -l "$L" -- "$CASES" execfn 20 \
     > "$D/ne.out" 2>&1 &
 SUP=$!
 PAY=""
@@ -307,7 +311,7 @@ stop_sup
 # `env_end != AT_EXECFN`.  The issue's rule "AT_EXECFN == env_end" holds
 # only when the environment is redacted; this asserts the exception so a
 # detector author does not inherit a rule that misses the mode.
-env -i PATH=/usr/bin:/bin "$TOOL" -q --keep-env -l "$L" -- "$CASES" execfn 20 \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --keep-env -l "$L" -- "$CASES" execfn 20 \
     >/dev/null 2>&1 &
 SUP=$!
 PAY=""

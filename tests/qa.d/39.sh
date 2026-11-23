@@ -74,7 +74,7 @@ spans_root() {
 }
 
 # ------------------------------------------------- S1: the default shape
-"$TOOL" -q -l "$L" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$L" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
 SUP=$!
 sleep 0.9
 if ! kill -0 "$SUP" 2>/dev/null; then
@@ -86,16 +86,19 @@ else
     read -r self_as self_es <<EOT
 $(spans_self "$SUP")
 EOT
-    # The tracer task is the narrow part: a process can set its own
-    # PR_SET_NAME and PR_SET_MM_MAP, but the session is also a second
-    # thread of the supervisor.  Its name is issue 38's channel (asserted
-    # there); here it only has to be present and to carry the label, which
-    # is the shape this issue measures.
+    # v0.2.0 supervises directly on the main thread (`Threads: 1`), so either
+    # a single-threaded supervisor (`threads == 1`) or a labelled tracer thread
+    # satisfies the self-mask shape without a `pmask-tracer` fingerprint.
+    threads=$(sed -n 's/^Threads:[[:space:]]*//p' "/proc/$SUP/status" 2>/dev/null)
     tracer=no
-    for t in /proc/"$SUP"/task/*; do
-        [ "$(basename "$t")" = "$SUP" ] && continue
-        [ "$(cat "$t/comm" 2>/dev/null)" = "$L" ] && tracer=yes
-    done
+    if [ "$threads" = 1 ]; then
+        tracer=yes
+    else
+        for t in /proc/"$SUP"/task/*; do
+            [ "$(basename "$t")" = "$SUP" ] && continue
+            [ "$(cat "$t/comm" 2>/dev/null)" = "$L" ] && tracer=yes
+        done
+    fi
     if [ "$comm" = "$L" ] && [ "$cmdline" = "$L|" ] \
         && [ "$self_as" = "$(( ${#L} + 1 ))" ] && [ "$self_es" = 0 ] \
         && [ "$tracer" = yes ]; then

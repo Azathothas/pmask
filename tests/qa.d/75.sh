@@ -8,7 +8,7 @@ require_bins || exit 2
 FAIL=0
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
-"$TOOL" -q -l q75 -- "$CASES" sleeper 2 >/dev/null 2>&1 & sup=$!; sleep 0.8
+"$TOOL" -q --profile compat -l q75 -- "$CASES" sleeper 2 >/dev/null 2>&1 & sup=$!; sleep 0.8
 # The supervisor carries the label too and its own window is not the
 # presentation under test, so the payload is found by comm plus exe.
 pay=$(payload_pid q75 testcases 5)

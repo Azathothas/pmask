@@ -300,7 +300,7 @@ fi
 D7OUT="$SOCKDIR/d7.out"
 D7LBL="cm-cli-$$"
 D7LBL15=$(printf '%s' "$D7LBL" | cut -c1-15)
-"$TOOL" -q -l "$D7LBL" --secret "CID_TOKEN=literal:$SECRET" -- \
+"$TOOL" -q --profile tree -l "$D7LBL" --secret "CID_TOKEN=literal:$SECRET" -- \
     "$CASES" secretfd CID_TOKEN 30 >"$D7OUT" 2>/dev/null &
 D7SUP=$!
 n=0

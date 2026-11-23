@@ -147,9 +147,9 @@ if [ "$HAVE_FD" = 1 ]; then
     # post-exec path.  A3 uses a real fork so the entry-swap path is the
     # one under test; A7 probes the vfork window and reports what it saw.
     mkargs "$D/a3.args" "$CASES" forkexec / "$CASES" echoargs "$SECRET2"
-    "$TOOL" -q -l "$LABEL" --args-from-fd 3 3<"$D/a3.args" >/dev/null 2>&1
+    "$TOOL" -q --profile tree -l "$LABEL" --args-from-fd 3 3<"$D/a3.args" >/dev/null 2>&1
     mkargs "$D/a3b.args" "$CASES" forkexec / "$CASES" echoargs "$SECRET3"
-    "$TOOL" -q -l "$LABEL" --args-from-fd 3 3<"$D/a3b.args" >/dev/null 2>&1
+    "$TOOL" -q --profile tree -l "$LABEL" --args-from-fd 3 3<"$D/a3b.args" >/dev/null 2>&1
 
     # A4 run: the secret is an environment variable of the pmask exec.
     # A shell prefix assignment keeps it out of any argv.

@@ -122,7 +122,7 @@ refused_count() {
 
 # ------------------------------------------------------------ the control
 # Same payload, no flag.  This is the negative control for 44b.
-"$TOOL" -q -l "$LABEL" -- /bin/sleep 30 >/dev/null 2>"$T/ctl.err" &
+"$TOOL" -q --profile compat -l "$LABEL" -- /bin/sleep 30 >/dev/null 2>"$T/ctl.err" &
 SUP=$!
 PAY=$(await_child "$SUP") || PAY=""
 if [ -z "$PAY" ]; then
@@ -157,7 +157,7 @@ else
 fi
 
 # ------------------------------------------------------- the flag's shape
-"$TOOL" -q -l "$LABEL" --no-dumpable -- /bin/sleep 30 \
+"$TOOL" -q --profile tree -l "$LABEL" --no-dumpable -- /bin/sleep 30 \
     >/dev/null 2>"$T/nd.err" &
 SUP=$!
 PAY=$(await_child "$SUP") || PAY=""
@@ -241,10 +241,13 @@ else
         tracer=$((tracer + 1))
         tracer_names="$tracer_names $(cat "$t/comm" 2>/dev/null)"
     done
+    pay_tr=$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/$PAY/status" 2>/dev/null)
     if [ "$tracer" -ge 1 ]; then
         pass "44f-tracer-thread-present ($tracer thread(s):$tracer_names)"
+    elif [ "$pay_tr" = "$SUP" ]; then
+        pass "44f-tracer-thread-present (single-threaded supervisor tid=$SUP traces payload)"
     else
-        fail "44f-tracer-thread-present (no tracer thread under $SUP)"
+        fail "44f-tracer-thread-present (no tracer thread under $SUP; pay TracerPid=$pay_tr)"
     fi
     kill -9 "$SUP" 2>/dev/null
     wait "$SUP" 2>/dev/null

@@ -479,6 +479,27 @@ impl Caps {
         CACHE.get_or_init(Caps::detect)
     }
 
+    /// Read `/proc`'s `hidepid=` policy directly from `/proc/self/mountinfo`
+    /// without forking or running the full capability probe suite.
+    pub fn proc_hidepid_fast() -> HidePid {
+        proc_hidepid()
+    }
+
+    /// Fast hot-path check for whether `ptrace` is usable on this host.
+    ///
+    /// Honours `PMASK_PROBE_PTRACE` (under `--features test-hooks`) without
+    /// caching the override. Otherwise checks `yama.ptrace_scope`,
+    /// `/proc/self/status`, and a zero-fork `ptrace` probe when no seccomp
+    /// filter is active, falling back to a single cached child probe only
+    /// when a seccomp filter is present (never running the other 7 probes).
+    pub fn ptrace_usable_fast() -> bool {
+        if let Some(v) = bool_probe("PMASK_PROBE_PTRACE") {
+            return v;
+        }
+        static CACHE: OnceLock<bool> = OnceLock::new();
+        *CACHE.get_or_init(probe_ptrace_fast)
+    }
+
     /// Which mechanisms are available, in the order they matter.
     pub fn tiers(&self) -> Vec<(Tier, bool)> {
         vec![
@@ -731,13 +752,23 @@ impl Caps {
                 .unwrap_or_else(|| "unknown".into()),
             self.cap_effective
         ));
-        s.push_str(
-            "\n  What this means: with no ptrace, a secret passed as a command\n  \
-             line argument is visible to every local account through\n  \
-             /proc/<pid>/cmdline.  pmask's answer on such a host is to keep\n  \
-             secrets out of argv and the environment entirely (fd delivery),\n  \
-             which does not need ptrace at all.\n",
-        );
+        if self.ptrace {
+            s.push_str(
+                "\n  What this means: metadata redaction is active here (ptrace is\n  \
+                 permitted), so pmask can redact /proc/<pid>/{cmdline,environ,comm}\n  \
+                 for single processes (--profile single) and trees (--profile tree).\n  \
+                 For defense in depth, pass secrets via --secret-fd or --secret\n  \
+                 (file:/agent:) so secret values never appear in argv or audit logs.\n",
+            );
+        } else {
+            s.push_str(
+                "\n  What this means: with no ptrace, a secret passed as a command\n  \
+                 line argument is visible to every local account through\n  \
+                 /proc/<pid>/cmdline.  pmask's answer on such a host is to keep\n  \
+                 secrets out of argv and the environment entirely (fd delivery),\n  \
+                 which does not need ptrace at all.\n",
+            );
+        }
         s
     }
 
@@ -993,6 +1024,60 @@ fn kernel_release() -> String {
     "unknown".to_string()
 }
 
+/// Lightweight `ptrace` usability probe for the hot path.
+///
+/// Avoids forking completely when no seccomp filter is installed on the
+/// current process; when a seccomp filter is active (for example in a
+/// container), runs only the single `PTRACE_TRACEME` child probe instead of
+/// the full 8-fork [`Caps::detect`] suite.
+fn probe_ptrace_fast() -> bool {
+    const CAP_SYS_PTRACE_BIT: u64 = 1u64 << 19;
+    let ptrace_scope = sysctl("kernel/yama/ptrace_scope").and_then(|v| v.parse::<u32>().ok());
+    if ptrace_scope.is_some_and(|s| s >= 3) {
+        return false;
+    }
+    let mut seccomp_filter = false;
+    let mut cap_effective = 0u64;
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("Seccomp:") {
+                if let Some(v) = rest.split_whitespace().next() {
+                    seccomp_filter = v != "0";
+                }
+            } else if let Some(rest) = line.strip_prefix("CapEff:") {
+                if let Some(hex) = rest.split_whitespace().next() {
+                    cap_effective = u64::from_str_radix(hex, 16).unwrap_or(0);
+                }
+            }
+        }
+    }
+    if ptrace_scope == Some(2) && (cap_effective & CAP_SYS_PTRACE_BIT) == 0 {
+        return false;
+    }
+    if !seccomp_filter {
+        // SAFETY: querying `PTRACE_SEIZE` on pid -1 cannot attach to any
+        // process; the kernel answers ESRCH when ptrace is reachable and
+        // ENOSYS/EPERM/EACCES when blocked.
+        let rc = unsafe {
+            libc::ptrace(
+                crate::arch::PTRACE_SEIZE as _,
+                -1 as libc::pid_t,
+                std::ptr::null_mut::<libc::c_void>(),
+                std::ptr::null_mut::<libc::c_void>(),
+            )
+        };
+        if rc == -1 {
+            let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return !matches!(e, libc::ENOSYS | libc::EPERM | libc::EACCES);
+        }
+        return true;
+    }
+    probe_in_child(|| {
+        // SAFETY: plain ptrace in a throwaway child that exits immediately.
+        unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) == 0 }
+    })
+}
+
 /// Run `f` in a forked child and return its boolean verdict.
 fn probe_in_child<F: FnOnce() -> bool>(f: F) -> bool {
     // SAFETY: single-threaded at probe time; the child only runs `f` and
@@ -1185,5 +1270,45 @@ mod tests {
         // make the refusal depend on timing.
         std::env::remove_var("PMASK_PROBE_AUDIT");
         assert_eq!(probe_audit(), probe_audit());
+    }
+
+    #[test]
+    fn fast_helpers_match_full_probes() {
+        assert_eq!(Caps::proc_hidepid_fast(), proc_hidepid());
+        assert_eq!(probe_ptrace_fast(), Caps::detect().ptrace);
+    }
+
+    #[test]
+    fn report_footer_reflects_ptrace_capability() {
+        let active = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(true),
+            ..ProbeOverrides::default()
+        });
+        let active_report = active.report();
+        assert!(
+            active_report.contains("metadata redaction is active"),
+            "expected active footer, got:\n{}",
+            active_report
+        );
+        assert!(
+            !active_report.contains("with no ptrace"),
+            "stale no-ptrace footer must not appear when ptrace is active"
+        );
+
+        let inactive = Caps::detect_with(ProbeOverrides {
+            ptrace: Some(false),
+            ..ProbeOverrides::default()
+        });
+        assert!(inactive.report().contains("with no ptrace"));
+    }
+
+    #[cfg(feature = "test-hooks")]
+    #[test]
+    fn ptrace_usable_fast_honours_probe_override() {
+        std::env::set_var("PMASK_PROBE_PTRACE", "0");
+        assert!(!Caps::ptrace_usable_fast());
+        std::env::set_var("PMASK_PROBE_PTRACE", "1");
+        assert!(Caps::ptrace_usable_fast());
+        std::env::remove_var("PMASK_PROBE_PTRACE");
     }
 }

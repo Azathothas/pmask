@@ -51,14 +51,14 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 skip() { echo "SKIP $*"; }
 
 # ---------------------------------------------------------------- E1: exec
-"$TOOL" -q -l "$FAKE" /nonexistent/pmask-probe >/dev/null 2>&1
+"$TOOL" -q --allow-impersonation -l "$FAKE" /nonexistent/pmask-probe >/dev/null 2>&1
 rc=$?
 [ "$rc" = 127 ] && pass e1-missing-binary-exits-127 \
     || fail "e1-missing-binary (rc=$rc, want 127)"
 
 printf '#!/bin/sh\nexit 0\n' > /tmp/notexec.$$
 chmod 644 /tmp/notexec.$$
-"$TOOL" -q -l "$FAKE" /tmp/notexec.$$ >/dev/null 2>&1
+"$TOOL" -q --allow-impersonation -l "$FAKE" /tmp/notexec.$$ >/dev/null 2>&1
 rc=$?
 rm -f /tmp/notexec.$$
 [ "$rc" = 126 ] && pass e1-not-executable-exits-126 \
@@ -66,7 +66,7 @@ rm -f /tmp/notexec.$$
 
 # ---------------------------------------------- E2: non-UTF-8 argument
 BAD=$(printf 'a\377b')
-out=$("$TOOL" -q -l "$FAKE" "$CASES" echoargsraw "$BAD" 2>/dev/null)
+out=$("$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" echoargsraw "$BAD" 2>/dev/null)
 case "$out" in
     *arg2=61ff62*) pass e2-non-utf8-argv-forwarded ;;
     *) fail "e2-non-utf8-argv (want arg2=61ff62, got: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160))" ;;
@@ -81,7 +81,7 @@ esac
 # vfork, which now takes the post-exec path.  Resolving the path against
 # the tracer's cwd would miss the binary and silently fall back to
 # post-exec redaction.
-log=$("$TOOL" -v -l "$FAKE" "$CASES" forkexec "$ROOT" ./tests/testcases echoargs X 2>&1)
+log=$("$TOOL" -v --profile compat --allow-impersonation -l "$FAKE" "$CASES" forkexec "$ROOT" ./tests/testcases echoargs X 2>&1)
 nswap=$(printf '%s\n' "$log" | grep -c 'entry pointer-swap (ELF)')
 nscript=$(printf '%s\n' "$log" | grep -c 'script/unknown exec')
 if [ "$nswap" -ge 2 ] && [ "$nscript" = 0 ]; then
@@ -128,7 +128,7 @@ e4b_len() {  # LABEL -> settled cmdline byte count of the payload
 }
 for e4b_n in 254 255 300; do
     e4b_label=$(head -c "$e4b_n" /dev/zero | tr '\0' 'x')
-    "$TOOL" -l "$e4b_label" "$CASES" sleeper >/dev/null 2>"/tmp/mk-e4b.$$" &
+    "$TOOL" --profile compat -l "$e4b_label" "$CASES" sleeper >/dev/null 2>"/tmp/mk-e4b.$$" &
     e4b_pid=$!
     e4b_bytes=$(e4b_len "$e4b_label" || true)
     e4b_found_pid=$(cat "$T/e4b.pid" 2>/dev/null)
@@ -171,7 +171,7 @@ while [ "$i" -lt 500 ]; do
     set -- "$@" "MK-E5-${i}-XXXXXXXX"
     i=$((i + 1))
 done
-out=$("$TOOL" -q -l "$FAKE" "$CASES" echoargs "$@" 2>/dev/null)
+out=$("$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" echoargs "$@" 2>/dev/null)
 case "$out" in
     *arg501=*) pass e5-large-argv-forwarded ;;
     *) fail "e5-large-argv (last argument missing from the program's own view)" ;;
@@ -230,7 +230,7 @@ wait "$CTL_PID" 2>/dev/null
 [ "$ctl" = 1 ] && pass e6-control-cmdline-detectable \
     || fail "e6-control (the observer cannot see an unmasked cmdline)"
 
-"$TOOL" -q -l "$FAKE" "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --allow-impersonation -l "$FAKE" "$CASES" sleeper >/dev/null 2>&1 &
 SELF_PID=$!
 # Wait for the observable condition, not a fixed sleep: the kernel
 # publishes the supervisor's real argv until the supervisor zeroes the
@@ -299,7 +299,7 @@ await_blank() {  # pid-of-supervisor -> count, waiting up to 4s for one
 }
 for form in "-l-" "--label=-" "-l -" "--label -"; do
     # shellcheck disable=SC2086
-    "$TOOL" -q $form "$CASES" sleeper >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat $form "$CASES" sleeper >/dev/null 2>&1 &
     P=$!
     n=$(await_blank "$P")
     sc=$(cat "/proc/$P/comm" 2>/dev/null)
@@ -407,7 +407,7 @@ kill_comm sleep KILL 2>/dev/null
     || fail "e9-control (script argument not visible without pmask)"
 rm -f "$E9_OUT"
 
-"$TOOL" -v -l mk-e9-label "$E9_SCRIPT" MK-E9-ARG "two words" >/dev/null 2>"$E9_LOG" &
+"$TOOL" -v --profile compat -l mk-e9-label "$E9_SCRIPT" MK-E9-ARG "two words" >/dev/null 2>"$E9_LOG" &
 E9_PID=$!
 if wait_file "$E9_OUT" 20; then
     n=$(wait_labelled mk-e9-label 1 10)
@@ -447,7 +447,7 @@ kill -9 "$CTL" 2>/dev/null; wait "$CTL" 2>/dev/null
 # redaction of environ broken in the default mode (the hidden run finds
 # the value).  The --keep-env run is also the detector control for the
 # default run.
-"$TOOL" -q --keep-env -l mk-e10-keep env MK_E10_VAR=MK-E10-VISIBLE "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --keep-env -l mk-e10-keep env MK_E10_VAR=MK-E10-VISIBLE "$CASES" sleeper >/dev/null 2>&1 &
 P=$!
 n=$(wait_comm_exe mk-e10-keep testcases 1 15)
 hits=$(environ_hits MK-E10-VISIBLE)
@@ -455,7 +455,7 @@ stop_tree "$P" mk-e10-keep
 [ "$n" -ge 1 ] && [ "$hits" -ge 1 ] && pass "e10-keep-env-visible (hits=$hits)" \
     || fail "e10-keep-env-visible (alive=$n hits=$hits, want >=1 and >=1)"
 
-"$TOOL" -q -l mk-e10-hide env MK_E10_VAR=MK-E10-HIDDEN "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mk-e10-hide env MK_E10_VAR=MK-E10-HIDDEN "$CASES" sleeper >/dev/null 2>&1 &
 P=$!
 n=$(wait_comm_exe mk-e10-hide testcases 1 15)
 sleep 0.3
@@ -470,7 +470,7 @@ stop_tree "$P" mk-e10-hide
 # marker is visible); a grandchild that stopped working.
 E11_OUT=/tmp/mk-e11-out.$$
 rm -f "$E11_OUT"
-"$TOOL" -q --no-follow -l mk-e11-only /bin/sh -c ": MK-E11-PARENT; $CASES echoargs G1 G2 > $E11_OUT; $CASES sleeper MK-E11-GC & wait" >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --no-follow -l mk-e11-only /bin/sh -c ": MK-E11-PARENT; $CASES echoargs G1 G2 > $E11_OUT; $CASES sleeper MK-E11-GC & wait" >/dev/null 2>&1 &
 P=$!
 if wait_file "$E11_OUT" 20; then
     watch MK-E11-GC 8
@@ -496,7 +496,7 @@ rm -f "$E11_OUT"
 # supervisor); EXITKILL missing in the default mode (the control run
 # leaves survivors).  The supervisor exe is pmask, so only tracees
 # (exe testcases) are counted.
-"$TOOL" -q --no-exit-kill -l mk-e12-keep /bin/sh -c "$CASES sleeper MK-E12 & wait" >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --no-exit-kill -l mk-e12-keep /bin/sh -c "$CASES sleeper MK-E12 & wait" >/dev/null 2>&1 &
 P=$!
 before=$(wait_comm_exe mk-e12-keep testcases 1 15)
 kill -9 "$P" 2>/dev/null; wait "$P" 2>/dev/null
@@ -506,7 +506,7 @@ kill_comm mk-e12-keep KILL 2>/dev/null; sleep 0.2
 [ "$before" -ge 1 ] && [ "$after" -ge 1 ] && pass "e12-no-exit-kill-tree-survives (before=$before after=$after)" \
     || fail "e12-no-exit-kill-tree-survives (before=$before after=$after, want >=1 and >=1)"
 
-"$TOOL" -q -l mk-e12-kill /bin/sh -c "$CASES sleeper MK-E12 & wait" >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mk-e12-kill /bin/sh -c "$CASES sleeper MK-E12 & wait" >/dev/null 2>&1 &
 P=$!
 before=$(wait_comm_exe mk-e12-kill testcases 1 15)
 kill -9 "$P" 2>/dev/null; wait "$P" 2>/dev/null
@@ -519,7 +519,7 @@ kill_comm mk-e12-kill KILL 2>/dev/null; sleep 0.2
 # ---------------------------------------------------- E13: --label-empty
 # Defects caught: --label-empty ignored (the cmdline shows the program
 # name, so no labelled process has an empty cmdline); the marker visible.
-"$TOOL" -q --label-empty "$CASES" sleeper MK-E13 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --label-empty "$CASES" sleeper MK-E13 >/dev/null 2>&1 &
 P=$!
 n=$(wait_comm_exe ' ' testcases 1 15)
 sleep 0.3
@@ -540,7 +540,7 @@ stop_tree "$P" ' '
 # Defects caught: no-label mode leaves the arguments visible; no-label
 # mode produces an empty or foreign cmdline instead of the program name.
 kill_comm testcases KILL 2>/dev/null; sleep 0.2
-"$TOOL" -q "$CASES" sleeper MK-E14 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat "$CASES" sleeper MK-E14 >/dev/null 2>&1 &
 P=$!
 n=$(wait_comm_exe testcases testcases 1 15)
 sleep 0.3
@@ -565,12 +565,12 @@ for sub in execveat fexecve; do
         echo "SKIP e15-$sub (testcases has no '$sub' subcommand)"
         continue
     fi
-    out=$("$TOOL" -q -l "$FAKE" "$CASES" "$sub" "$CASES" echoargs E15A E15B 2>/dev/null)
+    out=$("$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" "$sub" "$CASES" echoargs E15A E15B 2>/dev/null)
     case "$out" in
         *E15A*E15B*) pass "e15-$sub-argv-fidelity" ;;
         *) fail "e15-$sub-argv-fidelity (got: $out)" ;;
     esac
-    "$TOOL" -q -l mk-e15-label "$CASES" "$sub" "$CASES" sleeper MK-E15-$sub >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat -l mk-e15-label "$CASES" "$sub" "$CASES" sleeper MK-E15-$sub >/dev/null 2>&1 &
     P=$!
     n=$(wait_comm_exe mk-e15-label testcases 1 15)
     sleep 0.3
@@ -600,7 +600,7 @@ rm -f "$E16_SCRIPT" "$E16_LOG"
 # Defect caught: an empty argv either panics or runs something unintended.
 # Each shape must be refused with a message and the documented status.
 err=$("$TOOL" 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 255 ] && printf '%s' "$err" | grep -q 'Usage: pmask'; then
+if [ "$rc" = 255 ] && printf '%s' "$err" | grep -qi 'usage:'; then
     pass "e17-no-arguments-prints-usage-and-exits-255"
 else
     fail "e17-no-arguments (rc=$rc err=$(printf '%s' "$err" | head -1))"
@@ -617,7 +617,7 @@ fi
 rm -f "$E17_EMPTY"
 
 err=$("$TOOL" -q "" 2>&1 >/dev/null); rc=$?
-if [ "$rc" = 127 ] && printf '%s' "$err" | grep -q 'cannot exec'; then
+if [ "$rc" = 127 ] && printf '%s' "$err" | grep -Eq 'cannot exec|No such file'; then
     pass "e17-empty-program-name-is-refused (rc=$rc)"
 else
     fail "e17-empty-program-name (rc=$rc err=[$err])"
@@ -684,7 +684,7 @@ kill -9 "$E18_CTL" 2>/dev/null; wait "$E18_CTL" 2>/dev/null
 [ "$E18_SCORE" = none ] && pass "e18-control-untraced-scores-none (TracerPid=0)" \
     || fail "e18-control-untraced (pid=$E18_PID score=$E18_SCORE, want none)"
 
-"$TOOL" -q -l mk-e18-trace "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mk-e18-trace "$CASES" sleeper >/dev/null 2>&1 &
 E18_P=$!
 E18_PID=$(find_pid_comm_exe mk-e18-trace testcases 15)
 E18_TP=$(tracerpid "$E18_PID")
@@ -697,7 +697,7 @@ else
     fail "e18-default-traced (pid=${E18_PID:-none} TracerPid=${E18_TP:-none} score=$E18_SCORE, want high)"
 fi
 
-"$TOOL" -q --detach -l mk-e18-detach "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --detach -l mk-e18-detach "$CASES" sleeper >/dev/null 2>&1 &
 E18_P=$!
 E18_PID=$(find_pid_comm_exe mk-e18-detach testcases 15)
 E18_TP=$(tracerpid "$E18_PID")
@@ -710,7 +710,7 @@ else
     fail "e18-detach (pid=${E18_PID:-none} TracerPid=${E18_TP:-none} score=$E18_SCORE, want none)"
 fi
 
-"$TOOL" -q -l ssh-agent "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l ssh-agent "$CASES" sleeper >/dev/null 2>&1 &
 E18_P=$!
 E18_PID=$(find_pid_comm_exe ssh-agent testcases 15)
 E18_SCORE=$(exhume_score "$E18_PID")
@@ -751,7 +751,7 @@ case "$E19_VIEWS" in
     *) fail "e19-control-dead (procviews $E19_DEAD: $E19_VIEWS)" ;;
 esac
 
-"$TOOL" -q -l mk-e19-view "$CASES" sleeper MK-E19-ARG >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mk-e19-view "$CASES" sleeper MK-E19-ARG >/dev/null 2>&1 &
 E19_P=$!
 E19_PID=$(find_pid_comm_exe mk-e19-view testcases 15)
 if [ -n "$E19_PID" ]; then
@@ -892,14 +892,19 @@ case "$E21_CTL_OWN" in
     *testcases*) E21_CTL_OWN_S=real ;;
     *) E21_CTL_OWN_S=dissent ;;
 esac
-if [ "$E21_CTL_CMD_S" = real ] && [ "$E21_CTL_AUX_S" = real ] \
-    && [ "$E21_CTL_OWN_S" = real ]; then
+E21_YAMA=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
+E21_AUXV_SKIP=0
+if [ "$E21_CTL_AUX_S" != real ] && [ "$E21_YAMA" != 0 ] && [ "$(id -u)" != 0 ]; then
+    E21_AUXV_SKIP=1
+fi
+if [ "$E21_CTL_CMD_S" = real ] && [ "$E21_CTL_OWN_S" = real ] \
+    && { [ "$E21_CTL_AUX_S" = real ] || [ "$E21_AUXV_SKIP" = 1 ]; }; then
     pass "e21-control-all-channels-name-the-real-argv"
 else
     fail "e21-control (cmd=[$E21_CTL_CMD_S] auxv=[$E21_CTL_AUX_S] own=[$E21_CTL_OWN_S])"
 fi
 
-"$TOOL" -q -l "$E21_LBL" "$CASES" execfn 3 "$E21_MARK" >"$T/e21.out" 2>/dev/null &
+"$TOOL" -q --profile compat -l "$E21_LBL" "$CASES" execfn 3 "$E21_MARK" >"$T/e21.out" 2>/dev/null &
 E21_SUP=$!
 E21_PID=$(find_pid_comm_exe "$E21_LBL" testcases 15)
 if [ -n "$E21_PID" ]; then
@@ -924,7 +929,9 @@ E21_LEN=$(( $(printf '%s' "$E21_LBL" | wc -c | tr -d ' ') + 1 ))
 E21_DISSENT=""
 [ "$E21_CMD" = "$E21_LBL" ] || E21_DISSENT="$E21_DISSENT cmdline"
 [ "$E21_SPAN" = "$E21_LEN" ] || E21_DISSENT="$E21_DISSENT span"
-[ "$E21_AUX" = "$E21_LBL" ] || E21_DISSENT="$E21_DISSENT auxv"
+if [ "$E21_AUXV_SKIP" = 0 ]; then
+    [ "$E21_AUX" = "$E21_LBL" ] || E21_DISSENT="$E21_DISSENT auxv"
+fi
 case "$E21_OWN" in
     *testcases*) E21_DISSENT="$E21_DISSENT execfn" ;;
 esac

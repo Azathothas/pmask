@@ -60,7 +60,7 @@ pass "qa19-control-host-ns (net=$HOST_NET pid=$HOST_PID)"
 
 # A payload that sleeps, so the observer reads the namespaces of a live
 # process and not of a finished one.
-"$TOOL" -q --redact --isolate=net -l qa19 -- /bin/sh -c 'sleep 20' >"$D/out" 2>"$D/err" &
+"$TOOL" -q --profile compat --redact --isolate=net -l qa19 -- /bin/sh -c 'sleep 20' >"$D/out" 2>"$D/err" &
 SUP=$!
 PID=""
 i=0

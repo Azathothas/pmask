@@ -89,7 +89,7 @@ child_of() {
 }
 
 # ------------------------------------------------------------ q47a control
-"$TOOL" -q -l "$BASE-a" -- "$CASES" sleepfor 6 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$BASE-a" -- "$CASES" sleepfor 6 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(child_of "$SUP")
 if [ -n "$PAY" ] && [ -n "$(status_field "$PAY" TracerPid)" ] \
@@ -104,7 +104,7 @@ SUP=""
 PAY=""
 
 # ------------------------------------------------------------- q47b detach
-"$TOOL" --detach -l "$BASE-b" -- "$CASES" sleepfor 6 >/dev/null 2>"$T/b.err" &
+"$TOOL" --profile compat --detach -l "$BASE-b" -- "$CASES" sleepfor 6 >/dev/null 2>"$T/b.err" &
 SUP=$!
 PAY=$(child_of "$SUP")
 if [ -n "$PAY" ]; then
@@ -145,7 +145,7 @@ else
     fail "q47c-detach-names-the-release (stderr: $(tr '\n' '|' < "$T/b.err"))"
 fi
 # -q still prints nothing.
-"$TOOL" -q --detach -l "$BASE-c" -- "$CASES" sleepfor 2 >/dev/null 2>"$T/c.err" &
+"$TOOL" -q --profile compat --detach -l "$BASE-c" -- "$CASES" sleepfor 2 >/dev/null 2>"$T/c.err" &
 SUP=$!
 sleep 0.6
 qbytes=$(wc -c < "$T/c.err" | tr -d ' ')
@@ -203,7 +203,7 @@ SUP=""
 GRAND=""
 
 # ------------------------------------------------------- q47e on-exit detach
-"$TOOL" -q --on-exit detach -l "$BASE-e" -- "$CASES" sleepfor 3 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --on-exit detach -l "$BASE-e" -- "$CASES" sleepfor 3 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(child_of "$SUP")
 wait "$SUP" 2>/dev/null
@@ -239,7 +239,7 @@ else
 fi
 
 # ------------------------------------------------------ q47g no-exit-kill
-"$TOOL" -q --no-exit-kill -l "$BASE-g" -- "$CASES" sleepfor 5 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat --no-exit-kill -l "$BASE-g" -- "$CASES" sleepfor 5 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(child_of "$SUP")
 if [ -n "$PAY" ]; then
@@ -259,7 +259,7 @@ kill -9 "$PAY" 2>/dev/null
 PAY=""
 
 # -------------------------------------------------- q47h control exit-kill
-"$TOOL" -q -l "$BASE-h" -- "$CASES" sleepfor 5 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$BASE-h" -- "$CASES" sleepfor 5 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(child_of "$SUP")
 if [ -n "$PAY" ]; then

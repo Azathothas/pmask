@@ -19,7 +19,7 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
 # presenting the label rather than merely no evidence of a rename.
 check() {
     ck_mode=$1; ck_tag=$2
-    "$TOOL" -q --watch-rename -l q71 -- "$CASES" commwrite 3 "$ck_mode" \
+    "$TOOL" -q --profile compat --watch-rename -l q71 -- "$CASES" commwrite 3 "$ck_mode" \
         >"$T/q71.out" 2>/dev/null &
     sup=$!; sleep 1.2
     pay=$(payload_pid q71 testcases 5)

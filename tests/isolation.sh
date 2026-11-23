@@ -1026,7 +1026,7 @@ matrix_has() {
 MATRIX_SUP=""
 MATRIX_PID=""
 MATRIX_CTL=""
-MK_ISO_ENV="$MATRIX_CAN" "$TOOL" run --label "$MATRIX_LABEL" --no-dumpable \
+MK_ISO_ENV="$MATRIX_CAN" "$TOOL" run --profile tree --label "$MATRIX_LABEL" --no-dumpable \
     -- "$CASES" sleeper "$MATRIX_CAN" >/dev/null 2>"$T/matrix.err" &
 MATRIX_SUP=$!
 MATRIX_SUP_START=$(proc_start "$MATRIX_SUP")
@@ -1158,10 +1158,13 @@ else
     fi
 
     # i27: syscall is refused with --no-dumpable.
+    yama_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
     m_b=$(matrix_bytes "$MATRIX_PID" syscall)
     c_b=$(matrix_bytes "$MATRIX_CTL" syscall)
     if [ -z "$m_b" ] && [ -n "$c_b" ] && [ "$c_b" -gt 0 ]; then
         pass "i29-syscall-refused-with-no-dumpable (control bytes=$c_b)"
+    elif [ -z "$m_b" ] && [ "${c_b:-0}" = 0 ] && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+        skip "i29-syscall-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling /proc/syscall on control)"
     else
         fail "i29-syscall-refused-with-no-dumpable (masked=[$m_b] control=[$c_b])"
     fi
@@ -1180,6 +1183,8 @@ else
         fail "i31-mem-refused-with-no-dumpable (opened)"
     elif matrix_open "$MATRIX_CTL" mem; then
         pass "i31-mem-refused-with-no-dumpable"
+    elif [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+        skip "i31-mem-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling /proc/mem on control)"
     else
         fail "i31-mem-refused-with-no-dumpable (the control cannot open its own mem, so the refusal proves nothing)"
     fi
@@ -1198,6 +1203,8 @@ else
         c_out=$(matrix_probe pidfd_getfd "$MATRIX_CTL")
         if matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "ok"; then
             pass "i32-pidfd-getfd-refused-with-no-dumpable (masked=$m_out control=$c_out)"
+        elif matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "EPERM" && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+            skip "i32-pidfd-getfd-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling pidfd_getfd on control)"
         else
             fail "i32-pidfd-getfd-refused-with-no-dumpable (masked=[$m_out] control=[$c_out])"
         fi
@@ -1207,6 +1214,8 @@ else
         c_out=$(matrix_probe process_vm_readv "$MATRIX_CTL")
         if matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "ok"; then
             pass "i33-process-vm-readv-refused-with-no-dumpable (masked=$m_out control=$c_out)"
+        elif matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "EPERM" && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+            skip "i33-process-vm-readv-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling process_vm_readv on control)"
         else
             fail "i33-process-vm-readv-refused-with-no-dumpable (masked=[$m_out] control=[$c_out])"
         fi
@@ -1216,6 +1225,8 @@ else
         c_out=$(matrix_probe process_vm_writev "$MATRIX_CTL")
         if matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "ok"; then
             pass "i34-process-vm-writev-refused-with-no-dumpable (masked=$m_out control=$c_out)"
+        elif matrix_has "$m_out" "EPERM" && matrix_has "$c_out" "EPERM" && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+            skip "i34-process-vm-writev-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling process_vm_writev on control)"
         else
             fail "i34-process-vm-writev-refused-with-no-dumpable (masked=[$m_out] control=[$c_out])"
         fi
@@ -1228,6 +1239,10 @@ else
         if matrix_has "$m_a" "EPERM" && matrix_has "$c_a" "ok" \
             && matrix_has "$m_s" "EPERM" && matrix_has "$c_s" "ok"; then
             pass "i35-ptrace-attach-and-seize-refused-with-no-dumpable (attach masked=$m_a control=$c_a; seize masked=$m_s control=$c_s)"
+        elif matrix_has "$m_a" "EPERM" && matrix_has "$c_a" "EPERM" \
+            && matrix_has "$m_s" "EPERM" && matrix_has "$c_s" "EPERM" \
+            && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+            skip "i35-ptrace-attach-and-seize-refused-with-no-dumpable (yama.ptrace_scope=$yama_scope blocks sibling ptrace on control)"
         else
             fail "i35-ptrace-attach-and-seize-refused-with-no-dumpable (attach masked=[$m_a] control=[$c_a]; seize masked=[$m_s] control=[$c_s])"
         fi

@@ -9,7 +9,7 @@ require_bins || exit 2
 FAIL=0
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAIL=$((FAIL + 1)); }
-help=$("$TOOL" --help 2>&1)
+help=$("$TOOL" --help=all 2>&1)
 printf '%s' "$help" | grep -q 'cgroup.procs' && pass q73-help-names-cgroup \
     || fail q73-help-names-cgroup
 if printf '%s' "$help" | grep -q 'sched_getaffinity'; then

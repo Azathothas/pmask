@@ -304,7 +304,7 @@ run_window() {
     rw_out="$T/win.$rw_variant.$rw_desc"
     case "$rw_variant" in
         masked)
-            env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$LABEL" -- "$@" \
+            env -i PATH=/usr/bin:/bin "$TOOL" -q --profile tree -l "$LABEL" -- "$@" \
                 >/dev/null 2>"$rw_err" &
             ;;
         plain)
@@ -474,7 +474,7 @@ startup_trace() {
         return 1
     fi
     strace -qq -o "$st_out" -e trace=prctl,ptrace,clone,clone3 \
-        env -i PATH=/usr/bin:/bin "$TOOL" -q -l bench -- /bin/true \
+        env -i PATH=/usr/bin:/bin "$TOOL" -q --profile tree -l bench -- /bin/true \
         >/dev/null 2>/dev/null
     [ -s "$st_out" ]
 }
@@ -593,6 +593,10 @@ if command -v strace >/dev/null 2>&1; then
         >/dev/null 2>&1 &
     SUP=$!
     TID=$(find_tracer_tid "$SUP")
+    # Single-threaded CLI supervision runs the tracer directly on the leader.
+    if [ -z "$TID" ] && kill -0 "$SUP" 2>/dev/null; then
+        TID="$SUP"
+    fi
     if [ -z "$TID" ]; then
         echo "SKIP syscall-sustained (no second task appeared in the supervisor)"
         kill -9 "$SUP" 2>/dev/null
@@ -637,7 +641,7 @@ fi
 # would otherwise assume `strace -f` was an option.
 if command -v strace >/dev/null 2>&1; then
     strace -f -qq -o "$T/fcheck.trace" -e trace=ptrace \
-        env -i PATH=/usr/bin:/bin "$TOOL" -q -l bench -- /bin/true \
+        env -i PATH=/usr/bin:/bin "$TOOL" -q --profile tree -l bench -- /bin/true \
         >/dev/null 2>"$T/fcheck.err"
     fc_rc=$?
     if grep -q 'PTRACE_SEIZE.*EPERM' "$T/fcheck.trace" 2>/dev/null; then

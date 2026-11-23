@@ -13,7 +13,7 @@ spans() { awk '{sub(/.*\) /,""); print $47-$46, $49-$48}' "/proc/$1/stat" 2>/dev
 nuls() { od -An -tx1 "/proc/$1/cmdline" 2>/dev/null | tr ' ' '\n' | grep -c '^00$'; }
 env -u _ "$CASES" sleeper BIG >/dev/null 2>&1 & ctl=$!; sleep 0.5
 set -- $(spans "$ctl"); cas=$1; ces=$2; kill -9 "$ctl" 2>/dev/null
-env -u _ "$TOOL" -q --no-exact -l q74 -- "$CASES" sleeper BIG >/dev/null 2>&1 & sup=$!; sleep 0.8
+env -u _ "$TOOL" -q --profile compat --no-exact -l q74 -- "$CASES" sleeper BIG >/dev/null 2>&1 & sup=$!; sleep 0.8
 # The supervisor carries the label too, so the payload is found by comm
 # plus exe; measuring the supervisor reports the tracer's own window.
 pay=$(payload_pid q74 testcases 5)

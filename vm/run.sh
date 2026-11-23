@@ -26,6 +26,8 @@
 # the boot line.
 # ============================================================================
 set -eu
+PMASK_VM_SUITES="${PMASK_VM_SUITES:-validate profiles suite stress edge daemon daemon_neg options redteam blueteam core audit}"
+export PMASK_VM_SUITES
 . "$(dirname "$0")/common.sh"
 
 OLD=0

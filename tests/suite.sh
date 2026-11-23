@@ -35,7 +35,7 @@ alive() { # name, expected-min count of label-comm processes
 }
 
 launch() { # wrapper: start TOOL under the label in background
-    "$TOOL" -q -l "$FAKE" "$@" >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat --allow-impersonation -l "$FAKE" "$@" >/dev/null 2>&1 &
     PIDS="$PIDS $!"
 }
 
@@ -159,18 +159,18 @@ check t9-cmdline MK-T9-ARG
 kill_comm 'testcases' KILL 2>/dev/null; sleep 0.3; PIDS=""
 
 echo "== T10: exit code passthrough =="
-"$TOOL" -q -l "$FAKE" /bin/sh -c 'exit 42' 2>/dev/null
+"$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'exit 42' 2>/dev/null
 rc=$?
 if [ "$rc" = "42" ]; then echo "PASS t10-exitcode"
 else echo "FAIL t10-exitcode rc=$rc"; FAIL=1; fi
 
 echo "== T11: stdout/stdin passthrough =="
-o=$(echo hello-marker | "$TOOL" -q -l "$FAKE" /bin/cat)
+o=$(echo hello-marker | "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/cat)
 if [ "$o" = "hello-marker" ]; then echo "PASS t11-stdio"
 else echo "FAIL t11-stdio [$o]"; FAIL=1; fi
 
 echo "== T12: program sees its own argv =="
-o=$("$TOOL" -q -l "$FAKE" "$CASES" echoargs A1 A2 2>/dev/null)
+o=$("$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" echoargs A1 A2 2>/dev/null)
 case "$o" in
     *A1*A2*) echo "PASS t12-argv: [$o]" ;;
     *) echo "FAIL t12-argv: [$o]"; FAIL=1 ;;

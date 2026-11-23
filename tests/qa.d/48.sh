@@ -203,7 +203,7 @@ VEC_MARK="Q48VEC$$"
 printf '%s\0%s\0%s\0' "$CASES" holdargs "$VEC_MARK" >"$T/args.bin"
 # holdargs wants an output path as its first argument.
 printf '%s\0%s\0%s\0%s\0' "$CASES" holdargs "$T/argv.out" "$VEC_MARK" >"$T/args.bin"
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "b2q48-$$" --args-from-fd 3 -- \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "b2q48-$$" --args-from-fd 3 -- \
     <"$T/args.bin" >/dev/null 2>&1 3<"$T/args.bin" &
 SUP=$!
 PIDS="$PIDS $SUP"

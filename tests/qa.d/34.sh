@@ -85,7 +85,7 @@ else
 fi
 echo "INFO qa34-wrapper: $WRAP"
 
-RUN_MASK -q -l qa34 -- /bin/true >"$D/m.out" 2>"$D/m.err"
+RUN_MASK -q --profile compat -l qa34 -- /bin/true >"$D/m.out" 2>"$D/m.err"
 rc=$?
 if [ "$rc" = 255 ]; then
     pass "qa34-session-still-fails (exit 255)"

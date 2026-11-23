@@ -42,7 +42,7 @@ check "53-comm-too-long" 255 "comm must be at most 15 bytes" -- \
 check "53-jobs-zero" 255 "--jobs needs a number of at least 1" -- \
     "$DAEMON" --jobs 0 -S "$D/x.sock"
 check "53-missing-command" 127 "cannot exec" -- \
-    "$TOOL" -- /nonexistent-cmd-qa53
+    "$TOOL" --profile compat -- /nonexistent-cmd-qa53
 
 # The daemon's socket-directory refusal names the misconfiguration.
 mkdir -p "$D/open" && chmod 777 "$D/open"

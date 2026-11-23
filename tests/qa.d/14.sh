@@ -76,27 +76,16 @@ done
 # ------------------------------------------------------------------ N3
 # `--keep-env PATH -- true` used to keep the whole environment and run
 # PATH as the program, failing with the generic "No such file or
-# directory".  A word that looks like a variable list is the common typo
-# for `--keep-env=PATH`, but it is also a legal program name (`sleep`,
-# `env`, `make`), so the parser names the spelling in one warning and runs
-# what the operator wrote rather than narrowing a working command.
+# directory".  In v0.2.0 the space form fails fast with exit 2 and names
+# the `--keep-env=PATH` spelling.
 "$TOOL" -q --keep-env PATH -- true >"$D/n3.out" 2>"$D/n3.err"
 rc=$?
 case "$rc" in
-    127)
-        # `PATH` is not a program here, so the run fails to exec it; the
-        # point is that the warning named the inline spelling first.
+    2|127)
         if grep -q -- "--keep-env=PATH" "$D/n3.err"; then
             pass "qa14-n3-keep-env-space-form-is-named"
         else
             fail "qa14-n3-keep-env-space-form-is-named (rc=$rc err=$(tr '\n' '|' <"$D/n3.err"))"
-        fi
-        ;;
-    0)
-        if grep -q -- "--keep-env=PATH" "$D/n3.err"; then
-            pass "qa14-n3-keep-env-space-form-is-named"
-        else
-            fail "qa14-n3-keep-env-space-form-is-named (ran with no warning: $(tr '\n' '|' <"$D/n3.err"))"
         fi
         ;;
     *)
@@ -139,14 +128,14 @@ else
 fi
 
 # ------------------------------------------------------------------ N5
-full=$("$TOOL" --help 2>&1 | wc -c | tr -d ' ')
+full=$("$TOOL" --help=all 2>&1 | wc -c | tr -d ' ')
 short=$("$TOOL" --help=short 2>&1 | wc -c | tr -d ' ')
 if [ "$short" -gt 0 ] && [ "$short" -lt "$full" ]; then
     pass "qa14-n5-help-short-is-smaller (short=$short full=$full)"
 else
     fail "qa14-n5-help-short-is-smaller (short=$short full=$full)"
 fi
-if "$TOOL" --help=short 2>&1 | grep -q -- "--isolate"; then
+if "$TOOL" --help=short 2>&1 | grep -q -- "--profile"; then
     pass "qa14-n5-help-short-lists-the-options"
 else
     fail "qa14-n5-help-short-lists-the-options"

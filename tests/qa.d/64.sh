@@ -115,7 +115,7 @@ fi
 
 # ---------------------------------------------------------- the memory rows
 CAN="QA64-CANARY-$$"
-"$TOOL" -q -l qa64mem --encrypt-memory -- "$CASES" sleeper "$CAN" >/dev/null 2>"$D/mem.err" &
+"$TOOL" -q --profile tree -l qa64mem --encrypt-memory -- "$CASES" sleeper "$CAN" >/dev/null 2>"$D/mem.err" &
 SUP=$!
 PIDS="$PIDS $SUP"
 sleep 0.8
@@ -185,7 +185,7 @@ PIDS=""
 # scanner is the same one that found the payload canary, so the negative
 # result is a control that can see a value when it is there.
 SEC="QA64-SECRET-$$"
-"$TOOL" -q -l qa64sec --secret "S=literal:$SEC" -- "$CASES" sleeper "$SEC" \
+"$TOOL" -q --profile tree -l qa64sec --secret "S=literal:$SEC" -- "$CASES" sleeper "$SEC" \
     >/dev/null 2>"$D/sec.err" &
 SUP2=$!
 PIDS="$PIDS $SUP2"

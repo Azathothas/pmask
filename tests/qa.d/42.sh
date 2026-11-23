@@ -59,7 +59,7 @@ trap 'exit 130' INT TERM
 
 # start LABEL ARGS...  -- SUP/PAY, label defaults to the program name
 start() {
-    env -i PATH=/usr/bin:/bin "$TOOL" -q "$@" \
+    env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat "$@" \
         -- "$CASES" sleeper QAMARK >/dev/null 2>"$D/last.err" &
     SUP=$!
     PAY=""
@@ -183,7 +183,7 @@ fi
 
 # --------------------- C8/C9: the 254 and 255-byte labels
 L254=$(printf 'L%.0s' $(seq 254))
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L254" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$L254" -- "$CASES" sleeper QAMARK >/dev/null 2>&1 &
 SUP=$!
 PAY=""
 i=0
@@ -207,7 +207,7 @@ else
 fi
 
 L255=$(printf 'M%.0s' $(seq 255))
-env -i PATH=/usr/bin:/bin "$TOOL" -l "$L255" -- "$CASES" sleeper QAMARK \
+env -i PATH=/usr/bin:/bin "$TOOL" --profile compat -l "$L255" -- "$CASES" sleeper QAMARK \
     >/dev/null 2>"$D/c9.err" &
 SUP=$!
 PAY=""

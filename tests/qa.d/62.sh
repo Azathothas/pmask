@@ -82,7 +82,7 @@ if [ "$have_root" = yes ] && [ "$have_unshare" = yes ]; then
     fi
 fi
 if [ "$have_root" = yes ] && [ "$have_setpriv" = yes ] && [ "$unshare_ok" = yes ]; then
-    out=$(vis_case "" default)
+    out=$(vis_case "--profile compat" default)
     case "$out" in
         *VISIBLE*) pass "qa62-default-supervisor-visible (hidepid=invisible)" ;;
         *) fail "qa62-default-supervisor-visible (out=$(printf '%s' "$out" | tr '\n' '|'))" ;;

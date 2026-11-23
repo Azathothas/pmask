@@ -24,10 +24,21 @@ const OFFSET_NR: u32 = 0;
 const OFFSET_ARCH: u32 = 4;
 /// Offset of `args[0]` (low word on little-endian) in `struct seccomp_data`.
 const OFFSET_ARG0_LOW: u32 = 16;
+/// Offset of `args[1]` (low word on little-endian) in `struct seccomp_data`.
+const OFFSET_ARG1_LOW: u32 = 24;
+/// Offset of `args[2]` (low word on little-endian) in `struct seccomp_data`.
+const OFFSET_ARG2_LOW: u32 = 32;
 
 const BPF_LD_W_ABS: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
 const BPF_JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
+const BPF_JSET_K: u16 = 0x45; // BPF_JMP | BPF_JSET | BPF_K
 const BPF_RET_K: u16 = 0x06; // BPF_RET | BPF_K
+
+/// Open flags that can create, truncate, or write a file (such as `/proc/.../comm`).
+/// Pure `O_RDONLY` opens have none of these bits set and return `SECCOMP_RET_ALLOW`
+/// directly in the kernel without a ptrace trap.
+const OPEN_WRITE_FLAGS: u32 =
+    (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC) as u32;
 
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_TRACE: u32 = 0x7ff0_0000;
@@ -63,6 +74,15 @@ fn jump_eq(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     }
 }
 
+fn jump_set(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
+    libc::sock_filter {
+        code: BPF_JSET_K,
+        jt,
+        jf,
+        k,
+    }
+}
+
 /// Build the classic BPF program for the current architecture.
 ///
 /// Layout (index: instruction):
@@ -86,29 +106,26 @@ pub fn prctl_watch_filter() -> Vec<libc::sock_filter> {
     ]
 }
 
-/// Build the filter `--watch-rename` installs: `prctl(PR_SET_NAME)` plus
-/// the open/creat family, so the tracer can refuse a write-mode open of
-/// `/proc/.../comm` (the kernel's `comm_write` path never calls `prctl`,
-/// so the old filter missed it).
-///
-/// `strict` additionally traps the write family.  The open path is
-/// alias-prone (a symlink or a passed descriptor names no `comm`), so
-/// strict checks the descriptor target instead; it costs one stop per
-/// write and is therefore its own mode.
+/// Build the filter `--watch-rename` installs:
+/// - `prctl` ONLY when `arg0 == PR_SET_NAME` (15); all other `prctl` calls
+///   return `SECCOMP_RET_ALLOW` in the kernel with zero ptrace traps.
+/// - `open` / `openat` ONLY when `(flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) != 0`;
+///   pure read-only opens (loader libraries, `ld.so.cache`, locales) return
+///   `SECCOMP_RET_ALLOW` with zero traps.
+/// - `openat2` (flags live behind a userspace pointer) and `creat` (always
+///   creates/writes) are trapped unconditionally.
+/// - `strict` additionally traps the write family so writes to an already-open
+///   `/proc/.../comm` descriptor (symlink alias or received fd) are caught.
 pub fn rename_watch_filter(strict: bool) -> Vec<libc::sock_filter> {
-    let mut nrs = vec![libc::SYS_prctl as u32];
-    for nr in [
-        crate::arch::SYS_OPEN,
-        crate::arch::SYS_OPENAT,
-        crate::arch::SYS_OPENAT2,
-        crate::arch::SYS_CREAT,
-    ] {
+    let has_open = crate::arch::SYS_OPEN < u32::MAX as u64;
+    let mut uncond: Vec<u32> = Vec::new();
+    for nr in [crate::arch::SYS_OPENAT2, crate::arch::SYS_CREAT] {
         // High sentinel values denote syscalls absent on this architecture
         // (e.g. `open` and `creat` on aarch64).
         if nr < u32::MAX as u64 {
             let nr = nr as u32;
-            if !nrs.contains(&nr) {
-                nrs.push(nr);
+            if !uncond.contains(&nr) {
+                uncond.push(nr);
             }
         }
     }
@@ -120,30 +137,70 @@ pub fn rename_watch_filter(strict: bool) -> Vec<libc::sock_filter> {
             crate::arch::SYS_PWRITEV,
             crate::arch::SYS_PWRITEV2,
         ] {
-            let nr = nr as u32;
-            if !nrs.contains(&nr) {
-                nrs.push(nr);
+            if nr < u32::MAX as u64 {
+                let nr = nr as u32;
+                if !uncond.contains(&nr) {
+                    uncond.push(nr);
+                }
             }
         }
     }
-    // Layout: 0 arch, 1 arch check, 2 nr, one compare per syscall, then
-    // ALLOW and TRACE.  Every compare jumps forward to TRACE; a miss
-    // falls through to the next compare and finally to ALLOW.
-    let n = nrs.len();
-    // Indices: 0 arch, 1 arch check, 2 nr, 3..3+n compares, then ALLOW
-    // and TRACE.
-    let allow_idx = 3 + n;
+
+    // Instruction layout:
+    //   0..3        : load arch, check arch (-> allow), load nr
+    //   3..6        : prctl -> check arg0 == PR_SET_NAME
+    //   6..9        : openat -> check (arg2 & OPEN_WRITE_FLAGS) != 0
+    //   9..12       : (if arch has open) open -> check (arg1 & OPEN_WRITE_FLAGS) != 0
+    //   next..allow : unconditional compares (openat2, creat, strict writes)
+    //   allow       : RET ALLOW
+    //   trace       : RET TRACE | TRACE_DATA
+    let cond_len = 3 + 3 + if has_open { 3 } else { 0 };
+    let allow_idx = 3 + cond_len + uncond.len();
     let trace_idx = allow_idx + 1;
-    let mut prog = vec![
-        stmt(BPF_LD_W_ABS, OFFSET_ARCH),
-        jump_eq(AUDIT_ARCH_CURRENT, 0, (allow_idx - 2) as u8), // mismatch -> allow
-        stmt(BPF_LD_W_ABS, OFFSET_NR),
-    ];
-    for (i, nr) in nrs.iter().enumerate() {
-        let at = 3 + i;
-        let jt = (trace_idx - (at + 1)) as u8;
-        prog.push(jump_eq(*nr, jt, 0));
+
+    let mut prog = Vec::with_capacity(trace_idx + 1);
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARCH));
+    prog.push(jump_eq(AUDIT_ARCH_CURRENT, 0, (allow_idx - 2) as u8));
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_NR));
+
+    // prctl(arg0, ...): only trap PR_SET_NAME.
+    let after_prctl = prog.len() + 3;
+    prog.push(jump_eq(libc::SYS_prctl as u32, 0, 2));
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARG0_LOW));
+    prog.push(jump_eq(
+        PR_SET_NAME,
+        (trace_idx - after_prctl) as u8,
+        (allow_idx - after_prctl) as u8,
+    ));
+
+    // openat(dirfd, path, flags, ...): only trap write/create/trunc flags.
+    let after_openat = prog.len() + 3;
+    prog.push(jump_eq(crate::arch::SYS_OPENAT as u32, 0, 2));
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARG2_LOW));
+    prog.push(jump_set(
+        OPEN_WRITE_FLAGS,
+        (trace_idx - after_openat) as u8,
+        (allow_idx - after_openat) as u8,
+    ));
+
+    // open(path, flags, ...): only trap write/create/trunc flags (x86_64/x86).
+    if has_open {
+        let after_open = prog.len() + 3;
+        prog.push(jump_eq(crate::arch::SYS_OPEN as u32, 0, 2));
+        prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARG1_LOW));
+        prog.push(jump_set(
+            OPEN_WRITE_FLAGS,
+            (trace_idx - after_open) as u8,
+            (allow_idx - after_open) as u8,
+        ));
     }
+
+    for nr in uncond {
+        let at = prog.len();
+        let jt = (trace_idx - (at + 1)) as u8;
+        prog.push(jump_eq(nr, jt, 0));
+    }
+    debug_assert_eq!(prog.len(), allow_idx);
     prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
     prog.push(stmt(BPF_RET_K, SECCOMP_RET_TRACE | TRACE_DATA));
     debug_assert_eq!(prog.len(), trace_idx + 1);
@@ -217,15 +274,22 @@ mod tests {
     use super::*;
 
     /// Build a synthetic `struct seccomp_data` (64 bytes, little endian).
-    fn data(nr: u32, arch: u32, arg0: u64) -> [u8; 64] {
+    fn data_args(nr: u32, arch: u32, args: [u64; 6]) -> [u8; 64] {
         let mut d = [0u8; 64];
         d[0..4].copy_from_slice(&nr.to_le_bytes());
         d[4..8].copy_from_slice(&arch.to_le_bytes());
-        d[16..24].copy_from_slice(&arg0.to_le_bytes());
+        for (i, a) in args.iter().enumerate() {
+            let off = 16 + i * 8;
+            d[off..off + 8].copy_from_slice(&a.to_le_bytes());
+        }
         d
     }
 
-    /// Interpreter for the three instruction kinds the filter uses.
+    fn data(nr: u32, arch: u32, arg0: u64) -> [u8; 64] {
+        data_args(nr, arch, [arg0, 0, 0, 0, 0, 0])
+    }
+
+    /// Interpreter for the instruction kinds the filters use.
     fn run(prog: &[libc::sock_filter], d: &[u8; 64]) -> u32 {
         let mut acc: u32 = 0;
         let mut pc: usize = 0;
@@ -243,6 +307,10 @@ mod tests {
                     let skip = if acc == ins.k { ins.jt } else { ins.jf };
                     pc += 1 + skip as usize;
                 }
+                BPF_JSET_K => {
+                    let skip = if (acc & ins.k) != 0 { ins.jt } else { ins.jf };
+                    pc += 1 + skip as usize;
+                }
                 BPF_RET_K => return ins.k,
                 other => panic!("unsupported instruction code {:#x}", other),
             }
@@ -250,28 +318,102 @@ mod tests {
     }
 
     #[test]
-    fn rename_filter_traces_prctl_and_open_but_not_unrelated_calls() {
+    fn rename_filter_traces_prctl_set_name_and_write_opens_only() {
         let prog = rename_watch_filter(false);
-        for nr in [
-            libc::SYS_prctl as u64,
-            crate::arch::SYS_OPENAT,
-            crate::arch::SYS_OPENAT2,
-            crate::arch::SYS_OPEN,
-            crate::arch::SYS_CREAT,
+        // prctl(PR_SET_NAME) -> TRACE; other prctl options -> ALLOW.
+        let d_set_name = data(libc::SYS_prctl as u32, AUDIT_ARCH_CURRENT, 15);
+        assert_eq!(run(&prog, &d_set_name), SECCOMP_RET_TRACE | TRACE_DATA);
+        for other_opt in [0u64, 4, 16, 38] {
+            let d = data(libc::SYS_prctl as u32, AUDIT_ARCH_CURRENT, other_opt);
+            assert_eq!(
+                run(&prog, &d),
+                SECCOMP_RET_ALLOW,
+                "prctl({}) must not trap",
+                other_opt
+            );
+        }
+
+        // openat(dirfd, path, flags): pure O_RDONLY -> ALLOW; write/creat/trunc -> TRACE.
+        for ro in [
+            libc::O_RDONLY as u64,
+            (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_DIRECTORY) as u64,
         ] {
+            let d = data_args(
+                crate::arch::SYS_OPENAT as u32,
+                AUDIT_ARCH_CURRENT,
+                [libc::AT_FDCWD as u64, 0x1000, ro, 0, 0, 0],
+            );
+            assert_eq!(
+                run(&prog, &d),
+                SECCOMP_RET_ALLOW,
+                "openat flags {:#x} must not trap",
+                ro
+            );
+        }
+        for wr in [
+            libc::O_WRONLY as u64,
+            libc::O_RDWR as u64,
+            libc::O_CREAT as u64,
+            libc::O_TRUNC as u64,
+            (libc::O_WRONLY | libc::O_CLOEXEC) as u64,
+        ] {
+            let d = data_args(
+                crate::arch::SYS_OPENAT as u32,
+                AUDIT_ARCH_CURRENT,
+                [libc::AT_FDCWD as u64, 0x1000, wr, 0, 0, 0],
+            );
+            assert_eq!(
+                run(&prog, &d),
+                SECCOMP_RET_TRACE | TRACE_DATA,
+                "openat flags {:#x} must trap",
+                wr
+            );
+        }
+
+        // open(path, flags) on architectures that have it.
+        if crate::arch::SYS_OPEN < u32::MAX as u64 {
+            let d_ro = data_args(
+                crate::arch::SYS_OPEN as u32,
+                AUDIT_ARCH_CURRENT,
+                [
+                    0x1000,
+                    (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            );
+            assert_eq!(run(&prog, &d_ro), SECCOMP_RET_ALLOW);
+            for wr in [
+                libc::O_WRONLY as u64,
+                libc::O_RDWR as u64,
+                libc::O_CREAT as u64,
+                libc::O_TRUNC as u64,
+            ] {
+                let d_wr = data_args(
+                    crate::arch::SYS_OPEN as u32,
+                    AUDIT_ARCH_CURRENT,
+                    [0x1000, wr, 0, 0, 0, 0],
+                );
+                assert_eq!(run(&prog, &d_wr), SECCOMP_RET_TRACE | TRACE_DATA);
+            }
+        }
+
+        // openat2 and creat are always trapped.
+        for nr in [crate::arch::SYS_OPENAT2, crate::arch::SYS_CREAT] {
             if nr >= u32::MAX as u64 {
                 continue;
             }
             let d = data(nr as u32, AUDIT_ARCH_CURRENT, 0);
-            assert_eq!(
-                run(&prog, &d),
-                SECCOMP_RET_TRACE | TRACE_DATA,
-                "nr {} must be traced",
-                nr
-            );
+            assert_eq!(run(&prog, &d), SECCOMP_RET_TRACE | TRACE_DATA);
         }
-        let d = data(libc::SYS_read as u32, AUDIT_ARCH_CURRENT, 0);
-        assert_eq!(run(&prog, &d), SECCOMP_RET_ALLOW);
+
+        // Unrelated syscalls and foreign arch -> ALLOW.
+        let d_read = data(libc::SYS_read as u32, AUDIT_ARCH_CURRENT, 0);
+        assert_eq!(run(&prog, &d_read), SECCOMP_RET_ALLOW);
+        let d_foreign = data(libc::SYS_prctl as u32, 0xdead_beef, 15);
+        assert_eq!(run(&prog, &d_foreign), SECCOMP_RET_ALLOW);
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]

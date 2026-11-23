@@ -209,6 +209,33 @@ pub fn map_size() -> Option<u32> {
     }
 }
 
+/// Ask the kernel for the size of its `struct prctl_mm_map` directly
+/// without forking, and cache the answer for the life of the process.
+///
+/// Unlike [`map_size`] (which forks a throwaway child for `pmask probe` /
+/// `pmask doctor`), this helper is zero-fork and suitable for the hot path.
+pub fn map_size_fast() -> Option<u32> {
+    static CACHE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let mut out: u32 = 0;
+        // SAFETY: read-only kernel size query writing into our owned `u32`.
+        let rc = unsafe {
+            libc::prctl(
+                PR_SET_MM,
+                PR_SET_MM_MAP_SIZE as libc::c_ulong,
+                &mut out as *mut u32,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            )
+        };
+        if rc == 0 {
+            Some(out)
+        } else {
+            None
+        }
+    })
+}
+
 /// What a relocation did, for the session summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Relocated {
@@ -382,5 +409,10 @@ mod tests {
         assert!(m.arg_start < m.arg_end);
         assert!(m.env_start <= m.env_end);
         assert!(m.start_code < m.end_code);
+    }
+
+    #[test]
+    fn map_size_fast_matches_forked_map_size() {
+        assert_eq!(map_size_fast(), map_size());
     }
 }

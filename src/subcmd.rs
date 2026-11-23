@@ -41,13 +41,20 @@ pub fn dispatch(argv: &[OsString], mask_help: &str) -> i32 {
         Some(b"read") => cmd_read(args),
         Some(b"probe") => cmd_probe(args),
         Some(b"doctor") => cmd_doctor(args),
-        Some(b"help") => match args.first().map(|a| a.to_string_lossy().into_owned()) {
+        Some(b"help") => match args {
             // `pmask help <topic>` prints one section, so a reader does not
             // have to page the whole 13 KB for one option group.
-            Some(topic) => help_topic(mask_help, &topic),
-            None => {
+            [] => {
                 print!("{}", help(mask_help));
                 0
+            }
+            [topic] => help_topic(mask_help, &topic.to_string_lossy()),
+            _ => {
+                eprintln!(
+                    "pmask: help: expected at most one topic; valid topics: profiles, redact, \
+                     secrets, isolate, daemon, audit, report, short, all"
+                );
+                255
             }
         },
         Some(b"version") => {
@@ -59,13 +66,10 @@ pub fn dispatch(argv: &[OsString], mask_help: &str) -> i32 {
 }
 
 fn help(mask_help: &str) -> String {
-    format!(
-        "{}\n{}",
-        mask_help,
-        SUBCOMMAND_HELP.replace("{version}", crate::VERSION)
-    )
+    short_help(mask_help)
 }
 
+#[allow(dead_code)]
 const SUBCOMMAND_HELP: &str = "\
 Commands (the secret side; these work even where ptrace is refused):
   run [OPTIONS] [--] CMD  run a command; accepts every mask option, plus:
@@ -1141,6 +1145,27 @@ pub fn parse_isolate(v: &[u8]) -> Option<Isolate> {
 /// full_text` keeps the two in step.
 pub const SHORT_HELP: &[(&str, &str)] = &[
     (
+        "--profile NAME",
+        "execution profile: auto, single, tree, tee, compat",
+    ),
+    ("--auto", "alias for --profile auto (default)"),
+    ("--follow", "follow and redact all descendants (tree mode)"),
+    (
+        "--reparent",
+        "in single profile, double-fork payload to PID 1",
+    ),
+    (
+        "--parent-label NAME",
+        "separate presentation label for supervisor in tree mode",
+    ),
+    ("--cwd PATH", "normalize child cwd after resolving COMMAND"),
+    ("--rexec-mode MODE", "image carrier: auto, path, or memfd"),
+    ("--no-rexec", "opt out of profile-default --rexec"),
+    (
+        "--allow-impersonation",
+        "allow kernel-thread or critical-service labels",
+    ),
+    (
         "-l, --label NAME",
         "presentation label for every process' /proc entry",
     ),
@@ -1170,7 +1195,7 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ),
     (
         "--allow-dumpable",
-        "keep the payload dumpable when a secret is delivered",
+        "keep the payload dumpable (opt out of PR_SET_DUMPABLE=0)",
     ),
     (
         "--strict-exec",
@@ -1204,7 +1229,7 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ),
     (
         "--rexec",
-        "exec from a sealed memfd so /proc/<pid>/exe is the label",
+        "exec from a staged image so /proc/<pid>/exe hides the path",
     ),
     (
         "--rexec-allow-disk",
@@ -1229,7 +1254,11 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ("-V, --version", "print version"),
     (
         "-h, --help",
-        "print this index (--help prints the full text)",
+        "print the one-screen overview (--help=all for full text)",
+    ),
+    (
+        "--secret-fd [NAME=]N",
+        "keep open descriptor N across exec (PMASK_SECRET_FD/_<NAME>)",
     ),
     (
         "--secret NAME=SRC",
@@ -1244,9 +1273,31 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
         "fresh namespaces: pid,net,tmp | all | none",
     ),
     (
-        "--audit",
-        "one residue row per tracee, then a residue count",
+        "--explain",
+        "show observer, host capabilities, and honest residuals",
     ),
+    (
+        "--profile-json",
+        "emit pmask-profile/1 JSON for decoy generators",
+    ),
+    (
+        "--audit",
+        "self-audit, audit --pid PID, or tracee residue rows",
+    ),
+    ("--pid PID", "target PID for --audit or --profile-json"),
+    ("--observer ROLE", "audit observer: same-uid or other-uid"),
+    (
+        "--json",
+        "JSON output for --audit, --explain, --profile-json",
+    ),
+    (
+        "--token-env VAR",
+        "env var holding token to hunt in --audit",
+    ),
+    ("--token-fd N", "fd holding token to hunt in --audit"),
+    ("--real-exe PATH", "expected real exe path for --audit"),
+    ("--real-cwd PATH", "expected real cwd path for --audit"),
+    ("--allow-memfd", "allow /memfd: exe in single --audit"),
     (
         "--redact",
         "ask for /proc redaction explicitly (the default)",
@@ -1273,61 +1324,139 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
     ("--report-fd N", "write that object to descriptor N"),
 ];
 
-/// The short form of the mask help: usage, every option and a one-line
-/// summary each, so a terminal reader gets an index instead of the full
-/// text.  `--help=short` and `pmask help short` print it.
+/// Concise one-screen overview (`pmask --help`, `pmask --help=short`, and
+/// bare `pmask help`).
 pub fn short_help(mask_help: &str) -> String {
-    let mut out = String::new();
-    out.push_str(
-        mask_help
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("pmask")
-            .trim_end(),
-    );
-    out.push_str("\n\nUsage: pmask [OPTIONS] [--] COMMAND [ARGS...]\n");
-    out.push_str("       pmask [OPTIONS] --args-from-fd N\n");
-    out.push_str("       pmask [OPTIONS] --image PATH [ARGS...]\n\n");
-    out.push_str("Options (see `pmask --help` or `man pmask` for the full text):\n");
-    for (name, doc) in SHORT_HELP {
-        out.push_str(&format!("  {:<26} {}\n", name, doc));
-    }
-    out.push_str(
-        "\n`pmask --help` prints the full text; `pmask help <topic>` prints one section\n\
-         (redact, isolate, secret, report, daemon, short).\n",
-    );
-    out
+    let header = mask_help
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("pmask")
+        .trim_end();
+    format!(
+        concat!(
+            "{header}\n\n",
+            "Usage:\n",
+            "  pmask [OPTIONS] [--] COMMAND [ARGS...]\n",
+            "  pmask --explain [--profile NAME] [--json]\n",
+            "  pmask --audit [--pid PID] [--profile NAME] [--json]\n",
+            "  pmask --profile-json [--pid PID] [--label NAME]\n\n",
+            "Profiles (--profile auto|single|tree|tee|compat; default: auto):\n",
+            "  single  In-place masked exec, zero persistent supervisor, TracerPid: 0\n",
+            "          pmask --profile single --label ci-runner -- ./worker\n",
+            "  tree    Supervisor-backed redaction across forks, shells, and scripts\n",
+            "          pmask --profile tree --label ci-runner -- sh -c './deploy.sh'\n",
+            "  tee     Redaction + user/pid/mount namespaces and private /proc\n",
+            "          pmask --profile tee --label ci-runner -- ./worker\n",
+            "  auto    Picks single for native ELFs, tree for shells/scripts/tree flags\n\n",
+            "Key options:\n",
+            "  -l, --label NAME       Presentation label for /proc cmdline and comm\n",
+            "      --profile NAME     Execution profile: auto, single, tree, tee, compat\n",
+            "      --secret-fd [K=]N  Keep open fd N across exec (PMASK_SECRET_FD/_<K>)\n",
+            "      --secret K=SRC     Deliver secret on sealed fd (file:|env:|agent:|stdin)\n",
+            "      --cwd PATH         Normalize child cwd after resolving COMMAND\n",
+            "      --rexec-mode MODE  Image carrier: auto (default), path, or memfd\n",
+            "      --explain          Show observer, capabilities, and honest residuals\n",
+            "      --audit            Self-audit or audit --pid PID (exit 0 pass / 1 fail)\n",
+            "      --profile-json     Emit pmask-profile/1 JSON for decoy generators\n",
+            "  -q, --quiet            Suppress diagnostics\n",
+            "  -v, --verbose          Trace every redaction event to stderr\n",
+            "  -V, --version          Print version\n",
+            "  -h, --help             Show this overview (--help=all for full reference)\n\n",
+            "Subcommands:\n",
+            "  store | agent | get | read | probe | doctor | help [TOPIC]\n\n",
+            "More help:\n",
+            "  pmask --help=all       Full option reference\n",
+            "  pmask help <topic>     profiles, redact, secrets, isolate, daemon, audit, report, all\n",
+        ),
+        header = header
+    )
 }
 
 /// Print one help topic over the mask help text.  Returns 0 for a known
-/// topic, 255 for an unknown one after printing the index, so a typo stays
-/// visible to a script.
-///
-/// The full text is parsed into option blocks (a header line at the option
-/// indent, then its continuation lines), so a topic prints the whole block
-/// including the prose that wraps.  A substring match over single lines
-/// would print a continuation line of a block it did not select.
+/// topic, 255 for an unknown one with a diagnostic on stderr naming the valid
+/// topics, so a typo stays visible to a script.
 pub fn help_topic(mask_help: &str, topic: &str) -> i32 {
     if topic == "short" {
         print!("{}", short_help(mask_help));
         return 0;
     }
+    if topic == "all" {
+        println!("{}", mask_help);
+        return 0;
+    }
     let want: &[&str] = match topic {
-        "redact" => &["--label", "--argv0", "--comm", "--keep-env", "--no-exact"],
-        "isolate" => &["--isolate", "--redact", "--no-redact", "--unshare"],
-        "secret" => &[
+        "profiles" | "profile" => &[
+            "--profile",
+            "--auto",
+            "--follow",
+            "--no-follow",
+            "--reparent",
+            "--parent-label",
+            "--cwd",
+            "--rexec-mode",
+            "--no-rexec",
+            "--allow-impersonation",
+            "--explain",
+            "--profile-json",
+        ],
+        "redact" => &[
+            "--label",
+            "--label-empty",
+            "--argv0",
+            "--comm",
+            "--keep-env",
+            "--no-exact",
+            "--no-dumpable",
+            "--allow-dumpable",
+            "--rexec",
+            "--rexec-mode",
+            "--no-rexec",
+            "--cwd",
+            "--parent-label",
+            "--watch-rename",
+            "--strict-exec",
+            "--stealth",
+            "--hide-pid",
+            "--encrypt-memory",
+            "--detach",
+            "--allow-impersonation",
+        ],
+        "secrets" | "secret" => &[
+            "--secret-fd",
             "--secret",
             "--socket",
             "--secret-burn",
             "--secret-close-on-exec",
+            "--secret-fd-name",
+            "--allow-argv-secret",
+            "--allow-dumpable",
+        ],
+        "isolate" => &[
+            "--isolate",
+            "--redact",
+            "--no-redact",
+            "--unshare",
+            "--no-new-privs",
+        ],
+        "audit" => &[
+            "--explain",
+            "--profile-json",
+            "--audit",
+            "--pid",
+            "--observer",
+            "--json",
+            "--token-env",
+            "--token-fd",
+            "--real-exe",
+            "--real-cwd",
+            "--allow-memfd",
         ],
         "report" => &["--report", "--report-file", "--report-fd", "--audit"],
         "daemon" => &["--daemon"],
         _ => {
-            print!("{}", short_help(mask_help));
             eprintln!(
-                "pmask: help: unknown topic '{}'; try redact, isolate, secret, report, \
-                 daemon or short",
+                "pmask: help: unknown topic '{}'; valid topics: profiles, redact, secrets, \
+                 isolate, daemon, audit, report, short, all",
                 topic
             );
             return 255;
@@ -1335,15 +1464,15 @@ pub fn help_topic(mask_help: &str, topic: &str) -> i32 {
     };
     let blocks = option_blocks(mask_help);
     let mut printed = 0usize;
-    for (name, block) in &blocks {
-        if want.contains(&name.as_str()) {
+    for (names, block) in &blocks {
+        if names.iter().any(|n| want.contains(&n.as_str())) {
             print!("{}", block);
             printed += 1;
         }
     }
     if printed == 0 {
         eprintln!(
-            "pmask: help: the topic '{}' names no option in this build; see `pmask --help`",
+            "pmask: help: the topic '{}' names no option in this build; see `pmask --help=all`",
             topic
         );
         return 255;
@@ -1351,12 +1480,37 @@ pub fn help_topic(mask_help: &str, topic: &str) -> i32 {
     0
 }
 
-/// Split the full help into `(option name, full block)` pairs.  An option
+/// Extract every option name (`-x`, `--foo`) from a help option header line,
+/// stripping trailing commas, `=VALUE`, and `[=LIST]` suffixes so blocks such
+/// as `-l, --label NAME`, `--isolate[=LIST]`, and `--report=json` are indexed
+/// under all of their canonical option names.
+fn extract_header_option_names(trimmed_line: &str) -> Vec<String> {
+    // Everything before the first double-space separator belongs to the option
+    // column (or the entire line when the description wraps onto the next line).
+    let spec = trimmed_line.split("  ").next().unwrap_or(trimmed_line);
+    let mut names = Vec::new();
+    for raw in spec.split(|c: char| c.is_whitespace() || c == ',') {
+        if !raw.starts_with('-') {
+            continue;
+        }
+        let base = raw
+            .split(['=', '['])
+            .next()
+            .unwrap_or(raw)
+            .trim_end_matches(',');
+        if base.len() >= 2 && base.starts_with('-') {
+            names.push(base.to_string());
+        }
+    }
+    names
+}
+
+/// Split the full help into `(option names, full block)` pairs.  An option
 /// header is a line that starts with `-` after two or six spaces of
 /// indent; its block runs until the next header or a blank line.
-fn option_blocks(mask_help: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut current: Option<(String, String)> = None;
+fn option_blocks(mask_help: &str) -> Vec<(Vec<String>, String)> {
+    let mut out: Vec<(Vec<String>, String)> = Vec::new();
+    let mut current: Option<(Vec<String>, String)> = None;
     for line in mask_help.lines() {
         let indent = line.len() - line.trim_start().len();
         let t = line.trim_start();
@@ -1365,13 +1519,8 @@ fn option_blocks(mask_help: &str) -> Vec<(String, String)> {
             if let Some(entry) = current.take() {
                 out.push(entry);
             }
-            let name = t
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_end_matches(',')
-                .to_string();
-            current = Some((name, format!("{}\n", line)));
+            let names = extract_header_option_names(t);
+            current = Some((names, format!("{}\n", line)));
         } else if let Some((_, block)) = current.as_mut() {
             if line.trim().is_empty() {
                 out.push(current.take().expect("checked above"));
@@ -1436,13 +1585,58 @@ mod short_help_tests {
         // A topic the code does not know must not exit 0, or a script
         // asking for a section silently gets the index.
         assert_eq!(help_topic("pmask help", "no-such-topic"), 255);
+        let argv_bad: Vec<OsString> = ["pmask", "help", "bogus"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        assert_eq!(dispatch(&argv_bad, "pmask help"), 255);
+        let argv_extra: Vec<OsString> = ["pmask", "help", "profiles", "extra"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        assert_eq!(dispatch(&argv_extra, "pmask help"), 255);
     }
 
     #[test]
     fn known_topics_print_their_block() {
         let full = mask_help_for_test();
+        assert_eq!(help_topic(&full, "profiles"), 0);
+        assert_eq!(help_topic(&full, "redact"), 0);
+        assert_eq!(help_topic(&full, "secrets"), 0);
         assert_eq!(help_topic(&full, "isolate"), 0);
+        assert_eq!(help_topic(&full, "audit"), 0);
         assert_eq!(help_topic(&full, "report"), 0);
+        assert_eq!(help_topic(&full, "daemon"), 0);
+        assert_eq!(help_topic(&full, "all"), 0);
+
+        let blocks = option_blocks(&full);
+        let has_opt = |opt: &str| {
+            blocks
+                .iter()
+                .any(|(names, _)| names.iter().any(|n| n == opt))
+        };
+        assert!(has_opt("--label"), "-l, --label NAME must be indexed");
+        assert!(has_opt("--isolate"), "--isolate[=LIST] must be indexed");
+        assert!(has_opt("--report"), "--report=json must be indexed");
+        assert!(has_opt("--profile"), "--profile NAME must be indexed");
+        assert!(has_opt("--audit"), "--audit must be indexed");
+        assert!(has_opt("--secret-fd"), "--secret-fd must be indexed");
+    }
+
+    #[test]
+    fn short_help_fits_on_one_screen() {
+        let full = mask_help_for_test();
+        let short = short_help(&full);
+        let lines = short.lines().count();
+        assert!(
+            lines <= 45,
+            "short_help must fit on one screen (<= 45 lines), got {} lines",
+            lines
+        );
+        assert!(short.contains("single"));
+        assert!(short.contains("tree"));
+        assert!(short.contains("tee"));
+        assert!(short.contains("--help=all"));
     }
 
     #[test]

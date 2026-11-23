@@ -117,12 +117,12 @@ else
 fi
 
 # ---------------------------------------------------------------- F27
-if "$TOOL" --help 2>&1 | grep -q "PMASK_SECRET_<NAME>"; then
+if "$TOOL" --help=all 2>&1 | grep -q "PMASK_SECRET_<NAME>"; then
     pass "qa36-f27-help-says-NAME"
 else
-    fail "qa36-f27-help-says-NAME ($("$TOOL" --help 2>&1 | grep -o 'PMASK_SECRET_[^ ,)]*' | head -1))"
+    fail "qa36-f27-help-says-NAME ($("$TOOL" --help=all 2>&1 | grep -o 'PMASK_SECRET_[^ ,)]*' | head -1))"
 fi
-if "$TOOL" --help 2>&1 | grep -q "PMASK_SECRET_<N>"; then
+if "$TOOL" --help=all 2>&1 | grep -q "PMASK_SECRET_<N>"; then
     fail "qa36-f27-help-drops-the-N-spelling"
 else
     pass "qa36-f27-help-drops-the-N-spelling"
@@ -139,14 +139,14 @@ fi
 # The code's spelling is the contract; `<NAME>` is what the delivery
 # writes.  A secret called `deploy-token` reaches the child as
 # PMASK_SECRET_DEPLOY_TOKEN.
-if "$TOOL" --secret deploy-token=literal:x --help 2>&1 | grep -q "PMASK_SECRET_<NAME>"; then
+if "$TOOL" --secret deploy-token=literal:x --help=all 2>&1 | grep -q "PMASK_SECRET_<NAME>"; then
     pass "qa36-f27-code-and-help-agree"
 else
     fail "qa36-f27-code-and-help-agree (the help text changed under the test)"
 fi
 
 # ---------------------------------------------------------------- F28
-if "$TOOL" --help 2>&1 | grep -q "fd image"; then
+if "$TOOL" --help=all 2>&1 | grep -q "fd image"; then
     pass "qa36-f28-help-names-the-argv0-placeholder"
 else
     fail "qa36-f28-help-names-the-argv0-placeholder (the placeholder is undocumented)"

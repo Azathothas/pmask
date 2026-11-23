@@ -146,7 +146,7 @@ else
 
     # s1b: the control.  The observer must read a different shape for the
     # same payload without the flag, or s1's pair proves nothing.
-    "$TOOL" -q -l "$L" -- "$CASES" sleeper >/dev/null 2>/dev/null &
+    "$TOOL" -q --profile compat -l "$L" -- "$CASES" sleeper >/dev/null 2>/dev/null &
     SUP=$!
     PAY=$(await_pid "$SUP") || PAY=""
     if [ -z "$PAY" ]; then
@@ -202,7 +202,7 @@ else
     fail "s2-redirect-keeps-the-label (comm=[$comm] payload=[$self], want $L2 for both)"
 fi
 
-"$TOOL" -q -l "$L2" -- "$CASES" renamer >"$D/s2c.out" 2>/dev/null &
+"$TOOL" -q --profile compat -l "$L2" -- "$CASES" renamer >"$D/s2c.out" 2>/dev/null &
 SUP=$!
 self=$(wait_report "$D/s2c.out" "$D/s2c.waited") || self=""
 PAY=$(await_pid "$SUP") || PAY=""
@@ -220,7 +220,7 @@ else
 fi
 
 # -------------------- s3: --no-new-privs alone is not the discriminator
-"$TOOL" -q -l "$L" --no-new-privs -- "$CASES" sleeper >/dev/null 2>/dev/null &
+"$TOOL" -q --profile compat -l "$L" --no-new-privs -- "$CASES" sleeper >/dev/null 2>/dev/null &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 if [ -z "$PAY" ]; then

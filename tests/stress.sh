@@ -47,7 +47,7 @@ RS
     done
 ) 2>/dev/null &
 OB=$!
-"$TOOL" -q -l "$FAKE" /bin/sh "$RACESCRIPT" >/dev/null 2>&1 &
+"$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh "$RACESCRIPT" >/dev/null 2>&1 &
 V=$!
 PIDS="$PIDS $V"
 # let it spawn for a while, then reap everything via EXITKILL.  Under
@@ -73,7 +73,7 @@ sleep 0.5
 echo "== S2: stress: 100 sequential execs, exit codes intact =="
 ok=0; bad=0; i=0
 while [ $i -lt 100 ]; do
-    "$TOOL" -q -l "$FAKE" /bin/sh -c 'exit $1' sh $((i % 7)) 2>/dev/null
+    "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'exit $1' sh $((i % 7)) 2>/dev/null
     r=$?; exp=$((i % 7))
     if [ "$r" = "$exp" ]; then ok=$((ok+1)); else bad=$((bad+1)); echo "exit mismatch: got $r want $exp"; fi
     i=$((i+1))
@@ -105,7 +105,7 @@ kill_comm "$KILL_COMM" KILL 2>/dev/null
 PIDS=""
 
 echo "== S4: SIGTERM passthrough =="
-"$TOOL" -q -l "$FAKE" /bin/sh -c 'trap "exit 55" TERM; while :; do sleep 0.05; done' >/dev/null 2>&1 &
+"$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'trap "exit 55" TERM; while :; do sleep 0.05; done' >/dev/null 2>&1 &
 Z=$!
 PIDS="$PIDS $Z"
 sleep 0.8
@@ -116,7 +116,7 @@ r=$?
 PIDS=""
 
 echo "== S5: stdin passthrough (multi-line) =="
-o=$(printf 'line1\nline2\n' | "$TOOL" -q -l "$FAKE" /bin/cat)
+o=$(printf 'line1\nline2\n' | "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/cat)
 [ "$o" = "line1
 line2" ] && echo "PASS s5-stdin" || { echo "FAIL s5-stdin [$o]"; FAIL=1; }
 
@@ -124,7 +124,7 @@ echo "== S6: overhead: 200 execs with/without pmask (wall clock) =="
 t0=$(date +%s)
 i=0; while [ $i -lt 200 ]; do /bin/sh -c 'true'; i=$((i+1)); done
 t1=$(date +%s)
-i=0; while [ $i -lt 200 ]; do "$TOOL" -q -l "$FAKE" /bin/sh -c 'true'; i=$((i+1)); done
+i=0; while [ $i -lt 200 ]; do "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'true'; i=$((i+1)); done
 t2=$(date +%s)
 echo "plain=$((t1-t0))s masked=$((t2-t1))s"
 

@@ -1,27 +1,26 @@
 //! CLI argument parsing for `pmask`.
 
+use pmask::audit::{ObserverRole, Profile};
 use pmask::daemon::RemoteLabel;
 use pmask::isolate::Isolate;
 use pmask::mask::Mask;
 use pmask::secret::Source;
-use pmask::SessionEnd;
+use pmask::{RexecMode, SessionEnd};
 use std::ffi::OsString;
 use std::io::Read;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::FromRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use zeroize::{Zeroize, Zeroizing};
 
 pub const HELP: &str = r#"
-pmask {version} ({arch}) - redact the /proc metadata of a whole process tree
+pmask {version} ({arch}) - redact the /proc metadata of a process or process tree
 
 Run COMMAND with a presentation label in place of its real command line,
 environment and process name as seen through /proc (and therefore ps, top,
-htop, btop and any other process monitor).  Every process the command ever
-spawns - children, grandchildren, daemons, threads, posix_spawn/system(),
-static binaries, scripts - is covered.  Programs keep their real argv/envp
-and work completely normally.
+htop, btop and any other process monitor).  Programs keep their real
+argv/envp and work normally.
 
 Use it to keep secrets off the process table: tokens, passwords or internal
 hostnames passed as arguments are otherwise readable by every local account
@@ -30,6 +29,49 @@ that can run `ps`, for the whole lifetime of a process.
 Usage: pmask [OPTIONS] [--] COMMAND [ARGS...]
        pmask [OPTIONS] --args-from-fd N
        pmask [OPTIONS] --image PATH [ARGS...]
+       pmask --explain [--profile NAME] [--label NAME] [--json]
+       pmask --audit [--pid PID] [--profile NAME] [--observer ROLE] [--json]
+       pmask --profile-json [--pid PID] [--profile NAME] [--label NAME]
+
+Profiles:
+      --profile NAME   Select an execution and stealth profile:
+                         auto   (default) single for native ELFs, tree for
+                                shells, launchers, #! scripts, and tree flags.
+                         single In-place masked exec with a transient helper:
+                                zero persistent supervisor, TracerPid: 0,
+                                Threads: 1, rexec, no-dumpable, and encrypted
+                                scratchpad by default.
+                         tree   Single-threaded supervisor covering forks,
+                                shells, scripts, and descendants, with rexec,
+                                no-dumpable, and encrypted at-rest copies by
+                                default.
+                         tee    Redaction composed with user/pid/mount
+                                namespaces and a private /proc (fails closed
+                                when unprivileged userns is unavailable).
+                         compat Legacy v0.1.0 flag-driven defaults.
+      --auto           Alias for --profile auto (the default).
+      --follow         Follow and redact all descendants (selects tree mode;
+                       inverse of --no-follow).
+      --reparent       In single profile, double-fork the masked payload so it
+                       runs reparented to PID 1 (or the nearest subreaper) and
+                       return 0 once the masked exec completes.
+      --parent-label NAME
+                       Separate presentation label for the supervisor process
+                       in tree mode, avoiding a supervisor/payload label twin.
+      --cwd PATH       Change the child's working directory to PATH after
+                       resolving COMMAND, normalizing /proc/<pid>/cwd.
+      --rexec-mode MODE
+                       Choose the --rexec image carrier:
+                         auto  (default) prefer private 0500 staged path,
+                               falling back to sealed memfd on noexec mounts.
+                         path  private 0500 executable inside a 0700 staging
+                               dir (zero /memfd: fingerprint in exe/maps).
+                         memfd sealed anonymous memfd_create carrier.
+      --no-rexec       Opt out of profile-default --rexec image staging.
+      --allow-impersonation
+                       Allow labels or comm names that match kernel-thread
+                       bracket syntax ([...]) or critical system services
+                       (sshd, systemd, init, cron, auditd, etc.).
 
 Options:
   -l, --label NAME     Presentation label for every process' /proc cmdline
@@ -50,10 +92,9 @@ Options:
                        Keep only the named variables visible in
                        /proc/<pid>/environ; the rest stays redacted.  The
                        inline '=' form is required.  Repeatable.
-                       `--keep-env NAME` (space form) keeps the whole
-                       environment and treats NAME as the program; when a
-                       `--` and a command follow, the parser refuses it and
-                       names the inline spelling you meant.
+                       Writing `--keep-env FOO /bin/cmd` (space form) fails
+                       fast with exit code 2 and points to `--keep-env=FOO`
+                       or `--` before the command.
       --env K=V        Add or replace one variable for the program.
                        Repeatable.
       --env-file PATH  Read variables for the program from PATH: one KEY=VALUE
@@ -76,9 +117,11 @@ Options:
       --no-exit-kill   Let the tree survive if pmask dies (default: kill
                        the whole tree, so no half-redacted orphans remain).
       --no-dumpable    Set PR_SET_DUMPABLE=0 in every process of the tree.
-                       Same-uid observers cannot read environ, maps, exe or
-                       fd.  Core dumps and debugger attach stop working.
-      --allow-dumpable Keep the payload dumpable when a secret is delivered.
+                       Same-uid observers receive EACCES on environ, maps,
+                       auxv, exe, fd, cwd and mem.  Core dumps and debugger
+                       attach stop working.
+      --allow-dumpable Keep the payload dumpable (opt out of profile-default
+                       or secret-triggered PR_SET_DUMPABLE=0).
       --strict-exec    Refuse any exec that cannot be redacted at entry (a
                        script, vfork child, entry-swap failure or settled
                        re-exec); kills the payload instead of falling back to
@@ -86,17 +129,16 @@ Options:
       --allow-foreign  Run a 32-bit (foreign-ABI) image unredacted.  The
                        default refuses it: a 32-bit payload keeps its real
                        command line, environment and comm.
-      --stealth        Compose the strongest shape: --rexec (the exe link
-                       is a memfd), --watch-rename (comm stays the label),
-                       and --no-dumpable (the same-uid memory read is
-                       refused) unless /proc uses hidepid=invisible or ptraceable,
-                       where a non-dumpable process is a hidden pid.  Prints the
-                       trade it chose.  The network identity is not part
+      --stealth        Compose the strongest tree shape: --rexec (hide exe),
+                       --watch-rename (comm stays the label), and
+                       --no-dumpable (same-uid /proc reads return EACCES)
+                       unless /proc uses hidepid=invisible or ptraceable,
+                       where a non-dumpable process is a hidden pid.  Prints
+                       the trade it chose.  The network identity is not part
                        of the mask; add --isolate=net for that.
-                       It is not
-                       the write-time variant: a symlink alias or an fd
-                       received over SCM_RIGHTS still reaches comm, and the
-                       filter shows in /proc/<pid>/status as Seccomp: 2.
+                       It is not the write-time variant: a symlink alias or
+                       an fd received over SCM_RIGHTS still reaches comm, and
+                       the filter shows in /proc/<pid>/status as Seccomp: 2.
                        Add --watch-rename=strict to close the first; the
                        second no flag can close.
       --hide-pid       Hide the tree's pids from same-uid /proc readers.
@@ -105,17 +147,16 @@ Options:
                        run is refused on a weaker mount.  cgroup.procs,
                        cgroup.threads, kill(0), pidfd, sched_getaffinity,
                        getpriority, prlimit and root still see the pid.
-                       Refused with
-                       --no-follow or --detach, which take a process off
-                       the path that re-applies the flag; a descendant
-                       left running by --on-exit detach stays hidden only
-                       until its next exec.
+                       Refused with --no-follow or --detach, which take a
+                       process off the path that re-applies the flag; a
+                       descendant left running by --on-exit detach stays
+                       hidden only until its next exec.
       --encrypt-memory Encrypt the supervisor's at-rest argv/environ
                        with XChaCha20-Poly1305 under a key in
                        memfd_secret when the kernel offers it, and keep
-                       the payload's block anonymous and
-                       MADV_DONTDUMP.  Opt in, never the default.  The
-                       payload's heap and stack are not encrypted.
+                       the payload's block anonymous and MADV_DONTDUMP.
+                       Enabled by default in single, tree, and tee profiles.
+                       The payload's heap and stack are not encrypted.
       --no-new-privs   Set no_new_privs before exec.  Set-uid and file
                        capabilities give nothing, for the whole tree.
       --no-exact       Leave the kernel's argv window where it is: the
@@ -123,11 +164,12 @@ Options:
                        with spaces, so the window reads as one command line
                        rather than a NUL run; environ gets a plausible
                        decoy (or the --keep-env variables).
-                       By default
-                       the kernel's argv and environment windows are moved
-                       onto the label with prctl(PR_SET_MM_MAP), so the
-                       cmdline is exactly the label and environ is empty
-                       (or, with --keep-env, keeps those variables).
+                       By default the kernel's argv and environment windows
+                       are moved onto the presentation block with
+                       prctl(PR_SET_MM_MAP), so cmdline is exactly the label
+                       and environ shows a minimal decoy environment
+                       (PATH, HOME, LANG, TERM) (or, with --keep-env, keeps
+                       those variables).
       --detach         PTRACE_DETACH each process once its exec has
                        settled, so TracerPid reads 0 for the payload.  The
                        cost is coverage: a detached process is not
@@ -149,14 +191,15 @@ Options:
                        reports Seccomp: 2 and NoNewPrivs: 1, which names
                        the process as filtered.  Neither mode hides that,
                        and no flag can.
-      --rexec          Exec the program from a sealed memfd so that
-                       /proc/<pid>/exe names the label, not the file.  The
-                       child tries execveat(AT_EMPTY_PATH), then
-                       /proc/self/fd/N, then a temporary file on a mount
-                       that allows execution.  Each failed step is reported
-                       and counted.  Without --rexec-allow-disk a refused
-                       image ends the child with 126 (127 when the image is
-                       missing) instead of running the on-disk file.
+      --rexec          Exec the program from a staged image so /proc/<pid>/exe
+                       does not name the real file.  Use --rexec-mode to
+                       choose auto, path, or memfd.  In memfd mode the child
+                       tries execveat(AT_EMPTY_PATH), then /proc/self/fd/N,
+                       then a temporary file on an executable mount.  Each
+                       failed step is reported and counted.  Without
+                       --rexec-allow-disk a refused image ends the child with
+                       126 (127 when missing) instead of running the on-disk
+                       file.
       --rexec-allow-disk
                        Add the on-disk path as the explicit last resort of
                        the --rexec chain.  The fallback is reported and
@@ -198,7 +241,8 @@ Options:
   -q, --quiet          Suppress diagnostics.
   -v, --verbose        Trace every redaction event to stderr.
   -V, --version        Print version.
-  -h, --help           This help.
+  -h, --help           Concise one-screen overview (--help=all for this full
+                       reference; --help=<topic> for one section).
 
 Compatibility aliases: -a NAME (= --label), -a- (= -l-), -E (= --keep-env),
 -F (= --no-follow), -K (= --no-exit-kill), -f/-c (accepted, no effect).
@@ -212,14 +256,23 @@ With --daemon PATH the job runs inside a pmaskd.  The daemon owns the
 masking policy and the environment: it refuses an environment from the
 client on purpose, so a client cannot change what the job inherits.  Mask
 options other than --label and --label-empty have no effect there and
-produce a warning.  --secret, --isolate and --no-redact are refused
-outright, because the daemon cannot honour them.
+produce a warning.  --secret, --secret-fd, --isolate, --no-redact,
+--hide-pid, --encrypt-memory, --image, --image-from-fd, --report* and
+--profile single|tee are refused outright, because the daemon cannot honour
+them.
 
 Environment: PMASK_NO_SELFMASK=1 disables the redaction of pmask's own
 /proc entry (argv, environ, comm).  Use it only for debugging.
 
 Secret side (works even where ptrace is refused):
-  --secret NAME=SRC    deliver a secret on descriptor 3, 4, ...  SRC is
+      --secret-fd [NAME=]N
+                       Keep caller-opened file descriptor N open across exec
+                       at its existing number and export PMASK_SECRET_FD=N
+                       (unnamed) or PMASK_SECRET_<NAME>=N (named) in the
+                       payload's real environment.  Repeatable.  Enables
+                       --no-dumpable unless --allow-dumpable is passed.
+      --secret NAME=SRC
+                       Deliver a secret on descriptor 3, 4, ...  SRC is
                        file:PATH | env:VAR | agent:NAME | stdin | literal:VAL.
                        A SRC that starts with 'word:' where word is not one
                        of those schemes is delivered whole as a literal and
@@ -229,93 +282,173 @@ Secret side (works even where ptrace is refused):
                        PMASK_SECRET_<NAME> (the name upper-cased, with
                        every non-alphanumeric byte turned into '_'), and
                        `pmask read NAME` prints it there.
-  --socket PATH        secret-agent socket for agent:NAME sources.
-  --isolate[=LIST]     run the payload in fresh namespaces: pid,net,tmp |
+      --socket PATH    Secret-agent socket for agent:NAME sources.
+      --isolate[=LIST] Run the payload in fresh namespaces: pid,net,tmp |
                        all | none (default all).  `none` runs the payload
                        with the host's view unchanged: no namespace, no
                        no_new_privs and no Landlock.  A host that cannot
                        create user namespaces runs the plain path and
                        says so.
-  --audit              print one residue row per tracee at each exec
-                       completion, then a residue count: what the tree
-                       still discloses.  Needs the redaction mode, so it
-                       is refused with --no-redact, --isolate and on a
-                       host that cannot ptrace (the refusal names the
-                       mode).
-  --redact             ask for /proc redaction explicitly (the default).
+      --redact         Ask for /proc redaction explicitly (the default).
                        With --isolate it composes: the tree is redacted
                        and the payload gets exactly the namespaces LIST
                        names, in one run.  A LIST the host cannot grant is
                        reported as a degradation; it is never replaced by
                        a different namespace set.
-  --no-redact          never touch /proc metadata, even where ptrace works.
+      --no-redact      Never touch /proc metadata, even where ptrace works.
                        With --isolate the payload still gets its
                        namespaces: isolation does not need ptrace, and
                        dropping it would be a silent fallback.
-  --allow-argv-secret  keep a literal: or env: secret source in a mode that
+      --allow-argv-secret
+                       Keep a literal: or env: secret source in a mode that
                        cannot redact /proc, and warn instead of refusing.
-  --secret-close-on-exec
-                       close each delivered descriptor in every process the
+      --secret-close-on-exec
+                       Close each delivered descriptor in every process the
                        supervised program starts, at that process's fork:
                        the payload reads the value, and a child it spawns
                        finds the descriptor gone before it runs.  Needs the
                        ptrace supervisor; a plain or isolate run refuses
                        the flag when a secret is delivered, and a run with
                        no --secret has nothing to close.
-  --secret-burn        seal the descriptors without F_SEAL_SHRINK, so the
+      --secret-burn    Seal the descriptors without F_SEAL_SHRINK, so the
                        reader can truncate a value to zero once it has used
                        it and cannot grow or rewrite it afterwards.
-  --secret-fd-name NAME
+      --secret-fd-name NAME
                        Name the delivered secret memfd NAME instead of the
                        default 'pmask-secret'.  /proc/<pid>/fd/N then reads
                        '/memfd:NAME (deleted)', so a host-wide sweep for
                        the default literal finds nothing.  NAME must be
                        1..=200 bytes and must not contain '/', NUL, LF or
                        CR.  The descriptor's seals and content are
-                       unchanged.  Example: --secret-fd-name
-                       "secret-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')".
-  --memfd-name NAME    Name the image memfd NAME instead of the label.
+                       unchanged.
+      --memfd-name NAME
+                       Name the image memfd NAME instead of the label.
                        /proc/<pid>/exe and the executable maps entries then
                        read '/memfd:NAME (deleted)'.  Applies to --rexec,
                        --image, --image-from-fd, --exec-once and --hugetlb,
                        and to the temporary-file carrier's tag.  NAME is
                        checked like --secret-fd-name.  Has no effect on a
                        run that prepares no image.
-  --report=json        print the run as one JSON object on stdout.  The
-                       report is
-                       written after the payload has exited, so a payload
-                       that writes to stdout shares fd 1 with it: use
+
+Audit, explain, and reporting:
+      --explain        Print the named observer, host capabilities, hidden
+                       surfaces, EACCES denial tradeoff, and honest residuals
+                       for the selected --profile, then exit 0.
+      --profile-json   Emit a versioned pmask-profile/1 JSON contract for
+                       --pid PID or a static template for --profile/--label
+                       (never emitting raw secret bytes), then exit 0.
+      --audit          In standalone mode (`pmask --audit [--json]` with no
+                       COMMAND, or `pmask --audit --pid PID [--json]`), probe
+                       every /proc surface plus a full-VMA /proc/<pid>/mem
+                       scan against invariants INV-1..INV-10 and exit 0 on
+                       pass or 1 on failure.
+                       With COMMAND, print one residue row per tracee at each
+                       exec completion (requires redaction mode; allowed with
+                       --redact --isolate and --isolate=none, refused with
+                       --no-redact or standalone --isolate).
+      --pid PID        Target PID for standalone --audit or --profile-json.
+      --observer ROLE  Observer perspective for --audit: same-uid (default)
+                       or other-uid.
+      --json           Emit JSON output for --audit, --explain, or
+                       --profile-json.
+      --token-env VAR  Read the secret token to hunt during --audit --pid PID
+                       or --profile-json --pid PID from environment variable
+                       VAR (scrubbed immediately, never emitted verbatim).
+      --token-fd N     Read the secret token to hunt during --audit --pid PID
+                       or --profile-json --pid PID from file descriptor N.
+      --real-exe PATH  Expected real executable path to verify is hidden
+                       during --audit --pid PID (INV-4).
+      --real-cwd PATH  Expected real working directory to verify is hidden
+                       during --audit --pid PID (INV-6).
+      --allow-memfd    Permit /memfd: executable paths in single profile
+                       during --audit without failing INV-4.
+      --report=json    Print the run as one JSON object on stdout.  The
+                       report is written after the payload has exited, so a
+                       payload that writes to stdout shares fd 1 with it: use
                        --report-file PATH or --report-fd N when a consumer
-                       has to parse the document.  Every local path
-                       produces one, including plain redaction; only a
-                       --daemon job refuses the flag.
-  --report-file PATH   write the --report document to PATH instead of
-                       stdout; the payload keeps fd 1 to itself.
-  --report-fd N        write the --report document to descriptor N, which
-                       is inherited by pmask and closed afterwards.  The
+                       has to parse the document.  Every local path produces
+                       one, including plain redaction; only a --daemon job
+                       refuses the flag.
+      --report-file PATH
+                       Write the --report document to PATH instead of stdout;
+                       the payload keeps fd 1 to itself.
+      --report-fd N    Write the --report document to descriptor N, which is
+                       inherited by pmask and closed afterwards.  The
                        descriptor is checked before the payload runs.
 
-  `pmask run ...` is this same parser; `pmask help` lists the rest
-  (store, agent, get, read, probe, doctor).  `pmask help <topic>` prints
-  one section (`redact`, `isolate`, `secret`, `report`, `daemon`).
+  `pmask run ...` is this same parser; `pmask help` prints the concise
+  overview and subcommands (store, agent, get, read, probe, doctor).
+  `pmask help <topic>` prints one section (`profiles`, `redact`, `secrets`,
+  `isolate`, `daemon`, `audit`, `report`, `all`).
 
 Examples:
-  # a deployment whose token must not land in `ps` output:
-  pmask --label 'ci-runner' ./deploy.sh --token "$TOKEN" --env prod
+  # single-process native binary (auto selects single: TracerPid: 0):
+  pmask --label 'ci-runner' -- ./worker --config prod.toml
 
-  # long-lived worker started by a service manager:
-  pmask -q --label 'app-worker' python worker.py --queue=rediss://...
+  # process tree / shell script with secret on an open descriptor:
+  pmask --profile tree --label 'ci-runner' --secret-fd 3 -- sh -c './deploy.sh' 3<token
+
+  # isolated redaction (user/pid/mount namespaces + private /proc):
+  pmask --profile tee --label 'ci-runner' -- ./worker
 
 Honest scope: root on the host always sees THAT a pid exists; pmask
-redacts WHAT it is.  /proc/<pid>/exe, maps, open files and cgroups still
-describe the real binary unless --rexec, --no-dumpable or --unshare is
-used.  Set-uid programs do not gain privileges under supervision (a
-general ptrace property)."#;
+redacts WHAT it is.  Same-uid /proc/<pid>/mem, environ, auxv, exe, maps,
+fd, and cwd are closed by PR_SET_DUMPABLE=0 (EACCES).  Set-uid programs do
+not gain privileges under supervision (a general ptrace property)."#;
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     pub mask: Mask,
     pub program: OsString,
     pub args: Vec<OsString>,
+    /// `--profile <auto|single|tree|tee|compat>` (default `Auto`).
+    pub profile: Profile,
+    /// True when `--profile` or `--auto` was passed explicitly.
+    pub profile_explicit: bool,
+    /// `--follow` explicitly asked for tree mode.
+    pub follow_explicit: bool,
+    /// `--no-follow` / `-F`.
+    pub no_follow: bool,
+    /// Explicit `--rexec` (or `--image*` / `--exec-once` / `--hugetlb`).
+    pub rexec_explicit: bool,
+    /// `--no-rexec` opted out of profile-default `--rexec`.
+    pub no_rexec: bool,
+    /// `--rexec-mode <memfd|path|auto>`, if explicitly set.
+    pub rexec_mode: Option<RexecMode>,
+    /// `--cwd PATH`.
+    pub cwd: Option<PathBuf>,
+    /// `--parent-label NAME`.
+    pub parent_label: Option<String>,
+    /// Explicit label string from `-l`/`--label`/`-a`/`--label-empty`.
+    pub label_text: Option<String>,
+    /// Explicit comm string from `--comm`.
+    pub comm_text: Option<String>,
+    /// `--reparent`: double-fork payload to PID 1 in `single` profile.
+    pub reparent: bool,
+    /// `--allow-impersonation`: bypass kernel-thread/critical-service guard.
+    pub allow_impersonation: bool,
+    /// `--secret-fd [NAME=]N`: caller-opened fds preserved across exec.
+    pub secret_fds: Vec<(Option<String>, libc::c_int)>,
+    /// `--explain`: render profile explanation and exit 0.
+    pub explain: bool,
+    /// `--profile-json`: emit `pmask-profile/1` JSON and exit 0.
+    pub profile_json: bool,
+    /// `--pid PID`: target PID for standalone `--audit` / `--profile-json`.
+    pub pid: Option<libc::pid_t>,
+    /// `--observer <same-uid|other-uid>` for standalone `--audit`.
+    pub observer: ObserverRole,
+    /// `--json`: JSON output for `--audit`, `--explain`, `--profile-json`.
+    pub json: bool,
+    /// `--token-env VAR` for standalone `--audit` / `--profile-json`.
+    pub token_env: Option<String>,
+    /// `--token-fd N` for standalone `--audit` / `--profile-json`.
+    pub token_fd: Option<libc::c_int>,
+    /// `--real-exe PATH` for standalone `--audit`.
+    pub real_exe: Option<String>,
+    /// `--real-cwd PATH` for standalone `--audit`.
+    pub real_cwd: Option<String>,
+    /// `--allow-memfd` for standalone `--audit`.
+    pub allow_memfd: bool,
     /// `--daemon PATH`: ask a running pmaskd to run the job instead of
     /// supervising it here.
     pub daemon: Option<OsString>,
@@ -340,9 +473,7 @@ pub struct Cli {
     pub env_overrides: Vec<(OsString, OsString)>,
     /// `--secret NAME=SRC`, delivered over descriptors.
     pub secrets: Vec<(String, Source)>,
-    /// `--keep-env`: the whole environment stays visible.  Kept next to
-    /// `mask`, which owns the same decision, so the CLI can warn about a
-    /// combination without reaching into `Mask`'s private state.
+    /// `--keep-env`: the whole environment stays visible.
     pub keep_env_all: bool,
     /// `--keep-env=NAME`: these variables stay visible.
     pub keep_env_names: Vec<String>,
@@ -352,12 +483,9 @@ pub struct Cli {
     pub isolate: Option<Isolate>,
     /// `--no-redact`: never touch /proc metadata.
     pub no_redact: bool,
-    /// `--audit`: print one residue row per tracee and a residue count.
+    /// `--audit`: standalone live/self audit or tracee residue rows.
     pub audit: bool,
-    /// `--redact`: ask for the default redaction explicitly.  With
-    /// `--isolate` it composes the two: the tree is redacted and the
-    /// payload enters exactly the namespaces the list names.  It is not a
-    /// rewrite into `--unshare`; that substitution was issue 19.
+    /// `--redact`: ask for the default redaction explicitly.
     pub redact: bool,
     /// `--allow-argv-secret`: keep a literal or env source even in a mode
     /// that cannot redact, and warn instead of refusing.
@@ -366,19 +494,22 @@ pub struct Cli {
     /// descriptors behave.
     pub secret_burn: bool,
     pub secret_close_on_exec: bool,
-    /// `--no-dumpable`: the redaction mode makes `payload_dumpable` false;
-    /// isolate and plain mode ignore it and leave the payload dumpable.
+    /// `--no-dumpable`: explicitly requested by user (or `--stealth`).
     pub no_dumpable: bool,
-    /// `--allow-dumpable`: keep the payload dumpable even when a secret
-    /// is delivered.  The same-uid fd and memory reads stay open.
+    /// `--allow-dumpable`: keep the payload dumpable.
     pub allow_dumpable: bool,
-    /// `--hide-pid`: hide the tree from same-uid `/proc` readers.  Needs
-    /// a `hidepid=invisible` or `hidepid=ptraceable` mount.
+    /// `--hide-pid`: hide the tree from same-uid `/proc` readers.
     pub hide_pid: bool,
-    /// `--encrypt-memory`: encrypt the supervisor's at-rest copies and
-    /// keep the payload's redaction block anonymous and
-    /// `MADV_DONTDUMP`.
+    /// `--encrypt-memory`: explicitly requested by user.
     pub encrypt_memory: bool,
+    /// `--stealth`: composed tree mode.
+    pub stealth: bool,
+    /// `--unshare`: explicit unshare flag.
+    pub unshare: bool,
+    /// `--detach`: explicit detach-after-exec flag.
+    pub detach: bool,
+    /// `--hugetlb` or `--memfd-name`: explicitly requested memfd carrier.
+    pub prefers_memfd: bool,
     /// `--report=json`: print the run as one JSON object.
     pub report_json: bool,
     /// `--report-file PATH`: write that object to PATH instead of stdout.
@@ -388,13 +519,10 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// True when the run needs the secret machinery rather than the plain
-    /// mask path: any secret, isolation, an explicit `--no-redact`, a
-    /// redaction option the runner owns, or a run report.
-    ///
-    /// A report is produced by the runner on every local path, including
-    /// plain redaction; the `--daemon` client still refuses it because
-    /// the daemon owns the run and has no document to return.
+    /// True when the run needs the secret machinery rather than the direct
+    /// mask/single path: any secret (in non-single modes), isolation, an
+    /// explicit `--no-redact`, `--hide-pid`, explicit `--encrypt-memory`, or
+    /// a run report.
     pub fn needs_runner(&self) -> bool {
         self.needs_runner_without_report() || self.report_json
     }
@@ -411,9 +539,7 @@ impl Cli {
     }
 
     /// Zero the argument and environment values this process still holds
-    /// after the child's exec plan has been built.  The child has its own
-    /// copy; the supervisor does not need the plaintext, and a supervisor
-    /// that keeps it would have to stay non-dumpable for the session.
+    /// after the child's exec plan has been built.
     pub fn scrub_values(&mut self) {
         for a in &mut self.args {
             scrub_os_string(a);
@@ -431,8 +557,7 @@ impl Cli {
 }
 
 /// Overwrite an `OsString`'s bytes in place, then replace it with an
-/// empty string.  The original allocation is dropped after the bytes are
-/// zeroed.
+/// empty string.
 pub fn scrub_os_string(s: &mut OsString) {
     let mut bytes = std::mem::take(s).into_vec();
     bytes.zeroize();
@@ -442,6 +567,11 @@ pub fn scrub_os_string(s: &mut OsString) {
 fn die(msg: &str) -> ! {
     eprintln!("pmask: {}", msg);
     exit(255);
+}
+
+fn die_usage(msg: &str) -> ! {
+    eprintln!("pmask: {}", msg);
+    exit(2);
 }
 
 /// Fetch an option value: the attached bytes when present, otherwise the
@@ -485,19 +615,10 @@ fn label_arg(bytes: &[u8]) -> String {
 }
 
 /// Parse an `--env-file` with the daemon's parser.
-///
-/// One grammar for one flag: `pmaskd` loads its job environment from the
-/// same `--env-file` and both surfaces call
-/// [`pmask::daemon::parse_env_file`], so a file that works for one works
-/// for the other.  The grammar (a trailing CR stripped, an `export `
-/// prefix allowed, blanks and control bytes in a key refused, one pair of
-/// matching quotes removed from a value) is documented on that function.
 fn read_env_file(path: &[u8]) -> Vec<(OsString, OsString)> {
-    let p = std::path::Path::new(std::ffi::OsStr::from_bytes(path));
+    let p = Path::new(std::ffi::OsStr::from_bytes(path));
     match pmask::daemon::parse_env_file(p) {
         Ok(v) => v,
-        // The error already names the file and the line, so naming the
-        // option as well would repeat the path.
         Err(e) => die(&e.to_string()),
     }
 }
@@ -511,9 +632,53 @@ fn parse_on_exit(v: &[u8]) -> SessionEnd {
     }
 }
 
+fn parse_rexec_mode(v: &[u8]) -> RexecMode {
+    let lower = v.to_ascii_lowercase();
+    match lower.as_slice() {
+        b"memfd" => RexecMode::Memfd,
+        b"path" => RexecMode::Path,
+        b"auto" => RexecMode::Auto,
+        _ => die("--rexec-mode takes auto, path or memfd"),
+    }
+}
+
+fn parse_secret_fd(raw: &[u8]) -> (Option<String>, libc::c_int) {
+    let text = String::from_utf8_lossy(raw);
+    let (name, fd_str) = match text.split_once('=') {
+        Some((n, f)) => {
+            if n.is_empty() {
+                die_usage("--secret-fd NAME=N needs a non-empty NAME");
+            }
+            if let Err(e) = pmask::secret::validate_name(n) {
+                die_usage(&format!("--secret-fd: {}", e));
+            }
+            if n.len() > pmask::secret::MAX_NAME_LEN {
+                die_usage(&format!(
+                    "--secret-fd: secret name '{}' is {} bytes; the limit is {}",
+                    n,
+                    n.len(),
+                    pmask::secret::MAX_NAME_LEN
+                ));
+            }
+            (Some(n.to_string()), f)
+        }
+        None => (None, text.as_ref()),
+    };
+    let fd = fd_str
+        .parse::<libc::c_int>()
+        .ok()
+        .filter(|n| *n >= 0)
+        .unwrap_or_else(|| {
+            die_usage(&format!(
+                "--secret-fd needs a non-negative file descriptor number, not '{}'",
+                text
+            ))
+        });
+    (name, fd)
+}
+
 /// True when `s` is a plausible `--keep-env` name list: one or more
-/// non-empty names of `[A-Za-z0-9_]`, separated by commas.  Used only to
-/// explain a command line that almost certainly meant the inline form.
+/// non-empty names of `[A-Za-z0-9_.]`, separated by commas.
 fn looks_like_env_names(s: &[u8]) -> bool {
     !s.is_empty()
         && s.split(|&b| b == b',').all(|n| {
@@ -523,12 +688,42 @@ fn looks_like_env_names(s: &[u8]) -> bool {
         })
 }
 
-/// Check a `comm` name the way `Mask::validate` does, at parse time.
-///
-/// `--no-redact` and `--isolate` never build a `Mask`, so the mask's own
-/// validation never runs in those modes: `--comm` over 15 bytes was
-/// accepted by plain mode and refused by redaction mode (issues 14 N2 and
-/// 33).  The parser is the one place every mode shares.
+/// True when `s` looks like one or more uppercase environment variable names
+/// (`^[A-Z_][A-Z0-9_]*$`, optionally comma-separated).
+fn looks_like_upper_env_names(s: &[u8]) -> bool {
+    !s.is_empty()
+        && s.split(|&b| b == b',').all(|n| {
+            let Some(&first) = n.first() else {
+                return false;
+            };
+            (first.is_ascii_uppercase() || first == b'_')
+                && n.iter()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+        })
+}
+
+/// Check whether `cmd` names an existing executable file directly or on `PATH`.
+fn is_executable_on_path(cmd: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let is_exec = |p: &Path| -> bool {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+            .unwrap_or(false)
+    };
+    if cmd.as_bytes().contains(&b'/') {
+        return is_exec(Path::new(cmd));
+    }
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path_var) {
+        if is_exec(&dir.join(cmd)) {
+            return true;
+        }
+    }
+    false
+}
+
 fn note_opt(list: &mut Vec<&'static str>, name: &'static str) {
     if !list.contains(&name) {
         list.push(name);
@@ -543,6 +738,31 @@ fn note_opt(list: &mut Vec<&'static str>, name: &'static str) {
 /// non-UTF-8 argument, and a supervisor must forward bytes exactly.
 pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     let mut mask = Mask::new();
+    let mut profile = Profile::Auto;
+    let mut profile_explicit = false;
+    let mut follow_explicit = false;
+    let mut no_follow = false;
+    let mut rexec_explicit = false;
+    let mut no_rexec = false;
+    let mut rexec_mode: Option<RexecMode> = None;
+    let mut cwd: Option<PathBuf> = None;
+    let mut parent_label: Option<String> = None;
+    let mut label_text: Option<String> = None;
+    let mut comm_text: Option<String> = None;
+    let mut reparent = false;
+    let mut allow_impersonation = false;
+    let mut secret_fds: Vec<(Option<String>, libc::c_int)> = Vec::new();
+    let mut explain = false;
+    let mut profile_json = false;
+    let mut pid: Option<libc::pid_t> = None;
+    let mut observer = ObserverRole::SameUid;
+    let mut json = false;
+    let mut token_env: Option<String> = None;
+    let mut token_fd: Option<libc::c_int> = None;
+    let mut real_exe: Option<String> = None;
+    let mut real_cwd: Option<String> = None;
+    let mut allow_memfd = false;
+
     let mut daemon: Option<OsString> = None;
     let mut remote_label = RemoteLabel::Default;
     let mut quiet = false;
@@ -555,10 +775,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     let mut secrets: Vec<(String, Source)> = Vec::new();
     let mut keep_env_all = false;
     let mut keep_env_names: Vec<String> = Vec::new();
-    // `(secret name, scheme word)` for every `--secret` whose source
-    // looked like it named a scheme this build does not know.  The
-    // warning is printed after the whole vector is parsed, so the last
-    // `-q` in the command line decides whether it appears.
     let mut unknown_schemes: Vec<(String, String)> = Vec::new();
     let mut agent_socket: Option<PathBuf> = None;
     let mut allow_argv_secret = false;
@@ -572,6 +788,9 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     let mut stealth = false;
     let mut stealth_hidepid_warn = false;
     let mut stealth_nodumpable = false;
+    let mut unshare = false;
+    let mut detach = false;
+    let mut prefers_memfd = false;
     let mut report_json = false;
     let mut report_file: Option<PathBuf> = None;
     let mut report_fd: Option<libc::c_int> = None;
@@ -609,10 +828,149 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 exit(255);
             };
             match name {
+                "profile" => {
+                    let v = take_value("--profile", inline, &argv, &mut i);
+                    let raw = label_from(&v);
+                    match Profile::parse(&raw) {
+                        Some(p) => {
+                            profile = p;
+                            profile_explicit = true;
+                        }
+                        None => die(&format!(
+                            "--profile takes auto, single, tree, tee or compat, not '{}'",
+                            raw
+                        )),
+                    }
+                    note_opt(&mut mask_opts, "--profile");
+                }
+                "auto" => {
+                    profile = Profile::Auto;
+                    profile_explicit = true;
+                }
+                "follow" => {
+                    follow_explicit = true;
+                    no_follow = false;
+                    mask = mask.follow_tree(true);
+                    note_opt(&mut mask_opts, "--follow");
+                }
+                "no-rexec" => {
+                    no_rexec = true;
+                    note_opt(&mut mask_opts, "--no-rexec");
+                }
+                "rexec-mode" => {
+                    let v = take_value("--rexec-mode", inline, &argv, &mut i);
+                    let mode = parse_rexec_mode(&v);
+                    rexec_mode = Some(mode);
+                    mask = mask.rexec_mode(mode);
+                    note_opt(&mut mask_opts, "--rexec-mode");
+                }
+                "cwd" => {
+                    let mut v = take_value("--cwd", inline, &argv, &mut i);
+                    if v.is_empty() {
+                        die("--cwd needs a non-empty path");
+                    }
+                    if v.contains(&0) {
+                        die("--cwd path must not contain NUL");
+                    }
+                    let path = PathBuf::from(OsString::from_vec(std::mem::take(&mut *v)));
+                    mask = mask.cwd(&path);
+                    cwd = Some(path);
+                    note_opt(&mut mask_opts, "--cwd");
+                }
+                "parent-label" => {
+                    let v = take_value("--parent-label", inline, &argv, &mut i);
+                    let text = label_arg(&v);
+                    if let Err(e) = pmask::mask::validate_label(&text) {
+                        die(&format!("--parent-label: {}", e));
+                    }
+                    mask = mask.parent_label(&text);
+                    parent_label = Some(text);
+                    note_opt(&mut mask_opts, "--parent-label");
+                }
+                "reparent" => {
+                    reparent = true;
+                    note_opt(&mut mask_opts, "--reparent");
+                }
+                "allow-impersonation" => {
+                    allow_impersonation = true;
+                }
+                "secret-fd" => {
+                    let v = take_value("--secret-fd", inline, &argv, &mut i);
+                    let (opt_name, fd) = parse_secret_fd(&v);
+                    secret_fds.push((opt_name, fd));
+                    note_opt(&mut mask_opts, "--secret-fd");
+                }
+                "explain" => {
+                    explain = true;
+                }
+                "profile-json" => {
+                    profile_json = true;
+                }
+                "pid" => {
+                    let v = take_value("--pid", inline, &argv, &mut i);
+                    let raw = label_from(&v);
+                    let parsed = raw
+                        .parse::<libc::pid_t>()
+                        .ok()
+                        .filter(|p| *p > 0)
+                        .unwrap_or_else(|| {
+                            die(&format!("--pid needs a positive integer, not '{}'", raw))
+                        });
+                    pid = Some(parsed);
+                }
+                "observer" => {
+                    let v = take_value("--observer", inline, &argv, &mut i);
+                    let raw = label_from(&v);
+                    match ObserverRole::parse(&raw) {
+                        Some(role) => observer = role,
+                        None => die(&format!(
+                            "--observer takes same-uid or other-uid, not '{}'",
+                            raw
+                        )),
+                    }
+                }
+                "json" => {
+                    json = true;
+                }
+                "token-env" => {
+                    let v = take_value("--token-env", inline, &argv, &mut i);
+                    let raw = label_from(&v);
+                    if raw.is_empty() {
+                        die("--token-env needs an environment variable name");
+                    }
+                    token_env = Some(raw);
+                }
+                "token-fd" => {
+                    let v = take_value("--token-fd", inline, &argv, &mut i);
+                    let raw = label_from(&v);
+                    let n = raw
+                        .parse::<libc::c_int>()
+                        .ok()
+                        .filter(|n| *n >= 0)
+                        .unwrap_or_else(|| {
+                            die(&format!(
+                                "--token-fd needs a file descriptor number, not '{}'",
+                                raw
+                            ))
+                        });
+                    token_fd = Some(n);
+                }
+                "real-exe" => {
+                    let v = take_value("--real-exe", inline, &argv, &mut i);
+                    real_exe = Some(label_from(&v));
+                }
+                "real-cwd" => {
+                    let v = take_value("--real-cwd", inline, &argv, &mut i);
+                    real_cwd = Some(label_from(&v));
+                }
+                "allow-memfd" => {
+                    allow_memfd = true;
+                }
                 "label" => {
                     let v = take_value("--label", inline, &argv, &mut i);
                     let text = label_arg(&v);
                     remote_label = RemoteLabel::Text(text.clone());
+                    label_text = Some(text.clone());
                     mask = mask.label(text);
                 }
                 "daemon" => {
@@ -621,6 +979,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 }
                 "label-empty" => {
                     mask = mask.label("");
+                    label_text = Some(String::new());
                     remote_label = RemoteLabel::Empty;
                 }
                 "argv0" => {
@@ -631,53 +990,41 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 "comm" => {
                     let v = take_value("--comm", inline, &argv, &mut i);
                     let c = label_from(&v);
-                    // Checked here, before the mode is chosen: the mask
-                    // path validates the same rule in `Mask::validate`,
-                    // but `--isolate` and `--no-redact` never build a
-                    // Mask, so a bad `comm` would reach `ps` through
-                    // them (issue 33).
                     if let Err(e) = pmask::mask::validate_comm(&c) {
                         die(&e.to_string());
                     }
+                    comm_text = Some(c.clone());
                     mask = mask.comm(c);
                     note_opt(&mut mask_opts, "--comm");
                 }
                 "keep-env" => {
                     match inline {
                         None => {
-                            // `--keep-env PATH` (the space form) keeps the
-                            // whole environment and makes PATH the program.
-                            // When the word after the value is the `--`
-                            // separator and a command follows it, the
-                            // value cannot be the program the operator
-                            // meant: they wrote the inline form with a
-                            // space, and the run would fail on a name that
-                            // looks like a program (issue 14 N3).  Name the
-                            // spelling rather than guess.
-                            // A word that looks like a variable list is the
-                            // common typo for the inline spelling, but it
-                            // is also a legal program name (`sleep`,
-                            // `env`, `make`).  Refusing it would break a
-                            // command that works; warn once and run what
-                            // the operator wrote, so the run is visible
-                            // rather than narrowed (issue 14 N3).
-                            // The warning ignores `-q`, like the other
-                            // exposure warnings: a quiet run that keeps
-                            // the whole environment visible while the
-                            // operator meant one variable is the silent
-                            // degradation invariant 13 forbids.
-                            if let (Some(next), Some(after)) = (argv.get(i + 1), argv.get(i + 2)) {
-                                if after.as_bytes() == b"--"
-                                    && argv.len() > i + 3
-                                    && looks_like_env_names(next.as_bytes())
-                                {
-                                    eprintln!(
-                                        "pmask: warning: --keep-env takes no value, so '{}' is \
-                                         the program and the whole environment stays visible; \
-                                         write --keep-env={} to keep only those variables",
-                                        next.to_string_lossy(),
-                                        next.to_string_lossy()
-                                    );
+                            // Fail fast on the `--keep-env FOO /bin/cmd` or
+                            // `--keep-env FOO -- /bin/cmd` space-form trap
+                            // instead of silently keeping the whole env and
+                            // executing FOO as COMMAND.
+                            if let Some(next) = argv.get(i + 1) {
+                                let nb = next.as_bytes();
+                                if !nb.is_empty() && !nb.starts_with(b"-") {
+                                    let followed_by_dashdash =
+                                        argv.get(i + 2).is_some_and(|a| a.as_bytes() == b"--")
+                                            && argv.len() > i + 3;
+                                    let is_upper_env = looks_like_upper_env_names(nb);
+                                    let is_comma_env =
+                                        nb.contains(&b',') && looks_like_env_names(nb);
+                                    let exec_exists = is_executable_on_path(next);
+                                    let trap = (followed_by_dashdash
+                                        && looks_like_env_names(nb)
+                                        && (!exec_exists || is_upper_env))
+                                        || ((is_upper_env || is_comma_env) && !exec_exists);
+                                    if trap {
+                                        eprintln!(
+                                            "pmask: --keep-env takes its list with '=' (use --keep-env={}), or place '--' before the command",
+                                            next.to_string_lossy()
+                                        );
+                                        exit(2);
+                                    }
                                 }
                             }
                             mask = mask.keep_environ_visible();
@@ -701,12 +1048,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 "env" => {
                     let v = take_value("--env", inline, &argv, &mut i);
                     match v.iter().position(|&b| b == b'=') {
-                        // An empty key (`--env =VALUE`) is not a variable:
-                        // execve would see a leading '=' and every backend
-                        // treats it differently.  The parser refuses it in
-                        // every mode, with the message the mask's own
-                        // validation prints, so there is one wording
-                        // (issue 30).
                         Some(0) => die("environment variable name \"\" must not be empty"),
                         None => die(&format!(
                             "--env needs KEY=VALUE, not '{}'",
@@ -715,10 +1056,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                         Some(p) => {
                             let key = OsString::from_vec(v[..p].to_vec());
                             let val = OsString::from_vec(v[p + 1..].to_vec());
-                            // One grammar for `--env` and `--env-file` in
-                            // every mode: the env-file parser applies the
-                            // same rule, and the plain/isolate paths do
-                            // not pass through `Mask::validate`.
                             if let Err(e) = pmask::mask::validate_env_key(&key) {
                                 die(&e.to_string());
                             }
@@ -744,9 +1081,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                         .filter(|n| *n >= 0);
                     match n {
                         Some(n) => args_fd = Some(n),
-                        // Naming the offending value is what makes a typo
-                        // (`--args-from-fd abc`) obvious without a re-read
-                        // of the whole command line.
                         None => die(&format!(
                             "--args-from-fd needs a file descriptor number, not '{}'",
                             String::from_utf8_lossy(&v)
@@ -759,6 +1093,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--on-exit");
                 }
                 "no-follow" => {
+                    no_follow = true;
+                    follow_explicit = false;
                     mask = mask.follow_tree(false);
                     note_opt(&mut mask_opts, "--no-follow");
                 }
@@ -769,7 +1105,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 "no-dumpable" => {
                     mask = mask.no_dumpable().supervisor_non_dumpable(true);
                     no_dumpable = true;
-                    no_dumpable_hidepid = pmask::caps::proc_hidepid().hides_non_dumpable();
+                    no_dumpable_hidepid =
+                        pmask::caps::Caps::proc_hidepid_fast().hides_non_dumpable();
                     note_opt(&mut mask_opts, "--no-dumpable");
                 }
                 "allow-dumpable" => {
@@ -792,7 +1129,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 "encrypt-memory" => {
                     mask = mask.encrypt_memory(true);
                     encrypt_memory = true;
-                    if pmask::caps::proc_hidepid().hides_non_dumpable() && !quiet {
+                    if pmask::caps::Caps::proc_hidepid_fast().hides_non_dumpable() && !quiet {
                         eprintln!(
                             "pmask: --encrypt-memory: the supervisor is non-dumpable to protect \
                              the key; on this hidepid mount it can be named by chkproc/unhide"
@@ -802,7 +1139,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 }
                 "stealth" => {
                     mask = mask.rexec().watch_rename();
-                    let hidepid = pmask::caps::proc_hidepid();
+                    rexec_explicit = true;
+                    let hidepid = pmask::caps::Caps::proc_hidepid_fast();
                     if hidepid.hides_non_dumpable() {
                         stealth_hidepid_warn = true;
                     } else {
@@ -823,6 +1161,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 }
                 "detach" => {
                     mask = mask.detach_after_exec(true);
+                    detach = true;
                     note_opt(&mut mask_opts, "--detach");
                 }
                 "watch-rename" => {
@@ -838,6 +1177,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                 }
                 "rexec" => {
                     mask = mask.rexec();
+                    rexec_explicit = true;
+                    no_rexec = false;
                     note_opt(&mut mask_opts, "--rexec");
                 }
                 "image" => {
@@ -853,6 +1194,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                         mask = mask.image_path(path.clone());
                         image_program = Some(path);
                     }
+                    rexec_explicit = true;
+                    prefers_memfd = true;
                     note_opt(&mut mask_opts, "--image");
                 }
                 "image-from-fd" => {
@@ -874,40 +1217,45 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                             String::from_utf8_lossy(&v)
                         )),
                     }
+                    rexec_explicit = true;
+                    prefers_memfd = true;
                     note_opt(&mut mask_opts, "--image-from-fd");
                 }
                 "exec-once" => {
                     mask = mask.exec_once();
+                    rexec_explicit = true;
+                    prefers_memfd = true;
                     note_opt(&mut mask_opts, "--exec-once");
                 }
                 "hugetlb" => {
                     mask = mask.hugetlb();
+                    rexec_explicit = true;
+                    prefers_memfd = true;
                     note_opt(&mut mask_opts, "--hugetlb");
                 }
                 "memfd-name" => {
                     let v = take_value("--memfd-name", inline, &argv, &mut i);
                     let name = label_from(&v);
-                    // Refuse at parse time, before the fork: a bad name
-                    // discovered in the child would end a run that has
-                    // already been promised.
                     if let Err(e) = pmask::mem::validate_memfd_name(&name) {
                         die(&format!("--memfd-name: {}", e));
                     }
                     mask = mask.memfd_name(name);
+                    prefers_memfd = true;
                     note_opt(&mut mask_opts, "--memfd-name");
                 }
                 "rexec-allow-disk" => {
                     mask = mask.rexec_allow_disk();
+                    rexec_explicit = true;
                     note_opt(&mut mask_opts, "--rexec-allow-disk");
                 }
                 "unshare" => {
                     mask = mask.unshare();
+                    unshare = true;
                     note_opt(&mut mask_opts, "--unshare");
                 }
                 "scope-name" => {
                     let has_inline = inline.is_some();
                     let v = take_value("--scope-name", inline, &argv, &mut i);
-                    // i now indexes the value token when it was separate
                     skip.push(i);
                     if !has_inline {
                         skip.push(i - 1);
@@ -921,9 +1269,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     let v = take_value("--secret", inline, &argv, &mut i);
                     let spec = Zeroizing::new(String::from_utf8_lossy(&v).into_owned());
                     let parsed = Source::parse_spec(&spec);
-                    // `take_value` and the lossy decode are `Zeroizing`
-                    // copies the parser owns; drop them now so both are
-                    // wiped before continuing.
                     drop(spec);
                     drop(v);
                     match parsed {
@@ -987,11 +1332,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     let v = take_value("--report", inline, &argv, &mut i);
                     match v.as_slice() {
                         b"json" => report_json = true,
-                        // `text` and `plain` used to be accepted and did
-                        // nothing, which made `--report=text` look like a
-                        // format request that was honoured.  The only
-                        // format is json; the default output is the
-                        // human-readable `pmask: mode=...` line on stderr.
                         b"text" | b"plain" => {
                             die("--report takes json; text is the default output (the \
                              'pmask: mode=...' summary on stderr), so drop --report")
@@ -1068,6 +1408,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     let v = take_value(flag, inline, &argv, &mut i);
                     let text = label_arg(&v);
                     remote_label = RemoteLabel::Text(text.clone());
+                    label_text = Some(text.clone());
                     mask = mask.label(text);
                     j = bytes.len();
                     continue;
@@ -1078,6 +1419,8 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--keep-env");
                 }
                 b'F' => {
+                    no_follow = true;
+                    follow_explicit = false;
                     mask = mask.follow_tree(false);
                     note_opt(&mut mask_opts, "--no-follow");
                 }
@@ -1121,11 +1464,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         die("--image and --args-from-fd are exclusive");
     }
 
-    // A typo'd scheme is delivered as a literal, which is data, not an
-    // error: `--secret TOK=flie:/etc/passwd` must not fail a run that
-    // would otherwise work.  Invariant 13 still applies, so it is said
-    // out loud, and the message names the word and the schemes that do
-    // exist.
     if !quiet {
         for (name, scheme) in &unknown_schemes {
             eprintln!(
@@ -1143,13 +1481,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         .map(|(_, a)| a.clone())
         .collect();
 
-    // A `literal:` or `env:` source carries the value in pmask's own argv
-    // or environment, where artefacts pmask cannot reach keep a copy: the
-    // kernel's audit record of this exec (written before pmask runs), the
-    // shell history and any wrapper's argv.  Warn once, loudly, before the
-    // run starts; `-q` is the documented way to suppress diagnostics.  A
-    // `--daemon` job refuses `--secret` in `main`, so it gets no warning
-    // about a run that will not happen.
     if !quiet && daemon.is_none() {
         if let Some(warning) = pmask::run::argv_secret_warning(&secrets) {
             eprintln!("pmask: warning: {}", warning);
@@ -1167,15 +1498,15 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
             "pmask: --stealth: /proc uses hidepid={}; --no-dumpable is not applied, because \
              a non-dumpable process is hidden from same-uid observers and chkproc/unhide can \
              name it.  The same-uid memory read stays open.",
-            pmask::caps::proc_hidepid().as_word()
+            pmask::caps::Caps::proc_hidepid_fast().as_word()
         );
     }
     if !quiet && stealth_nodumpable && !hide_pid {
         eprintln!(
             "pmask: --stealth: /proc uses hidepid={}; --no-dumpable is applied, so a same-uid \
-             reader loses environ, maps, auxv, exe, fd and /proc/<pid>/mem.  Those six EACCES \
+             reader loses environ, maps, auxv, exe, fd, cwd and /proc/<pid>/mem.  Those EACCES \
              refusals are themselves a signal.",
-            pmask::caps::proc_hidepid().as_word()
+            pmask::caps::Caps::proc_hidepid_fast().as_word()
         );
     }
     if !quiet && stealth && hide_pid {
@@ -1185,15 +1516,16 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         );
     }
 
-    let (program, args) = if args_fd.is_some() {
+    let standalone_mode = explain || profile_json || (audit && (pid.is_some() || i >= argv.len()));
+
+    let (program, args) = if standalone_mode && args_fd.is_none() && image_program.is_none() {
+        (OsString::new(), Vec::new())
+    } else if args_fd.is_some() {
         if i < argv.len() {
             die("--args-from-fd replaces COMMAND: no command may follow the options");
         }
         (OsString::new(), Vec::new())
     } else if let Some(p) = image_program {
-        if args_fd.is_some() {
-            die("--image replaces COMMAND: no command may follow the options");
-        }
         // With --image the remaining words are the program's arguments;
         // there is no command word to take.
         (p, argv[i..].to_vec())
@@ -1206,9 +1538,6 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         (argv[i].clone(), argv[i + 1..].to_vec())
     };
 
-    // The parser's own copies are no longer needed.  Zero every option
-    // value (including the `--secret` spec) before the vector is dropped,
-    // so a delivered literal does not linger in a freed allocation.
     for a in &mut argv {
         scrub_os_string(a);
     }
@@ -1217,6 +1546,30 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         mask,
         program,
         args,
+        profile,
+        profile_explicit,
+        follow_explicit,
+        no_follow,
+        rexec_explicit,
+        no_rexec,
+        rexec_mode,
+        cwd,
+        parent_label,
+        label_text,
+        comm_text,
+        reparent,
+        allow_impersonation,
+        secret_fds,
+        explain,
+        profile_json,
+        pid,
+        observer,
+        json,
+        token_env,
+        token_fd,
+        real_exe,
+        real_cwd,
+        allow_memfd,
         daemon,
         remote_label,
         quiet,
@@ -1236,6 +1589,10 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         allow_dumpable,
         hide_pid,
         encrypt_memory,
+        stealth,
+        unshare,
+        detach,
+        prefers_memfd,
         report_json,
         report_file,
         report_fd,
@@ -1247,23 +1604,12 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
     }
 }
 
-/// The largest `--args-from-fd` vector read into memory.  The cap bounds
-/// the allocation and matches the daemon's frame budget (`MAX_REQUEST`),
-/// but not its argv limit: the daemon caps the argument bytes at
-/// `--max-job-bytes` (default 1 MiB, `MAX_JOB_ARGV`), so a vector between
-/// the two limits is accepted here and refused by the daemon.  A larger
-/// vector is refused before it is buffered.
+/// The largest `--args-from-fd` vector read into memory.
 pub const ARGS_FD_MAX: u64 = 8 * 1024 * 1024;
 
 impl Cli {
     /// Read the command from the `--args-from-fd` descriptor, when one
-    /// was given.  The argument source is consumed: its offset is left at
-    /// the end of the vector.
-    ///
-    /// The caller's descriptor stays open.  `--args-from-fd 0` names the
-    /// payload's own stdin, so closing the descriptor after the read
-    /// would hand the payload a closed fd 0.  The read happens on a
-    /// duplicate, which is what the `File` closes.
+    /// was given.
     pub fn load_args_fd(&mut self) {
         let Some(fd) = self.args_fd.take() else {
             return;
@@ -1279,12 +1625,9 @@ impl Cli {
                 std::io::Error::last_os_error()
             ));
         }
-        // SAFETY: `dup` is the duplicate above.  The File closes it after
-        // the read.
+        // SAFETY: `dup` is the duplicate above.
         let file = unsafe { std::fs::File::from_raw_fd(dup) };
         let mut data = Zeroizing::new(Vec::new());
-        // Read one byte past the limit so an oversize vector is detected
-        // without buffering all of it.
         let mut limited = file.take(ARGS_FD_MAX + 1);
         if let Err(e) = limited.read_to_end(&mut data) {
             die(&format!("--args-from-fd {}: {}", fd, e));
@@ -1302,7 +1645,7 @@ impl Cli {
             .map(|s| Zeroizing::new(s.to_vec()))
             .collect();
         if data.last() == Some(&0) {
-            parts.pop(); // the empty piece after the final NUL
+            parts.pop();
         }
         if parts.is_empty() || parts[0].is_empty() {
             die(&format!("--args-from-fd {}: no program given", fd));
@@ -1319,37 +1662,39 @@ impl Cli {
     }
 }
 
-/// `-h`/`--help` go to stdout and exit 0; a usage error goes to stderr
-/// and exits 255, like the C tool.
-/// The mask help text, with version and arch filled in.
-pub fn help_text() -> String {
-    HELP.replace("{version}", pmask::VERSION)
+/// The complete reference help text, with version and arch filled in.
+pub fn full_help_text() -> String {
+    HELP.trim_start_matches('\n')
+        .replace("{version}", pmask::VERSION)
         .replace("{arch}", arch_name())
 }
 
-/// Print one help topic (`--help=<topic>`).  `short` is the option index;
-/// `redact`, `isolate`, `secret`, `report` and `daemon` print one option
-/// group each.  An unknown topic prints the index and exits 255, so a typo
-/// is visible to a script.
+/// Print one help topic (`--help=<topic>`).  `short` prints the concise
+/// one-screen overview; `all` prints the complete reference; topic names
+/// print one option group each.
 fn print_topic(topic: &[u8]) {
-    let text = help_text();
+    let text = full_help_text();
     let t = String::from_utf8_lossy(topic).into_owned();
     if t == "short" {
         print!("{}", pmask::subcmd::short_help(&text));
+        exit(0);
+    }
+    if t == "all" {
+        println!("{}", text);
         exit(0);
     }
     let code = pmask::subcmd::help_topic(&text, &t);
     exit(code);
 }
 
+/// `-h`/`--help` print the concise one-screen overview to stdout and exit 0;
+/// a usage error goes to stderr and exits 255.
 fn print_help(stdout: bool) {
-    let text = HELP
-        .replace("{version}", pmask::VERSION)
-        .replace("{arch}", arch_name());
+    let text = pmask::subcmd::short_help(&full_help_text());
     if stdout {
-        println!("{}", text);
+        print!("{}", text);
     } else {
-        eprintln!("{}", text);
+        eprint!("{}", text);
     }
 }
 

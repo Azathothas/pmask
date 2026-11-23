@@ -61,15 +61,22 @@ printf 'file-source-value\n' > "$D/tok"
 # leave SUP and PAY set.  Returns 1 when no payload appeared.
 start() {
     env -i PATH=/usr/bin:/bin HUSH="$SECRET" KEEPME=QA41-KEEPME \
-        "$TOOL" -q -l "$L" "$@" -- "$CASES" sleeper QAMARK \
+        "$TOOL" -q --profile compat -l "$L" "$@" -- "$CASES" sleeper QAMARK \
         >/dev/null 2>"$D/last.err" &
     SUP=$!
     PAY=""
     i=0
-    while [ $i -lt 40 ]; do
+    while [ $i -lt 60 ]; do
         sleep 0.05
         PAY=$(pgrep -P "$SUP" 2>/dev/null | head -n 1)
-        [ -n "$PAY" ] && return 0
+        if [ -n "$PAY" ]; then
+            case "$(readlink "/proc/$PAY/exe" 2>/dev/null)" in
+                *testcases*)
+                    sleep 0.05
+                    return 0
+                    ;;
+            esac
+        fi
         i=$((i + 1))
     done
     return 1
@@ -137,7 +144,7 @@ fi
 # ------------------- E4: --keep-env + env: secret warns and names it
 err="$D/e4.err"
 env -i PATH=/usr/bin:/bin HUSH="$SECRET" \
-    "$TOOL" -l "$L" --keep-env --allow-dumpable --secret T=env:HUSH \
+    "$TOOL" --profile compat -l "$L" --keep-env --allow-dumpable --secret T=env:HUSH \
     -- "$CASES" sleeper QAMARK >/dev/null 2>"$err" &
 SUP=$!
 sleep 0.9

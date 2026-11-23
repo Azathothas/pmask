@@ -111,7 +111,7 @@ labelled_under() {
 
 run_case() {  # $1 marker, $2 payload, $3 mode(mask|control), $4 expect(see|blind)
     if [ "$3" = mask ]; then
-        PAYLOAD="$2" "$TOOL" -q -l "$FAKE" /bin/sh -c 'eval "$PAYLOAD"' >/dev/null 2>&1 &
+        PAYLOAD="$2" "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'eval "$PAYLOAD"' >/dev/null 2>&1 &
     else
         PAYLOAD="$2" /bin/sh -c 'eval "$PAYLOAD"' >/dev/null 2>&1 &
     fi
@@ -234,18 +234,18 @@ fi
 sleep 0.3
 
 echo "-- phase 3: functional sanity under pmask"
-out=$(echo mask-io-test | "$TOOL" -q -l "$FAKE" /bin/cat 2>/dev/null); rc=$?
+out=$(echo mask-io-test | "$TOOL" -q --allow-impersonation -l "$FAKE" /bin/cat 2>/dev/null); rc=$?
 if [ "$out" = "mask-io-test" ] && [ "$rc" = "0" ]; then
     echo "PASS functional: stdin/stdout/exit-code intact"
 else
     echo "FAIL functional: got [$out] rc=$rc"; OVERALL=1
 fi
-"$TOOL" -q -l "$FAKE" /bin/sh -c 'exit 42' 2>/dev/null; rc=$?
+"$TOOL" -q --allow-impersonation -l "$FAKE" /bin/sh -c 'exit 42' 2>/dev/null; rc=$?
 if [ "$rc" = "42" ]; then echo "PASS functional: exit codes propagate"
 else echo "FAIL functional: rc=$rc (want 42)"; OVERALL=1; fi
 
 echo "-- phase 4: the program still sees its own argv/env"
-o=$("$TOOL" -q -l "$FAKE" "$CASES" echoargs X1 X2 2>/dev/null)
+o=$("$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" echoargs X1 X2 2>/dev/null)
 case "$o" in
     *X1*X2*env=\[ok\]*) echo "PASS argv-fidelity: [$o]" ;;
     *) echo "FAIL argv-fidelity: [$o]"; OVERALL=1 ;;
@@ -284,7 +284,7 @@ do
     done
     kill -9 "$cp" 2>/dev/null
     wait "$cp" 2>/dev/null
-    "$TOOL" -q -l "$FAKE" "$CASES" sleeper "$arg" >/dev/null 2>&1 &
+    "$TOOL" -q --allow-impersonation -l "$FAKE" "$CASES" sleeper "$arg" >/dev/null 2>&1 &
     wp=$!
     # The masked run needs the same settle time before the sweep; sample
     # until the label is visible, then take one more reading.

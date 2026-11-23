@@ -214,7 +214,7 @@ RAW="$T/raw.err"
 
 # ======================================================== redacted session
 # One session serves the cmdline, environ, comm, ps and holder cases.
-"$TOOL" run -q --label "$LABEL" -- /bin/sh -c "sleep $HOLD" "$CAN" \
+"$TOOL" run -q --profile compat --label "$LABEL" -- /bin/sh -c "sleep $HOLD" "$CAN" \
     >/dev/null 2>"$OUT" &
 SUP=$!
 track "$SUP"
@@ -266,7 +266,7 @@ fi
 
 # Control: --keep-env=NAME keeps the named variable, which shows that the
 # environ reader works and the policy, not the kernel, removed the rest.
-"$TOOL" run -q --label "$LABEL" --keep-env=PMK_CONF_KEEP \
+"$TOOL" run -q --profile compat --label "$LABEL" --keep-env=PMK_CONF_KEEP \
     --env "PMK_CONF_KEEP=$CAN" -- /bin/sh -c "sleep $HOLD" >/dev/null 2>&1 &
 KSUP=$!
 track "$KSUP"
@@ -453,7 +453,7 @@ if [ -z "$PROBE" ]; then
 elif [ "$(ulimit -c -H 2>/dev/null)" = "0" ]; then
     skip core-limit-control "this shell's hard RLIMIT_CORE is already 0, so a zero in the session proves nothing"
 else
-    c=$("$TOOL" run -q --label "$LABEL" -- "$PROBE" corelim 2>/dev/null)
+    c=$("$TOOL" run -q --profile compat --label "$LABEL" -- "$PROBE" corelim 2>/dev/null)
     hard=$(printf '%s\n' "$c" | sed -n 's/^core_hard=//p')
     soft=$(printf '%s\n' "$c" | sed -n 's/^core_soft=//p')
     if [ -n "$hard" ] && [ "$hard" != 0 ]; then
@@ -531,7 +531,7 @@ if [ -z "$PROBE" ]; then
     skip dumpable-default "no C compiler, so PR_GET_DUMPABLE cannot be read"
     skip dumpable-nodumpable "no C compiler, so PR_GET_DUMPABLE cannot be read"
 else
-    d=$("$TOOL" run -q --label "$LABEL" -- "$PROBE" dumpable 2>/dev/null)
+    d=$("$TOOL" run -q --profile compat --label "$LABEL" -- "$PROBE" dumpable 2>/dev/null)
     if [ "$d" = "dumpable=1" ]; then
         pass dumpable-default
     elif [ -z "$d" ]; then

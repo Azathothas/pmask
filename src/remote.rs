@@ -22,9 +22,22 @@ pub const MAX_HIDDEN: usize = 8 << 20;
 /// delta per completion stop.
 pub static READ_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Clear thread-local `errno` before `PTRACE_PEEKDATA`, because `-1` is a
+/// valid data word and `errno` is not reset by a successful peek.
+#[inline]
+fn clear_errno() {
+    // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
+
 /// Copy `buf.len()` bytes from the tracee at `addr`.  Returns bytes copied
 /// (short copy possible at an unmapped boundary), or -1 on failure.
 pub fn read_mem(pid: libc::pid_t, addr: u64, buf: &mut [u8]) -> isize {
+    if buf.is_empty() {
+        return 0;
+    }
     READ_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let local = libc::iovec {
         iov_base: buf.as_mut_ptr() as *mut libc::c_void,
@@ -39,16 +52,31 @@ pub fn read_mem(pid: libc::pid_t, addr: u64, buf: &mut [u8]) -> isize {
         return k;
     }
     let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    if matches!(e, libc::ENOSYS | libc::EPERM | libc::EINVAL) {
+    if matches!(e, libc::ENOSYS | libc::EPERM | libc::EACCES | libc::EINVAL) {
         return peek_fallback(pid, addr, buf);
     }
     -1
+}
+
+/// Copy `buf.len()` bytes from an attached tracee directly via
+/// `PTRACE_PEEKDATA`, bypassing `process_vm_readv`.
+///
+/// Works even when the tracee is non-dumpable (`PR_SET_DUMPABLE=0`), where
+/// `process_vm_readv` returns `EPERM`/`EACCES` to an unprivileged ptracer.
+#[allow(dead_code)]
+pub fn read_mem_ptrace(pid: libc::pid_t, addr: u64, buf: &mut [u8]) -> isize {
+    if buf.is_empty() {
+        return 0;
+    }
+    READ_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    peek_fallback(pid, addr, buf)
 }
 
 fn peek_fallback(pid: libc::pid_t, addr: u64, buf: &mut [u8]) -> isize {
     let word = std::mem::size_of::<libc::c_long>();
     let mut done = 0usize;
     while done < buf.len() {
+        clear_errno();
         // SAFETY: tracee is stopped and attached; read-only word peek.
         let w = unsafe {
             libc::ptrace(
@@ -75,6 +103,9 @@ fn peek_fallback(pid: libc::pid_t, addr: u64, buf: &mut [u8]) -> isize {
 
 /// Write `data` to the tracee at `addr`.  Returns bytes written or -1.
 pub fn write_mem(pid: libc::pid_t, addr: u64, data: &[u8]) -> isize {
+    if data.is_empty() {
+        return 0;
+    }
     let local = libc::iovec {
         iov_base: data.as_ptr() as *mut libc::c_void,
         iov_len: data.len(),
@@ -88,7 +119,7 @@ pub fn write_mem(pid: libc::pid_t, addr: u64, data: &[u8]) -> isize {
         return k;
     }
     let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    if matches!(e, libc::ENOSYS | libc::EPERM | libc::EINVAL) {
+    if matches!(e, libc::ENOSYS | libc::EPERM | libc::EACCES | libc::EINVAL) {
         return poke_fallback(pid, addr, data);
     }
     -1
@@ -112,6 +143,7 @@ fn poke_fallback(pid: libc::pid_t, addr: u64, data: &[u8]) -> isize {
         let at = addr + done as u64;
         let mut old = [0u8; std::mem::size_of::<libc::c_long>()];
         if c < word {
+            clear_errno();
             // SAFETY: tracee is stopped and attached; read-only word peek.
             let w = unsafe {
                 libc::ptrace(

@@ -120,7 +120,7 @@ sleep 0.3
 # refuses it before it runs.  `--allow-foreign` is the explicit opt-in and
 # the run is counted as a foreign-arch degradation.
 if [ -x ./testcases32 ]; then
-    out=$("$TOOL" -l "$L" ./testcases32 echoargs MK-K4 2>"$T/k4.err")
+    out=$("$TOOL" --profile compat -l "$L" ./testcases32 echoargs MK-K4 2>"$T/k4.err")
     rc=$?
     if [ "$rc" = 137 ] && [ -z "$out" ] && grep -q '32-bit.*refused' "$T/k4.err"; then
         pass "k4-32bit-refused-by-default (rc=$rc)"
@@ -130,7 +130,7 @@ if [ -x ./testcases32 ]; then
     grep -q '32-bit (foreign ABI) exec(s) refused' "$T/k4.err" \
         && pass k4-summary-names-foreign-refused \
         || fail "k4-summary-missing-foreign-refused ($(tail -1 "$T/k4.err"))"
-    out=$("$TOOL" -l "$L" --allow-foreign ./testcases32 echoargs MK-K4 2>"$T/k4b.err")
+    out=$("$TOOL" --profile compat -l "$L" --allow-foreign ./testcases32 echoargs MK-K4 2>"$T/k4b.err")
     rc=$?
     case "$out" in
         *"arg2=[MK-K4]"*) pass k4-32bit-allow-foreign-runs ;;
@@ -204,7 +204,7 @@ t1=$(date +%s)
 # ------------------------------------------------------- K6: job control
 # Defect: the group-stop was swallowed: SIGSTOP never held the tree.
 rm -f "$T/k6.f"
-"$TOOL" -q -l "$L" "$CASES" touchloop "$T/k6.f" >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$L" "$CASES" touchloop "$T/k6.f" >/dev/null 2>&1 &
 sup=$!
 waitfile "$T/k6.f" 5 >/dev/null
 tp=""
@@ -233,7 +233,7 @@ kill -9 "$sup" 2>/dev/null; kill_comm "$L" KILL 2>/dev/null; kill_comm testcases
 
 # --------------------------------------------- K8: failed exec then a retry
 # Defect: the failed exec settled to Run; the retry took the post-exec path.
-log=$("$TOOL" -v -l "$L" "$CASES" forkretry /nonexistent/pmask-k8 "$CASES" echoargs MK-K8 2>&1)
+log=$("$TOOL" -v --profile compat -l "$L" "$CASES" forkretry /nonexistent/pmask-k8 "$CASES" echoargs MK-K8 2>&1)
 nswap=$(printf '%s\n' "$log" | grep -c 'entry pointer-swap (ELF)')
 nre=$(printf '%s\n' "$log" | grep -c 'exec-done reread=1')
 if [ "$nswap" -ge 2 ] && [ "$nre" = 0 ]; then pass "k8-retry-keeps-entry-swap (swaps=$nswap rereads=$nre)"
@@ -295,13 +295,13 @@ grep -q 'execs unredacted' "$T/k10s.err" && fail "k10-clean-run-prints-the-dupli
 # promise ("a refused window is reported") held only when something else
 # had already degraded.  There was also no way to reach the refusal path
 # on a kernel that accepts the call, so the counter had no test at all.
-PMASK_FAULT_REFUSE_MAP=1 "$TOOL" -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15.err"
+PMASK_FAULT_REFUSE_MAP=1 "$TOOL" --profile compat -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15.err"
 if grep -Eq '^pmask: [0-9]+ of [0-9]+ execs kept the kernel.s argv and environ windows \(PR_SET_MM_MAP refused\)$' "$T/k15.err"; then
     pass "k15-refused-window-is-reported ($(grep 'environ windows' "$T/k15.err"))"
 else fail "k15-window-summary (stderr: $(head -3 "$T/k15.err" | tr '\n' '|'))"; fi
-PMASK_FAULT_REFUSE_MAP=1 "$TOOL" -q -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15q.err"
+PMASK_FAULT_REFUSE_MAP=1 "$TOOL" -q --profile compat -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15q.err"
 [ ! -s "$T/k15q.err" ] && pass k15-quiet-prints-nothing || fail "k15-quiet ($(head -1 "$T/k15q.err"))"
-"$TOOL" -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15c.err"
+"$TOOL" --profile compat -l "$L" "$CASES" echoargs MK-K15 >/dev/null 2>"$T/k15c.err"
 grep -q 'environ windows' "$T/k15c.err" && fail "k15-control-reports-a-refusal" || pass k15-accepted-window-is-silent
 # The observable the message promises: the text is the label, the kernel
 # window keeps the label plus one NUL per argv entry, and environ is a
@@ -309,7 +309,7 @@ grep -q 'environ windows' "$T/k15c.err" && fail "k15-control-reports-a-refusal" 
 # the marker from the cmdline and the process can then only be found by
 # comm.
 K15L='k15-win-label'
-PMASK_FAULT_REFUSE_MAP=1 "$TOOL" -l "$K15L" "$CASES" sleeper MK-K15 >/dev/null 2>"/dev/null" &
+PMASK_FAULT_REFUSE_MAP=1 "$TOOL" --profile compat -l "$K15L" "$CASES" sleeper MK-K15 >/dev/null 2>"/dev/null" &
 k15bg=$!
 i=0
 k15pid=""
@@ -382,7 +382,7 @@ int main(int argc, char **argv) {
 C
 if cc -O1 -o "$T/deny_mm" "$T/deny_mm.c" 2>/dev/null; then
     K15BL='k15b-label'
-    "$T/deny_mm" "$TOOL" -l "$K15BL" "$CASES" echoargs MK-K15B >"$T/k15b.out" 2>"$T/k15b.err"
+    "$T/deny_mm" "$TOOL" --profile compat -l "$K15BL" "$CASES" echoargs MK-K15B >"$T/k15b.out" 2>"$T/k15b.err"
     rc=$?
     if [ "$rc" = 0 ] && grep -q 'arg2=\[MK-K15B\]' "$T/k15b.out" \
         && grep -q 'kept the kernel.s argv and environ windows (PR_SET_MM_MAP refused)' "$T/k15b.err"; then
@@ -390,7 +390,7 @@ if cc -O1 -o "$T/deny_mm" "$T/deny_mm.c" 2>/dev/null; then
     else
         fail "k15b-real-prctl-refusal (rc=$rc out=$(tr '\n' '|' < "$T/k15b.out") err=$(head -2 "$T/k15b.err" | tr '\n' '|'))"
     fi
-    "$T/deny_mm" "$TOOL" -l "$K15BL" "$CASES" sleeper MK-K15B >/dev/null 2>/dev/null &
+    "$T/deny_mm" "$TOOL" --profile compat -l "$K15BL" "$CASES" sleeper MK-K15B >/dev/null 2>/dev/null &
     k15bbg=$!
     i=0
     k15bpid=""
@@ -437,7 +437,7 @@ fi
 # Defect: the completion stop re-read every environment string to infer
 # the span (one process_vm_readv per entry, more for long strings).
 vars=$(seq 1 4000 | sed 's/^/PMKV/;s/$/=value/')
-log=$(env $vars "$TOOL" -v -l "$L" "$CASES" echoargs a 2>&1)
+log=$(env $vars "$TOOL" -v --profile compat -l "$L" "$CASES" echoargs a 2>&1)
 line=$(printf '%s\n' "$log" | grep 'completion-stop' | head -1)
 reads=$(printf '%s' "$line" | sed -n 's/.*reads=\([0-9]*\).*/\1/p')
 us=$(printf '%s' "$line" | sed -n 's/.*completion-stop \([0-9]*\)us.*/\1/p')
@@ -472,7 +472,7 @@ case "$out" in
     *) fail "k12-control-std-args-read-the-kernel-block ($(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160))" ;;
 esac
 
-PMASK_FAULT_NOVDSO=1 "$TOOL" -l "$L" "$CASES" sleeper MK-K12V >/dev/null 2>"$T/k12v.err"
+PMASK_FAULT_NOVDSO=1 "$TOOL" --profile compat -l "$L" "$CASES" sleeper MK-K12V >/dev/null 2>"$T/k12v.err"
 rc=$?
 # The fault hook withholds the vDSO route and the maps fallback, so the
 # completion stop cannot build the redaction block: the exec is counted as
@@ -640,7 +640,7 @@ esac
 # run, but the assertion is on the engine's own classification.
 T14="$T/k14"
 mkdir -p "$T14"
-"$TOOL" -v -l mk-k14 "$CASES" spinthreads 4 2000 >"$T14/out" 2>"$T14/err" &
+"$TOOL" -v --profile compat -l mk-k14 "$CASES" spinthreads 4 2000 >"$T14/out" 2>"$T14/err" &
 P=$!
 waited=0
 while [ "$waited" -lt 100 ]; do

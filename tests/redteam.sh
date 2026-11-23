@@ -53,7 +53,7 @@ wait_child() {
 
 # ---------------------------------------------------------------- R1 shape
 L=rt-label
-"$TOOL" -q -l "$L" -- "$CASES" auxvserved 4 >"$D/r1.out" 2>"$D/r1.err" &
+"$TOOL" -q --profile compat -l "$L" -- "$CASES" auxvserved 4 >"$D/r1.out" 2>"$D/r1.err" &
 SUP=$!
 PAY=$(wait_child "$SUP") || true
 if [ -z "${PAY:-}" ]; then
@@ -101,7 +101,7 @@ set -- $(spans "$CP")
 cas=${1:-0}; cae=${2:-0}; ces=${3:-0}; cee=${4:-0}
 kill -9 "$CP" 2>/dev/null
 
-env -u _ "$TOOL" -q --no-exact -l rt-ne -- "$CASES" execfn 3 >"$D/r2.out" 2>"$D/r2.err" &
+env -u _ "$TOOL" -q --profile compat --no-exact -l rt-ne -- "$CASES" execfn 3 >"$D/r2.out" 2>"$D/r2.err" &
 SUP=$!
 PAY=$(wait_child "$SUP") || true
 if [ -z "${PAY:-}" ]; then

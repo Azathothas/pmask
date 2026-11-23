@@ -126,9 +126,9 @@ start() {
 kill_sup() { kill -9 "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
 
 # ---------------------------------------------------------- 49a default
-set -- $(start default)
-SUP=$1
-LEAF=$2
+set -- $(start default --profile compat)
+SUP=${1:-}
+LEAF=${2:-}
 if [ -z "$LEAF" ]; then
     fail "49a-default-redacted (no leaf under $SUP: $(head -2 "$T/default.err" | tr '\n' '|'))"
 else
@@ -151,8 +151,8 @@ fi
 
 # -------------------------------------------------------- 49b --no-redact
 set -- $(start plain --no-redact)
-SUP=$1
-LEAF=$2
+SUP=${1:-}
+LEAF=${2:-}
 if [ -z "$LEAF" ]; then
     fail "49b-plain-real (no leaf under $SUP)"
 else
@@ -184,8 +184,8 @@ fi
 
 # --------------------------------------------------------- 49c --isolate
 set -- $(start isolate --isolate)
-SUP=$1
-LEAF=$2
+SUP=${1:-}
+LEAF=${2:-}
 if [ -z "$LEAF" ] || [ "$NS_OK" = 0 ] || ns_unavailable "$T/isolate.err"; then
     skip "49c-isolate-real (unprivileged user namespaces unavailable: $(head -2 "$T/isolate.err" | tr '\n' '|'))"
     skip "49c-isolate-procfs-fingerprint (no namespaces)"
@@ -240,8 +240,8 @@ unshare_row() {
     u_name=$1
     shift
     set -- $(start "$u_name" "$@")
-    u_sup=$1
-    u_leaf=$2
+    u_sup=${1:-}
+    u_leaf=${2:-}
     if [ -z "$u_leaf" ] || [ "$NS_OK" = 0 ] || ns_unavailable "$T/$u_name.err"; then
         skip "$u_name (user namespaces unavailable: $(head -2 "$T/$u_name.err" | tr '\n' '|'))"
         return
@@ -280,11 +280,11 @@ unshare_row() {
     kill_sup "$u_sup"
 }
 
-unshare_row 49d-unshare --unshare
+unshare_row 49d-unshare --profile compat --unshare
 
 # `--redact --isolate` is the composed spelling.  It takes the redaction
 # path and produces a report there; the shape assertion still applies.
-unshare_row 49e-redact-isolate --redact --isolate
+unshare_row 49e-redact-isolate --profile compat --redact --isolate
 
 # ------------------------------------------------------ 49f: 32-bit image
 # The i686 probe is a vm/run.sh artifact.  When it is absent, a static
@@ -341,7 +341,7 @@ if [ -n "$T32" ]; then
 
     # `--allow-foreign` restores the documented unredacted run and the
     # summary counts it.
-    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" sleeper "MK49B-$MARK" \
+    "$TOOL" --profile compat -l "$LABEL" --allow-foreign -- "$T32" sleeper "MK49B-$MARK" \
         >"$T/k32c.out" 2>"$T/k32c.err" &
     K32=$!
     sleep 0.8
@@ -365,14 +365,14 @@ if [ -n "$T32" ]; then
     kill -9 "$K32" 2>/dev/null
     wait "$K32" 2>/dev/null
 
-    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" echoargs "MK49B-$MARK" \
+    "$TOOL" --profile compat -l "$LABEL" --allow-foreign -- "$T32" echoargs "MK49B-$MARK" \
         >"$T/k32b.out" 2>"$T/k32b.err"
     if grep -q 'foreign-arch' "$T/k32b.err"; then
         pass "49f-32bit-summary-counts-foreign-arch ($(tail -1 "$T/k32b.err"))"
     else
         fail "49f-32bit-summary-counts-foreign-arch (stderr=$(tail -1 "$T/k32b.err"))"
     fi
-    "$TOOL" -l "$LABEL" --allow-foreign -- "$T32" exec64 \
+    "$TOOL" --profile compat -l "$LABEL" --allow-foreign -- "$T32" exec64 \
         >/dev/null 2>"$T/k32d.err"
     rc=$?
     if [ "$rc" = 137 ] \
@@ -396,7 +396,7 @@ if [ -n "$T32" ]; then
     fi
 
     # The explicit opt-in keeps the documented unredacted run.
-    "$TOOL" -l "$LABEL" --allow-foreign -- /bin/sh -c "sleep 0.2; exec $T32 sleeper 30" \
+    "$TOOL" --profile compat -l "$LABEL" --allow-foreign -- /bin/sh -c "sleep 0.2; exec $T32 sleeper 30" \
         >/dev/null 2>"$T/k32f.err" &
     K32F=$!
     sleep 0.9

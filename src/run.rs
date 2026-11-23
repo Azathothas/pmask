@@ -550,8 +550,12 @@ pub struct Runner {
     /// silent (AGENTS.md invariant 13).
     requested: Vec<&'static str>,
     /// `--audit` was requested.  The rows need the tracer, so every
-    /// non-redaction mode refuses the request.
+    /// non-redaction mode refuses the flag instead of printing nothing.
     requests_audit: bool,
+    /// Caller-opened descriptors preserved across `exec` (`--secret-fd`).
+    preserved_fds: Vec<libc::c_int>,
+    /// Target working directory for the child (`--cwd`).
+    cwd: Option<PathBuf>,
 }
 
 impl Default for Runner {
@@ -590,7 +594,24 @@ impl Runner {
             encrypt_memory: false,
             requested: Vec::new(),
             requests_audit: false,
+            preserved_fds: Vec::new(),
+            cwd: None,
         }
+    }
+
+    /// Preserve a caller-opened file descriptor across `exec` (`--secret-fd`).
+    pub fn preserve_fd(mut self, fd: libc::c_int) -> Runner {
+        if !self.preserved_fds.contains(&fd) {
+            self.preserved_fds.push(fd);
+        }
+        self
+    }
+
+    /// Change the payload's working directory to `dir` after resolving the
+    /// executable path (`--cwd`).
+    pub fn cwd(mut self, dir: impl Into<PathBuf>) -> Runner {
+        self.cwd = Some(dir.into());
+        self
     }
 
     pub fn label(mut self, l: impl Into<String>) -> Runner {
@@ -783,6 +804,20 @@ impl Runner {
     }
 
     fn select(&self) -> Selection {
+        // Fast zero-fork path when no namespace isolation was requested and
+        // ptrace is available: avoids running the full 8-probe `Caps::detect`
+        // suite on ordinary redacted runs (`--stealth`, `--encrypt-memory`,
+        // `--secret`, `--report=json`).
+        if self.compose.is_none()
+            && self.isolate.is_none()
+            && self.force_mode.is_none()
+            && Caps::ptrace_usable_fast()
+        {
+            return Selection {
+                mode: Mode::Redact,
+                reason: "",
+            };
+        }
         self.select_with(Caps::cached())
     }
 
@@ -1028,8 +1063,13 @@ impl Runner {
         P: AsRef<std::ffi::OsStr>,
     {
         let mut notes = Vec::new();
-        let mode = self.mode();
-        let ptrace = Caps::cached().ptrace;
+        let selection = self.select();
+        let mode = selection.mode;
+        let ptrace = if mode == Mode::Redact {
+            true
+        } else {
+            Caps::ptrace_usable_fast()
+        };
         // `--image` is a redaction-mode feature: the image is executed by
         // the masked child.  The isolate and plain modes exec a path
         // directly, so they cannot honour it.
@@ -1044,7 +1084,7 @@ impl Runner {
                 ),
             ));
         }
-        let mode_reason = self.mode_reason();
+        let mode_reason = selection.reason;
         // `--audit` describes the tree the tracer owns.  The mode is only
         // known here, after the probe, so this is where a host that
         // selects plain mode (no ptrace) refuses the flag; the explicit
@@ -1156,11 +1196,13 @@ impl Runner {
                     "--env"
                         | "--env-file"
                         | "--secret"
+                        | "--secret-fd"
                         | "--socket"
                         | "--allow-argv-secret"
                         | "--secret-burn"
                         | "--secret-close-on-exec"
                         | "--scope-name"
+                        | "--allow-dumpable"
                 ) {
                     continue;
                 }
@@ -1431,10 +1473,13 @@ impl Runner {
                 } else {
                     mask
                 };
+                for &fd in &self.preserved_fds {
+                    mask = mask.secret_fd(fd);
+                }
                 // Prepare first (the child's plan captures argv and the real
                 // environment), scrub the supervisor's copies, self-mask
-                // before the tracer thread starts (so `PR_SET_DUMPABLE`
-                // cannot race `Tracer::set_pending`), and only then fork.
+                // before the fork, and then supervise on the current thread
+                // (`Threads: 1`).
                 let prepared = mask.prepare(program.as_ref(), &args)?;
                 payload_dumpable = mask.payload_is_dumpable();
                 // The child's exec plan has its own copy of argv and the
@@ -1443,8 +1488,16 @@ impl Runner {
                     scrub_os(a);
                 }
                 mask.scrub_env_values();
-                let label = prepared.label().to_vec();
-                let comm = prepared.label_comm().to_vec();
+                let (label, comm) = match mask.parent_label_value() {
+                    Some(pl) => {
+                        let mut c: Vec<u8> = pl.bytes().take(crate::COMM_MAX).collect();
+                        if c.is_empty() {
+                            c.push(b' ');
+                        }
+                        (pl.as_bytes().to_vec(), c)
+                    }
+                    None => (prepared.label().to_vec(), prepared.label_comm().to_vec()),
+                };
                 let redact_env = prepared.redacts_environ();
                 let non_dumpable = mask.supervisor_is_non_dumpable();
                 let selfmask = crate::selfmask::mask_self_label_with_window_opts(
@@ -1471,8 +1524,7 @@ impl Runner {
                 if let Some(e) = selfmask.dumpable {
                     notes.push(format!("could not make the supervisor non-dumpable: {}", e));
                 }
-                let child = mask.spawn_prepared(prepared)?;
-                child.wait()?
+                mask.run_prepared_on_current_thread(prepared)?
             }
             Mode::Isolate => {
                 notes.push(
@@ -1537,12 +1589,24 @@ impl Runner {
                     notes.push(format!("could not make the supervisor non-dumpable: {}", e));
                 }
 
+                for &fd in &self.preserved_fds {
+                    // SAFETY: clearing FD_CLOEXEC on a validated caller-opened fd.
+                    unsafe {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags >= 0 && (flags & libc::FD_CLOEXEC) != 0 {
+                            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                        }
+                    }
+                }
                 isolate::run(&iso, &prog, &argv_ptr, &envp_ptr, &fds, cloexec, self.quiet)?
             }
             Mode::Plain => {
                 let prog = resolve_program(program.as_ref())?;
                 let mut cmd =
                     std::process::Command::new(std::ffi::OsStr::from_bytes(prog.as_bytes()));
+                if let Some(ref dir) = self.cwd {
+                    cmd.current_dir(dir);
+                }
                 for a in &args {
                     cmd.arg(a);
                 }
@@ -1553,10 +1617,17 @@ impl Runner {
                 // routine between fork and exec, and install_fds allocates
                 // nothing.
                 let child_fds = fds.clone();
+                let child_preserved = self.preserved_fds.clone();
                 unsafe {
                     use std::os::unix::process::CommandExt;
                     cmd.pre_exec(move || {
                         secret::install_fds(&child_fds, cloexec);
+                        for &fd in &child_preserved {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags >= 0 && (flags & libc::FD_CLOEXEC) != 0 {
+                                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                            }
+                        }
                         Ok(())
                     });
                 }
@@ -1602,13 +1673,17 @@ impl Runner {
                 exit.stats.dumpable_failed
             ));
         }
-        if self.encrypt_memory && !crate::caps::Caps::cached().memfd_secret {
-            notes.push(
-                "--encrypt-memory: this host has no memfd_secret, so the session key stays \
-                 in heap (mlock'ed when the limit allows); the ciphertext copies and the \
-                 payload's anonymous MADV_DONTDUMP block are in ordinary memory"
-                    .to_string(),
-            );
+        if self.encrypt_memory {
+            let has_secretmem = crate::testhooks::bool_opt("PMASK_PROBE_MEMFD_SECRET")
+                .unwrap_or_else(crate::mem::secret_memfd_available);
+            if !has_secretmem {
+                notes.push(
+                    "--encrypt-memory: this host has no memfd_secret, so the session key stays \
+                     in heap (mlock'ed when the limit allows); the ciphertext copies and the \
+                     payload's anonymous MADV_DONTDUMP block are in ordinary memory"
+                        .to_string(),
+                );
+            }
         }
         if exit.stats.rexec_disk > 0 {
             notes.push(format!(

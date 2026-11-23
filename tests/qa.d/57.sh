@@ -164,7 +164,7 @@ C
 fi
 
 # ------------------------- e3: the channel a sensor can still read
-"$TOOL" -q -l "$L" -- "$CASES" sleepfor 4 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$L" -- "$CASES" sleepfor 4 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 if [ -z "$PAY" ]; then
@@ -184,7 +184,6 @@ else
     found=no
     for t in /proc/"$SUP"/task/*; do
         tid=$(basename "$t")
-        [ "$tid" = "$SUP" ] && continue
         [ "$tid" = "$tracer" ] && found=yes
     done
     if [ "$found" = yes ]; then
@@ -228,7 +227,7 @@ else
 fi
 
 # ------------------------------------------- e6: --detach drops it
-"$TOOL" -q -l "$L" --detach -- "$CASES" sleepfor 4 >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$L" --detach -- "$CASES" sleepfor 4 >/dev/null 2>&1 &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 tracer=""

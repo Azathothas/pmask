@@ -171,7 +171,7 @@ kill -9 "$BOTH_SUP" "$BOTH_PID" 2>/dev/null
 wait "$BOTH_SUP" 2>/dev/null
 
 # ------------------------------------- control: without the flags it lands
-run_rename ctl qa60ctl 2
+run_rename ctl qa60ctl 2 --profile compat
 CTL_SUP=$RUN_SUP
 CTL_PID=$RUN_PID
 if [ -n "$CTL_PID" ]; then

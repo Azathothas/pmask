@@ -177,7 +177,7 @@ else
 fi
 
 # ---------------------------------------- q38b..q38e: the default session
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$LABEL" -- "$CASES" sleeper &
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$LABEL" -- "$CASES" sleeper &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""
 if [ -z "$PAY" ]; then
@@ -200,22 +200,25 @@ fi
 if [ -n "$TRACER" ]; then
     TR_TGID=$(status_field "$TRACER" Tgid)
     TR_PID=$(status_field "$TRACER" Pid)
-    if [ -n "$TR_TGID" ] && [ -n "$TR_PID" ] && [ "$TR_TGID" != "$TR_PID" ]; then
-        pass "q38b-tracer-is-a-thread (TracerPid=$TRACER Pid=$TR_PID Tgid=$TR_TGID)"
+    # v0.2.0 runs the CLI supervisor directly on the calling thread (`Threads: 1`,
+    # `Tgid == Pid == SUP`) to eliminate the hidden tracer-thread fingerprint;
+    # older multi-threaded supervisors had `Tgid != Pid`.  Accept either valid
+    # tracer shape while enforcing zero `pmask-tracer` tasks below.
+    if [ -n "$TR_TGID" ] && [ -n "$TR_PID" ]; then
+        pass "q38b-tracer-identified (TracerPid=$TRACER Pid=$TR_PID Tgid=$TR_TGID)"
     else
-        fail "q38b-tracer-is-a-thread (TracerPid=$TRACER Pid=${TR_PID:-none} Tgid=${TR_TGID:-none}, want Tgid != Pid)"
+        fail "q38b-tracer-identified (TracerPid=$TRACER Pid=${TR_PID:-none} Tgid=${TR_TGID:-none})"
     fi
-    # The residual: the tracer id is a task id, not a process id, so it
-    # has no row of its own in readdir("/proc") (and none in `ps`, which
-    # reads that listing).  Asserted, not asserted away.
     listed=0
     for d in /proc/[0-9]*; do
         [ "${d#/proc/}" = "$TRACER" ] && listed=1
     done
-    if [ "$listed" = 0 ]; then
+    if [ "$TR_TGID" = "$TR_PID" ] && [ "$listed" = 1 ]; then
+        pass "q38b2-single-threaded-supervisor-has-no-hidden-tid (TracerPid=$TRACER listed in /proc)"
+    elif [ "$TR_TGID" != "$TR_PID" ] && [ "$listed" = 0 ]; then
         pass "q38b2-tracer-tid-is-not-a-process (TracerPid=$TRACER absent from readdir /proc)"
     else
-        fail "q38b2-tracer-tid-is-not-a-process (TracerPid=$TRACER IS in readdir /proc)"
+        fail "q38b2-tracer-tid-mismatch (TracerPid=$TRACER Tgid=$TR_TGID Pid=$TR_PID listed=$listed)"
     fi
 
     h=$(retired_count "" 0)
@@ -272,7 +275,7 @@ SUP=""
 PAY=""
 
 # --------------------------------------- q38f: the empty-label fallback
-env -i PATH=/usr/bin:/bin "$TOOL" -q --label-empty -- "$CASES" sleeper &
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --label-empty -- "$CASES" sleeper &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""
 sleep "$SL"
@@ -303,7 +306,7 @@ PAY=""
 # An operator may label a session with the retired string.  The label then
 # lands on the leader comms by the operator's own choice; the thread must
 # not add a second, non-leader carrier of it.
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$RETIRED" -- "$CASES" sleeper &
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$RETIRED" -- "$CASES" sleeper &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""
 sleep "$SL"
@@ -313,7 +316,7 @@ if [ -n "$PAY" ]; then
     TR_LEN=$(printf '%s' "$TR_COMM" | wc -c | tr -d ' ')
     if [ -z "$TR_COMM" ]; then
         fail "q38g-retired-label-yields-a-usable-thread-name (empty comm)"
-    elif [ "$TR_COMM" = "$RETIRED" ]; then
+    elif [ "$TP" != "$SUP" ] && [ "$TR_COMM" = "$RETIRED" ]; then
         fail "q38g-retired-label-yields-a-usable-thread-name (comm=[$TR_COMM])"
     elif [ "$TR_LEN" -gt 15 ]; then
         fail "q38g-retired-label-yields-a-usable-thread-name (comm=[$TR_COMM] $TR_LEN bytes)"
@@ -340,7 +343,7 @@ PAY=""
 # A thread name longer than 15 bytes is refused whole by the kernel, so
 # the thread would silently keep whatever name it inherited.  Prove the
 # cut happened rather than the refusal.
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$LONG" -- "$CASES" sleeper &
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$LONG" -- "$CASES" sleeper &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""
 sleep "$SL"
@@ -370,7 +373,7 @@ kill_label "$LONG" 2>/dev/null
 TOK="${TMPDIR:-/tmp}/b2q38.tok.$$"
 printf 'tok\n' >"$TOK"
 chmod 600 "$TOK"
-env -i PATH=/usr/bin:/bin "$TOOL" -q --label-empty --secret "T=file:$TOK" \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --label-empty --secret "T=file:$TOK" \
     -- "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""
@@ -397,7 +400,7 @@ rm -f "$TOK"
 # `--comm` sets the supervisor's comm independently of the label.  The
 # thread must agree with the process it belongs to, not with the label.
 KC=$(printf 'b2q38kc-%.4s' "$$")
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "b2q38k-$$" --comm "$KC" \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "b2q38k-$$" --comm "$KC" \
     -- "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 PAY=$(wait_child "$SUP" 10) || PAY=""

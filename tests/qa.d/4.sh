@@ -137,7 +137,7 @@ run_case() {
     # The payload carries the marker in its own argv.  A shell here would
     # exec the last command and drop the marker, which made the "marker is
     # not in cmdline" case below pass without looking at anything.
-    ( "$TOOL" -l "$rc_label" "$@" -- "$CASES" sleeper "$MARK" \
+    ( "$TOOL" --profile compat -l "$rc_label" "$@" -- "$CASES" sleeper "$MARK" \
         >"$T/$rc_name.out" 2>"$T/$rc_name.err" ) &
     rc_sup=$!
     rc_pid=$(payload_pid "$rc_label")
@@ -167,7 +167,7 @@ run_case() {
 # ---- control: the plain mask path redacts the same payload.  Without it
 # ---- a "label visible" result above could come from the observer, not
 # ---- from the handshake.
-( "$TOOL" -q -l qa4ctl -- "$CASES" sleeper "$MARK" \
+( "$TOOL" -q --profile compat -l qa4ctl -- "$CASES" sleeper "$MARK" \
     >"$T/ctl.out" 2>"$T/ctl.err" ) &
 CTL_SUP=$!
 CTL_PID=$(payload_pid qa4ctl)

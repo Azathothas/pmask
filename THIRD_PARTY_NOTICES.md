@@ -27,7 +27,7 @@ allowlist in `deny.toml`.
 | `getrandom` | 0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hybrid-array |
 | `inout` | 0.2.6 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
-| `libc` | 0.2.189 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | `password-hash` | 0.5.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits/tree/master/password-hash |
 | `poly1305` | 0.9.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/universal-hashes |
 | `r-efi` | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | https://github.com/r-efi/r-efi |
@@ -36,4 +36,4 @@ allowlist in `deny.toml`.
 | `subtle` | 2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | `typenum` | 1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum |
 | `universal-hash` | 0.6.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
-| `zeroize` | 1.9.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils |
+| `zeroize` | 1.9.2 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils |

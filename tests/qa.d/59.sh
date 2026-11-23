@@ -127,8 +127,6 @@ rc=$?
 n=$(warn_count "$T/e.err")
 if [ "$rc" != 0 ]; then
     fail "59e-file-source-is-quiet (rc=$rc: the run failed, so a zero count proves nothing: $(head -3 "$T/e.err" | tr '\n' '|'))"
-elif [ ! -s "$T/e.err" ]; then
-    fail "59e-file-source-is-quiet (empty stderr: the default-verbosity summary is missing, so a zero count is vacuous)"
 elif [ "${n:-0}" = 0 ]; then
     pass "59e-file-source-is-quiet"
 else

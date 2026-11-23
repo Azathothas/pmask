@@ -179,6 +179,15 @@ sleep 0.5
 scan "$CTL" "$MARK"
 ctl_rc=$SCAN_RC
 echo "CONTROL pid=$CTL rc=$ctl_rc $(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-160)"
+yama_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
+if [ "$ctl_rc" = 3 ] && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+    kill -9 "$CTL" 2>/dev/null
+    wait "$CTL" 2>/dev/null
+    rm -f "$T/plain.out"
+    skip "q50-memory-reader (yama.ptrace_scope=$yama_scope denies sibling /proc/<pid>/mem reads as uid $(id -u))"
+    echo "== VERDICT: SKIP (sibling /proc/<pid>/mem blocked by yama.ptrace_scope=$yama_scope) =="
+    exit 0
+fi
 case "$OUT" in
     *HIT*)
         pass "q50a-control-plain-argv-is-readable (hits=$(printf '%s' "$OUT" | sed -n 's/.*hits=\([0-9]*\).*/\1/p'))" ;;
@@ -191,7 +200,7 @@ rm -f "$T/plain.out"
 
 # -------------------------------------- q50b/q50c: default mode residuals
 L="b2q50-d-$$"
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L" -- "$CASES" holdargs "$T/d.out" "$MARK" \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$L" -- "$CASES" holdargs "$T/d.out" "$MARK" \
     >/dev/null 2>&1 &
 SUP=$!
 PIDS="$PIDS $SUP"
@@ -247,7 +256,7 @@ rm -f "$T/d.out"
 
 # ------------------------------------------- q50d: --no-dumpable closes it
 L="b2q50-n-$$"
-env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$L" --no-dumpable \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile tree -l "$L" --no-dumpable \
     -- "$CASES" holdargs "$T/n.out" "$MARK" >/dev/null 2>&1 &
 SUP=$!
 PIDS="$PIDS $SUP"

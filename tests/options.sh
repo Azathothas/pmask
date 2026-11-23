@@ -122,14 +122,14 @@ wait_text() {
 }
 
 # ------------------------------------------------------------ O1: --help
-help=$("$TOOL" --help 2>&1)
+help=$("$TOOL" --help=all 2>&1)
 case "$help" in
     *PMASK_NO_SELFMASK*) pass o1-help-names-selfmask-escape ;;
-    *) fail "o1-help-names-selfmask-escape (PMASK_NO_SELFMASK not in --help)" ;;
+    *) fail "o1-help-names-selfmask-escape (PMASK_NO_SELFMASK not in --help=all)" ;;
 esac
 case "$help" in
     *"--label=-"*) pass o1-help-documents-dash-label ;;
-    *) fail "o1-help-documents-dash-label (--label=- not in --help)" ;;
+    *) fail "o1-help-documents-dash-label (--label=- not in --help=all)" ;;
 esac
 
 # ----------------------------------------------------------- O2: --argv0
@@ -152,7 +152,7 @@ esac
 
 # --------------------------------------------------------------- O4: comm
 # Catches: comm always cut from the label; no length check.
-"$TOOL" -q -l "mko-long-label-for-comm-test" --comm mko-cm "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "mko-long-label-for-comm-test" --comm mko-cm "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 tr_pid=$(await_child "$SUP") || tr_pid=""
 sleep 0.6
@@ -197,7 +197,7 @@ fi
 # --------------------------------------------- O7: -l- equals --label=-
 # Catches: the two spellings of the blank label diverging again.
 blank_comm() {  # OPTION... -> comm of the tracee started with those options
-    "$TOOL" -q "$@" "$CASES" sleeper >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat "$@" "$CASES" sleeper >/dev/null 2>&1 &
     bsup=$!
     bt=$(await_child "$bsup") || bt=""
     sleep 0.6
@@ -249,7 +249,7 @@ reap "$SUP"
     || fail "o9-env-and-env-file-hidden-from-proc (env=$s1 file=$s2 sightings)"
 
 # control: with --keep-env the same secret IS visible, so the observer works
-"$TOOL" -q -l mko-envc --keep-env --env MK_OPT_SECE=MK-OPT-ENVSECRET "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mko-envc --keep-env --env MK_OPT_SECE=MK-OPT-ENVSECRET "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 await_child "$SUP" >/dev/null
 sleep 0.8
@@ -261,7 +261,7 @@ reap "$SUP"
 # --------------------------------------------------- O10: --keep-env=NAME
 # Catches: keep list ignored (PATH absent) or ignored the other way
 # (secret visible).
-"$TOOL" -q -l mko-keep --keep-env=PATH --env PATH=/usr/bin:/bin --env MK_OPT_HID=hiddenvalue "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mko-keep --keep-env=PATH --env PATH=/usr/bin:/bin --env MK_OPT_HID=hiddenvalue "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 tr_pid=$(await_child "$SUP") || tr_pid=""
 sleep 0.8
@@ -274,7 +274,7 @@ else
     fail "o10-keep-env-name (environ: $(printf '%s' "$envtxt" | tr '\n' '|' | cut -c1-120))"
 fi
 
-"$TOOL" -q -l mko-keepc --env PATH=/usr/bin:/bin "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mko-keepc --env PATH=/usr/bin:/bin "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 tr_pid=$(await_child "$SUP") || tr_pid=""
 sleep 0.8
@@ -297,7 +297,7 @@ nuls=$(tr -cd '\0' < "$T/args.bin" | wc -c | tr -d ' ')
 if [ "$nuls" != 3 ]; then
     skip "o11-args-from-fd (this printf cannot write NUL bytes: $nuls found, want 3)"
 else
-    "$TOOL" -q -l mko-fd --args-from-fd 3 3<"$T/args.bin" >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat -l mko-fd --args-from-fd 3 3<"$T/args.bin" >/dev/null 2>&1 &
     SUP=$!
     tr_pid=$(await_child "$SUP") || tr_pid=""
     sleep 0.8
@@ -350,7 +350,7 @@ case "$sv$se" in
 esac
 
 # control: PMASK_NO_SELFMASK=1 leaves the secret readable
-PMASK_NO_SELFMASK=1 "$TOOL" -q -l mko-supnos "$CASES" sleeper MK-OPT-SUPSECRET >/dev/null 2>&1 &
+PMASK_NO_SELFMASK=1 "$TOOL" -q --profile compat -l mko-supnos "$CASES" sleeper MK-OPT-SUPSECRET >/dev/null 2>&1 &
 SUP=$!
 sleep 0.9
 sv=$(tr '\0' ' ' < "/proc/$SUP/cmdline" 2>/dev/null)
@@ -477,7 +477,7 @@ elif ! "$CASES" as-uid 1000 "$CASES" show-nnp >/dev/null 2>&1; then
     skip "o15-no-dumpable (uid 1000 cannot run the test binaries from $BIN_DIR)"
 else
     dump_observe() {  # EXTRA_OPTION -> prints "rc|text" of the observer
-        MK_OPT_DUMP=dumpvisible "$CASES" as-uid 1000 "$TOOL" -q --keep-env -l mko-dmp $1 "$CASES" sleeper >/dev/null 2>&1 &
+        MK_OPT_DUMP=dumpvisible "$CASES" as-uid 1000 "$TOOL" --profile compat -q --keep-env -l mko-dmp $1 "$CASES" sleeper >/dev/null 2>&1 &
         dsup=$!
         dt=$(await_child "$dsup") || dt=""
         sleep 0.9
@@ -567,7 +567,7 @@ fi
 
 # ------------------------------------------------------------ O18: --rexec
 # Catches: exe still naming the on-disk binary; the path in maps.
-"$TOOL" -l mko-rex --rexec "$CASES" sleeper >/dev/null 2>"$T/rx.err" &
+"$TOOL" --profile compat -l mko-rex --rexec "$CASES" sleeper >/dev/null 2>"$T/rx.err" &
 SUP=$!
 tr_pid=$(await_child "$SUP") || tr_pid=""
 exe=""
@@ -592,7 +592,7 @@ else
         || fail "o18-rexec-maps-has-no-disk-path (lines naming the binary: $maps_hits)"
 fi
 
-"$TOOL" -q -l mko-rexc "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l mko-rexc "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 tr_pid=$(await_child "$SUP") || tr_pid=""
 sleep 0.6
@@ -832,12 +832,12 @@ else
     fail "o28-no-secret-close-on-exec-is-named (rc=$rc err=[$err])"
 fi
 
-help=$("$TOOL" --help 2>&1)
+help=$("$TOOL" --help=all 2>&1)
 if printf '%s' "$help" | grep -q "refuses" \
     && printf '%s' "$help" | grep -q "the flag when a secret is delivered"; then
     pass "o28-help-says-when-the-flag-is-refused"
 else
-    fail "o28-help-says-when-the-flag-is-refused (the conditional refusal is not in --help)"
+    fail "o28-help-says-when-the-flag-is-refused (the conditional refusal is not in --help=all)"
 fi
 
 # --------------------- O29: a report composes with the plain paths

@@ -121,7 +121,7 @@ await_pid() {
 }
 
 start_masked() {
-    "$TOOL" -q -l "$L" -- "$CASES" sleeper "$M" >/dev/null 2>&1 &
+    "$TOOL" -q --profile compat -l "$L" -- "$CASES" sleeper "$M" >/dev/null 2>&1 &
     SUP=$!
     PAY=$(await_pid "$SUP") || PAY=""
 }
@@ -356,8 +356,11 @@ if command -v strace >/dev/null 2>&1; then
         *"Operation not permitted"*) msk_ok=yes ;;
         *) msk_ok=no ;;
     esac
+    yama_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
     if [ "$ctl_ok" = yes ] && [ "$msk_ok" = yes ]; then
         pass "d10-strace-attaches-to-the-control-only (control=[$(printf '%s' "$ctl" | cut -c1-40)])"
+    elif [ "$ctl_ok" = no ] && [ "$yama_scope" != 0 ] && [ "$(id -u)" != 0 ]; then
+        skip "d10-strace-attaches-to-the-control-only (yama.ptrace_scope=$yama_scope blocks sibling strace on control: [$ctl])"
     else
         fail "d10-strace-attaches-to-the-control-only (control=[$ctl] masked=[$msk])"
     fi

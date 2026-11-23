@@ -466,7 +466,7 @@ PAYLOAD=""
 wait 2>/dev/null
 
 # ------------------------------------------------------------ redacted
-"$TOOL" run --label "$LABEL" -- /bin/sh -c "sleep $HOLD" "$CAN" \
+"$TOOL" run --profile compat --label "$LABEL" -- /bin/sh -c "sleep $HOLD" "$CAN" \
     >/dev/null 2>"$T/redacted.err" &
 SUP=$!
 PAYLOAD=$(await_payload "$SUP" "$LABEL" redacted) || PAYLOAD=""
@@ -519,13 +519,13 @@ map_files_read() {  # SUP IS_REXEC -> "range|target" or "|"
     mf_target=$(readlink "/proc/$mf_pid/map_files/$mf_range" 2>/dev/null)
     printf '%s|%s' "$mf_range" "$mf_target"
 }
-"$TOOL" -q -l "$LABEL" --rexec "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$LABEL" --rexec "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 MF_REXEC=$(map_files_read "$SUP" 1)
 kill -9 "$SUP" 2>/dev/null
 SUP=""
 wait 2>/dev/null
-"$TOOL" -q -l "$LABEL" "$CASES" sleeper >/dev/null 2>&1 &
+"$TOOL" -q --profile compat -l "$LABEL" "$CASES" sleeper >/dev/null 2>&1 &
 SUP=$!
 MF_PLAIN=$(map_files_read "$SUP" 0)
 kill -9 "$SUP" 2>/dev/null
@@ -622,8 +622,8 @@ printf 'AUDIT %s\n' "$pass_msg"
 # how the harness stays honest on a revision that has no such flag.  When
 # --help does not name one the row is marked SKIP instead of inventing a
 # flag or copying the redacted row.
-if "$TOOL" --help 2>&1 | grep -q -- '--detach'; then
-    "$TOOL" run --label "$LABEL" --detach -- /bin/sh -c "sleep $HOLD" "$CAN" \
+if "$TOOL" --help=all 2>&1 | grep -q -- '--detach'; then
+    "$TOOL" run --profile compat --label "$LABEL" --detach -- /bin/sh -c "sleep $HOLD" "$CAN" \
         >/dev/null 2>"$T/detach.err" &
     SUP=$!
     PAYLOAD=$(await_payload "$SUP" "$LABEL" redacted-detach) || PAYLOAD=""

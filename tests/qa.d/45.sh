@@ -125,7 +125,7 @@ sweep_literal() {
 # the documented way to keep the descriptor visible; it does not change the
 # name, which is the property under test, and q1b is the control that
 # proves the sweep can see a live run at all.
-"$TOOL" -q -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
+"$TOOL" -q --profile compat -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
     -- "$CASES" secretfd TOK 3 >"$D/q1.out" 2>"$D/q1.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
@@ -151,7 +151,7 @@ else
 fi
 
 # --------------------------------------- q2: the chosen secret fd name
-"$TOOL" -q -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
+"$TOOL" -q --profile compat -l "$L" --allow-dumpable --secret TOK=literal:QA45VAL8 \
     --secret-fd-name "$NAME" -- "$CASES" secretfd TOK 3 >"$D/q2.out" 2>"$D/q2.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
@@ -192,7 +192,7 @@ case "$(cat "$D/q2.out" 2>/dev/null)" in
 esac
 
 # -------------------------------------- q3: the image family's memfd name
-"$TOOL" -q --rexec -l "$L" --memfd-name "$IMG" -- "$CASES" sleeper >/dev/null 2>"$D/q3.err" &
+"$TOOL" -q --profile compat --rexec -l "$L" --memfd-name "$IMG" -- "$CASES" sleeper >/dev/null 2>"$D/q3.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 exe=""
@@ -216,7 +216,7 @@ fi
 
 # q3b is the control: without the option the label is still the name, so
 # q3's string came from the option and not from the binary.
-"$TOOL" -q --rexec -l "$L" -- "$CASES" sleeper >/dev/null 2>"$D/q3b.err" &
+"$TOOL" -q --profile compat --rexec -l "$L" -- "$CASES" sleeper >/dev/null 2>"$D/q3b.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 exe=""
@@ -238,7 +238,7 @@ fi
 # ---------------------------- q4: the image name with --image PATH
 # `--image` without -l names the memfd after the program; --memfd-name
 # replaces that too.
-"$TOOL" -q --image "$CASES" --memfd-name "$IMG" -- sleeper >/dev/null 2>"$D/q4.err" &
+"$TOOL" -q --profile compat --image "$CASES" --memfd-name "$IMG" -- sleeper >/dev/null 2>"$D/q4.err" &
 SUP=$!
 PAY=$(await_pid "$SUP") || PAY=""
 exe=""
@@ -261,7 +261,7 @@ esac
 # The payload execs the program once and sleeps, so the entry is observable
 # while the session is alive (the session removes it at the end).
 mkdir -p "$D/eo" 2>/dev/null
-TMPDIR="$D/eo" "$TOOL" -q -l "$L" --rexec --exec-once --memfd-name "$IMG" \
+TMPDIR="$D/eo" "$TOOL" -q --profile compat -l "$L" --rexec --exec-once --memfd-name "$IMG" \
     -- "$CASES" forkexec "$D" "$CASES" sleeper 20 >/dev/null 2>"$D/q5.err" &
 SUP=$!
 SH=$(await_pid "$SUP") || SH=""
@@ -325,7 +325,7 @@ esac
 # that traps only execve and resume the settled tracee with PTRACE_CONT.
 # The shell's later `exec /bin/sleep` must still be redirected to the
 # cache.
-"$TOOL" -q -l "$L" --exec-once --on-exit wait -- /bin/sh -c 'sleep 0.2; exec /bin/sleep 1' \
+"$TOOL" -q --profile compat -l "$L" --exec-once --on-exit wait -- /bin/sh -c 'sleep 0.2; exec /bin/sleep 1' \
     >/dev/null 2>"$D/q5c.err" &
 SUP=$!
 PAY=""

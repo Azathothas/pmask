@@ -261,8 +261,8 @@ pub struct Tracee {
     pub pres_env_len: usize,
     /// `--encrypt-memory`: the saved argv/envp as ciphertext.  The
     /// plaintext fields above stay `None` while these are set.
-    pub sealed_argv: Option<crate::crypto::EncryptedStrings>,
-    pub sealed_envp: Option<crate::crypto::EncryptedStrings>,
+    pub(crate) sealed_argv: Option<crate::execimg::FastSealedStrings>,
+    pub(crate) sealed_envp: Option<crate::execimg::FastSealedStrings>,
     /// The seccomp exec filter could not be installed, so this tracee
     /// must stay syscall-supervised.
     pub fast_exec_failed: bool,
@@ -438,6 +438,9 @@ pub struct Tracer {
     /// Number of tracees whose real argv/environ are in this process's
     /// memory right now.  Zero at rest: the supervisor can be dumpable.
     pending_plaintext: usize,
+    /// Reusable `mlock`ed + `MADV_DONTDUMP` scratch buffer for `--encrypt-memory`
+    /// seal/open operations (avoids per-exec `memfd_secret` mmap/munmap churn).
+    pub(super) crypto_scratch: crate::execimg::LockedScratch,
 }
 
 impl Drop for Tracer {
@@ -548,6 +551,17 @@ fn is_proc_comm_path(path: &[u8]) -> bool {
     p.starts_with(b"/proc/") && p.ends_with(b"/comm") && p.len() > b"/proc/".len() + b"/comm".len()
 }
 
+/// True when `path` (after lexical normalization) is `comm` or ends with `/comm`.
+///
+/// Joining a directory prefix onto a relative path whose final component is
+/// not `comm` can never yield a `/proc/.../comm` target, so the tracer can
+/// skip `/proc/<pid>/{fd,cwd}` lookups on ordinary relative opens (avoiding
+/// both extra syscalls and spurious `EACCES` warnings on non-dumpable tracees).
+fn could_target_comm(path: &[u8]) -> bool {
+    let p = normalize_lexical_path(path);
+    p == b"comm" || p.ends_with(b"/comm")
+}
+
 /// True when one `/proc/<pid>/fd` entry (`N:target`) names a descriptor
 /// that no ordinary program holds.
 ///
@@ -622,6 +636,7 @@ impl Tracer {
             rexec_seal_warned: false,
             watch_proc_denied_warned: false,
             pending_plaintext: 0,
+            crypto_scratch: crate::execimg::LockedScratch::default(),
         }
     }
 
@@ -682,6 +697,33 @@ impl Tracer {
         if let Ok(mut set) = self.cfg.tree.lock() {
             set.insert(pid);
         }
+    }
+
+    /// Register the single target process for `--profile single` supervision.
+    pub(crate) fn register_single(&mut self, pid: libc::pid_t) {
+        self.master = pid;
+        self.register(pid, Tracee::new(State::Slow));
+    }
+
+    /// Current exec-lifecycle state of `pid`, when registered.
+    pub(crate) fn tracee_state(&self, pid: libc::pid_t) -> Option<State> {
+        self.table.get(&pid).map(|t| t.state)
+    }
+
+    /// Clear state after a failed exec in `--profile single`.
+    pub(crate) fn clear_failed_exec_single(&mut self, pid: libc::pid_t) {
+        self.restore_orig_arrays(pid);
+        let sealed = self
+            .table
+            .get(&pid)
+            .map(|t| t.sealed_argv.is_some() as u32 + t.sealed_envp.is_some() as u32)
+            .unwrap_or(0);
+        if let Some(t) = self.table.get_mut(&pid) {
+            t.clear_exec_state();
+        }
+        self.stats.sealed = self.stats.sealed.saturating_sub(sealed);
+        self.set_pending(pid, false);
+        self.set_state(pid, State::Slow);
     }
 
     fn unregister(&mut self, pid: libc::pid_t) {
@@ -1883,12 +1925,14 @@ impl Tracer {
                     return;
                 }
                 if self.cfg.watch_prctl {
+                    const OPEN_WRITE_MASK: u64 =
+                        (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC) as u64;
                     let args = unsafe { si.detail.seccomp.args };
                     let open = if nr == arch::SYS_OPENAT {
-                        let write = (args[2] & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64;
+                        let write = (args[2] & OPEN_WRITE_MASK) != 0;
                         Some((args[1], write, Some(args[0])))
                     } else if nr == arch::SYS_OPEN {
-                        let write = (args[1] & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64;
+                        let write = (args[1] & OPEN_WRITE_MASK) != 0;
                         Some((args[0], write, None))
                     } else if nr == arch::SYS_CREAT {
                         Some((args[0], true, None))
@@ -1896,7 +1940,7 @@ impl Tracer {
                         let mut how = [0u8; 8];
                         let write = if crate::remote::read_mem(pid, args[2], &mut how) == 8 {
                             let flags = u64::from_le_bytes(how);
-                            (flags & libc::O_ACCMODE as u64) != libc::O_RDONLY as u64
+                            (flags & OPEN_WRITE_MASK) != 0
                         } else {
                             // A comm path whose flags cannot be read is
                             // refused rather than allowed; any other
@@ -1908,18 +1952,30 @@ impl Tracer {
                         None
                     };
                     if let Some((path_ptr, true, dirfd)) = open {
-                        if let Some(path) = crate::remote::read_cstr(pid, path_ptr, 4096) {
-                            // `openat` may name the directory by
-                            // descriptor; resolve it before the shape
-                            // test, or `openat(dirfd, "comm")` walks
-                            // past it (issue 71).
-                            let (path, link_err) = open_target_path(pid, dirfd, &path);
-                            if let Some(err) = link_err {
-                                if err.kind() == io::ErrorKind::PermissionDenied {
-                                    self.warn_watch_proc_denied(pid, &err);
-                                }
-                            }
-                            if is_proc_comm_path(&path) {
+                        if let Some(raw_path) = crate::remote::read_cstr(pid, path_ptr, 4096) {
+                            let (deny, display_path) = if raw_path.first() == Some(&b'/') {
+                                (is_proc_comm_path(&raw_path), raw_path)
+                            } else if !could_target_comm(&raw_path) {
+                                // Ordinary relative open (cannot resolve to `.../comm`):
+                                // skip `/proc/<pid>/{fd,cwd}` so non-dumpable tracees
+                                // never emit spurious `EACCES` degradation warnings.
+                                (false, raw_path)
+                            } else {
+                                // Relative path ends with `comm`: resolve against dirfd/cwd.
+                                // Under `dumpable=0` (`PermissionDenied`), fail closed and
+                                // block the comm write cleanly without emitting a spurious
+                                // `/proc` degradation warning.
+                                let (resolved, link_err) = open_target_path(pid, dirfd, &raw_path);
+                                let blocked = match link_err {
+                                    None => is_proc_comm_path(&resolved),
+                                    Some(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+                                        true
+                                    }
+                                    Some(_) => is_proc_comm_path(&resolved),
+                                };
+                                (blocked, resolved)
+                            };
+                            if deny {
                                 if let Ok(mut regs) = Regs::get(pid) {
                                     regs.deny_syscall(libc::EACCES);
                                     if regs.put(pid).is_ok() {
@@ -1928,7 +1984,7 @@ impl Tracer {
                                             "pid {}: a write-mode open of {} is refused; the \
                                              label stays the comm",
                                             pid,
-                                            String::from_utf8_lossy(&path)
+                                            String::from_utf8_lossy(&display_path)
                                         ));
                                     }
                                 }
@@ -2078,20 +2134,23 @@ impl Tracer {
 
     /// Does the tracee's memory at `addr` still start with the comm label?
     ///
-    /// A failed read answers "no", and the caller falls through to the
-    /// write path.  That is deliberate: a tracee the tracer cannot read is
-    /// one the payload may have rewritten, and pointing `PR_SET_NAME` at
-    /// memory the payload controls would let it choose its own `comm` —
-    /// the exact leak this filter exists to stop.  Under `--no-dumpable`
-    /// both the read and the write are refused, so the rename is refused
-    /// with `EFAULT` instead: the label wins, and the session counts it.
+    /// Uses `PTRACE_PEEKDATA` directly when `--no-dumpable` is set (and
+    /// `read_mem`'s `PTRACE_PEEKDATA` fallback otherwise), so the check
+    /// succeeds even on non-dumpable tracees where `process_vm_readv` fails
+    /// with `EPERM`/`EACCES`.  A failed read still answers "no" so the caller
+    /// fails closed rather than pointing `PR_SET_NAME` at unverified memory.
     fn block_holds_label(&self, pid: libc::pid_t, addr: u64, n: usize) -> bool {
         if n == 0 {
             return true;
         }
         let mut buf = [0u8; 16];
         let want = n.min(buf.len());
-        if crate::remote::read_mem(pid, addr, &mut buf[..want]) != want as isize {
+        let got = if self.cfg.no_dumpable {
+            crate::remote::read_mem_ptrace(pid, addr, &mut buf[..want])
+        } else {
+            crate::remote::read_mem(pid, addr, &mut buf[..want])
+        };
+        if got != want as isize {
             return false;
         }
         buf[..want] == self.cfg.label_comm[..want]
@@ -2648,6 +2707,19 @@ mod comm_path_tests {
         assert!(!is_proc_comm_path(b"///proc///comm"));
         assert!(!is_proc_comm_path(b"/proc/self/comm/.."));
         assert!(!is_proc_comm_path(b"/tmp/proc/self/comm"));
+    }
+
+    #[test]
+    fn could_target_comm_skips_ordinary_relative_opens() {
+        use super::could_target_comm;
+        assert!(could_target_comm(b"comm"));
+        assert!(could_target_comm(b"./comm"));
+        assert!(could_target_comm(b"../self/comm"));
+        assert!(could_target_comm(b"foo/../comm"));
+        assert!(!could_target_comm(b"output.log"));
+        assert!(!could_target_comm(b"dir/file.txt"));
+        assert!(!could_target_comm(b"comm/.."));
+        assert!(!could_target_comm(b"mycomm"));
     }
 }
 

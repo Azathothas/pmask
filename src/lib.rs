@@ -101,6 +101,7 @@ macro_rules! vlog {
 
 pub mod agent;
 mod arch;
+pub mod audit;
 pub mod caps;
 pub mod crypto;
 pub mod daemon;
@@ -117,6 +118,7 @@ mod scope;
 mod seccomp;
 pub mod secret;
 mod selfmask;
+pub mod single;
 pub mod store;
 pub mod subcmd;
 #[doc(hidden)]
@@ -132,9 +134,12 @@ mod userns;
 pub use userns::ChildNs;
 
 pub use arch::arch_name;
+pub use audit::{ObserverRole, Profile};
 pub use mask::{Mask, MaskedChild};
 pub use remote::MAX_HIDDEN;
+pub use rexec::RexecMode;
 pub use selfmask::{mask_self, restore_own_argv};
+pub use single::SingleOptions;
 pub use tracer::{ExitState, SessionEnd, SessionStats, TreeRegistry};
 
 /// Crate version, as reported by the CLI.

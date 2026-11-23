@@ -1,6 +1,6 @@
-.TH PMASK 1 "2026" "pmask 0.1.0" "User Commands"
+.TH PMASK 1 "2026" "pmask 0.2.0" "User Commands"
 .SH NAME
-pmask \- run a process tree with a redacted /proc entry
+pmask \- run a process or process tree with a redacted /proc entry
 .SH SYNOPSIS
 .B pmask
 [\fIOPTIONS\fR] [\fB\-\-\fR] \fICOMMAND\fR [\fIARGS\fR...]
@@ -10,25 +10,250 @@ pmask \- run a process tree with a redacted /proc entry
 .br
 .B pmask
 [\fIOPTIONS\fR] \fB\-\-image\fR \fIPATH\fR [\fIARGS\fR...]
+.br
+.B pmask
+\fB\-\-explain\fR [\fB\-\-profile\fR \fINAME\fR] [\fB\-\-label\fR \fINAME\fR] [\fB\-\-json\fR]
+.br
+.B pmask
+\fB\-\-audit\fR [\fB\-\-pid\fR \fIPID\fR] [\fB\-\-profile\fR \fINAME\fR] [\fB\-\-observer\fR \fIROLE\fR] [\fB\-\-json\fR]
+.br
+.B pmask
+\fB\-\-profile\-json\fR [\fB\-\-pid\fR \fIPID\fR] [\fB\-\-profile\fR \fINAME\fR] [\fB\-\-label\fR \fINAME\fR]
 .SH DESCRIPTION
 .B pmask
-is a ptrace supervisor for Linux process trees.
-.B pmask
-runs a command and supervises every descendant process.
-Each process displays a presentation label in
-.BR /proc/ pid /cmdline
+redacts Linux
+.B /proc
+metadata
+.RB ( cmdline ,
+.BR environ ,
+.BR comm ,
 and
-.BR /proc/ pid /comm
-instead of its real command line and process name.
-Every other local account sees only the label.
-The program receives its real arguments and environment.
+.BR AT_EXECFN )
+for a single process or an entire process tree while each program keeps its real
+.B argv
+and
+.BR envp .
+Every other local account sees only the presentation label, and in the default profiles
+.RB ( auto ,
+.BR single ,
+.BR tree ,
+and
+.BR tee )
+same-uid observers are denied
+.BR environ ,
+.BR maps ,
+.BR auxv ,
+.BR exe ,
+.BR fd ,
+.BR cwd ,
+and
+.B /proc/\fIpid\fB/mem
+with
+.B EACCES
+via
+.BR PR_SET_DUMPABLE=0 .
 .PP
-The tracer syscall-supervises each process until its first exec completes.
+In the
+.B single
+profile (selected automatically by
+.B \-\-profile auto
+for direct native ELF binaries), a transient double-forked helper seizes the process for its
+.B execve
+entry and completion stops, completes the redaction in place, cleans up any staged carrier, and detaches and exits immediately.
+The payload runs in its original PID with zero persistent supervisor,
+.BR "TracerPid: 0" ,
+.BR "Threads: 1" ,
+.BR "Seccomp: 0" ,
+and
+.BR "NoNewPrivs: 0" .
+.PP
+In the
+.B tree
+profile (selected automatically for shells, launchers,
+.B #!
+scripts, and tree flags), a single-threaded supervisor
+.RB ( "Threads: 1" )
+tracks every descendant process across forks and execs.
 At the
 .B execve
-entry stop, the tracer rewrites the argument and environment pointer arrays of the old image.
-The kernel then copies the label and placeholder strings, so the real command line never enters the new image.
-At the exec completion stop, the tracer writes the real strings into an anonymous mapping inside the tracee and restores the arrays.
+entry stop, the tracer rewrites the argument and environment pointer arrays of the old image so the kernel never copies the real command line into the new image of an ELF target.
+At the exec completion stop, the tracer writes the real strings into an anonymous
+.B MADV_DONTDUMP
+mapping inside the tracee, restores the inline arrays, installs a minimal decoy environment (110 bytes by default:
+.BR PATH ,
+.BR HOME ,
+.BR LANG ,
+and
+.BR TERM ),
+and relocates the kernel windows inside
+.B [stack]
+via
+.BR prctl(PR_SET_MM_MAP) .
+.PP
+Honest scope:
+.B pmask
+targets a same-uid local observer without root.
+Root on the host,
+.BR CAP_SYS_PTRACE ,
+kernel modules, hypervisors, and hardware enclaves are out of scope.
+.SH PROFILES
+.TP
+.BI \-\-profile " NAME"
+Select an execution and stealth profile:
+.RS
+.TP
+.B auto
+(default) Selects
+.B single
+for direct native ELF binaries, and
+.B tree
+for shells, launchers
+.RB ( sh ,
+.BR bash ,
+.BR env ,
+.BR make ,
+.BR xargs ,
+and similar),
+.B #!
+scripts, and tree-only flags.
+.TP
+.B single
+In-place masked exec with a transient helper: zero persistent supervisor,
+.BR "TracerPid: 0" ,
+.BR "Threads: 1" ,
+no extra seccomp filters or
+.BR NoNewPrivs ,
+and profile defaults of
+.B \-\-rexec
+.RB ( \-\-rexec\-mode=auto ),
+.BR \-\-no\-dumpable ,
+and
+.BR \-\-encrypt\-memory .
+Refuses tree-only flags
+.RB ( \-\-stealth ,
+.BR \-\-watch\-rename ,
+.BR \-\-exec\-once ,
+.BR \-\-hide\-pid ,
+.BR \-\-daemon ,
+.BR \-\-report ,
+.BR \-\-secret\-close\-on\-exec ,
+.BR \-\-isolate ,
+.BR \-\-unshare ,
+.BR \-\-follow ,
+.BR \-\-no\-follow ,
+.BR \-\-parent\-label ,
+.BR \-\-audit ,
+and non-\fBdetach\fR
+.BR \-\-on\-exit )
+with exit 255.
+.TP
+.B tree
+Single-threaded supervisor
+.RB ( "Threads: 1" )
+covering forks, shells, scripts, and descendants, with profile defaults of
+.B \-\-rexec
+.RB ( \-\-rexec\-mode=auto
+for ELF targets),
+.BR \-\-no\-dumpable ,
+and
+.BR \-\-encrypt\-memory .
+.TP
+.B tee
+Composes redaction with user, pid, and mount namespaces and a private
+.B /proc
+(plus private
+.B /tmp
+by default).
+Fails closed with exit 255 when unprivileged user namespaces are unavailable, or when combined with
+.B \-\-no\-redact
+or
+.BR \-\-isolate=none .
+.TP
+.B compat
+Legacy v0.1.0 flag-driven defaults: tree supervision, dumpable by default, no forced
+.BR \-\-rexec ,
+and no forced
+.BR \-\-encrypt\-memory .
+.RE
+.TP
+.B \-\-auto
+Alias for
+.B "\-\-profile auto"
+(the default).
+.TP
+.B \-\-follow
+Follow and redact all descendants (selects
+.B tree
+mode; inverse of
+.BR \-\-no\-follow ).
+.TP
+.B \-\-reparent
+In
+.B single
+profile, double-fork the masked payload so it runs reparented to PID 1 (or the nearest subreaper) and exit 0 once the masked exec completes and detaches.
+Refused outside
+.B single
+profile (exit 255).
+.TP
+.BI \-\-parent\-label " NAME"
+Set a separate presentation label for the supervisor process in
+.B tree
+mode so the supervisor and payload do not share an identical label pair.
+Checked by the same label impersonation policy as
+.BR \-\-label .
+.TP
+.BI \-\-cwd " PATH"
+Change the child's working directory to
+.I PATH
+after resolving
+.IR COMMAND ,
+normalizing
+.BR /proc/\fIpid\fB/cwd .
+.TP
+.BI \-\-rexec\-mode " MODE"
+Choose the
+.B \-\-rexec
+image carrier:
+.B auto
+(default) prefers a private 0500 executable inside a private 0700 staging directory and falls back to sealed memfd on noexec mounts;
+.B path
+uses a private 0500 staged file with zero
+.B /memfd:
+fingerprint in
+.B exe
+and
+.BR maps ;
+.B memfd
+uses a sealed anonymous
+.B memfd_create
+carrier.
+.TP
+.B \-\-no\-rexec
+Opt out of profile-default
+.B \-\-rexec
+image staging.
+.TP
+.B \-\-allow\-impersonation
+Allow labels or
+.B comm
+names that use kernel-thread bracket syntax
+.RB ( [...] )
+or match critical system service names
+.RB ( sshd ,
+.BR systemd ,
+.BR init ,
+.BR cron ,
+.BR crond ,
+.BR systemd\-journald ,
+.BR systemd\-udevd ,
+.BR udevd ,
+.BR dbus\-daemon ,
+.BR polkitd ,
+.BR auditd ,
+.BR rsyslogd ,
+and
+.BR syslogd ).
+Without this flag, those labels exit 2.
 .SH OPTIONS
 .TP
 .BR \-l ", " \-\-label " \fINAME\fR"
@@ -38,6 +263,9 @@ Pass
 for a blank label of one space.
 The label must not contain NUL, LF, or CR.
 Default: the program name with all arguments removed.
+Kernel-thread bracket labels and critical daemon names are refused with exit 2 unless
+.B \-\-allow\-impersonation
+is passed.
 .TP
 .B \-\-label\-empty
 Set an empty presentation label.
@@ -53,24 +281,25 @@ Set the process name shown by
 .BR top ,
 up to 15 bytes.
 Default: the label truncated to 15 bytes.
+Subject to the same impersonation policy as
+.BR \-\-label .
 .TP
 .B \-\-keep\-env
 Leave
 .B /proc/\fIpid\fB/environ
 visible.
 This option takes no separate argument.
-A following word names the program, not a variable list.
-If you write
-.B \-\-keep\-env
-NAME
-.B \-\-
-COMMAND and NAME looks like a variable list,
-.B pmask
-prints a warning naming
+Writing
+.B "\-\-keep\-env NAME CMD"
+or
+.B "\-\-keep\-env NAME \-\- CMD"
+where
+.I NAME
+looks like an environment variable list fails fast with exit 2 and directs you to
 .B \-\-keep\-env=NAME
-even under
-.B \-q
-and still runs NAME as the program.
+or
+.B \-\-
+before the command.
 .TP
 .BI \-\-keep\-env= NAME[,NAME...]
 Keep only the named environment variables visible.
@@ -125,27 +354,46 @@ The parser and shell completions also accept
 .B \-\-no\-dumpable
 Set
 .B PR_SET_DUMPABLE=0
-in every process of the tree.
-Same-uid observers then cannot read
+in every process of the tree and on the supervisor.
+Same-uid observers receive
+.B EACCES
+on seven
+.B /proc
+surfaces:
 .BR environ ,
 .BR maps ,
+.BR auxv ,
 .BR exe ,
-or
-.BR fd .
+.BR fd ,
+.BR cwd ,
+and
+.BR mem ,
+and the kernel zeroes
+.B /proc/\fIpid\fB/stat
+fields 48 to 51
+.RB ( arg_start
+through
+.BR env_end ).
 Core dumps and debugger attach stop working.
+Enabled by default in
+.BR single ,
+.BR tree ,
+and
+.B tee
+profiles, and for
+.B \-\-secret
+or
+.B \-\-secret\-fd
+runs.
 On a host with
-.BR hidepid=invisible ,
+.B hidepid=invisible
+or
+.BR hidepid=ptraceable ,
 same-uid observers cannot see a non-dumpable process, so hidden-pid sweepers can flag it.
 .TP
 .B \-\-allow\-dumpable
-Keep the payload and supervisor dumpable when delivering secrets with
-.B \-\-secret
-in redact mode.
-By default,
-.B \-\-secret
-in redact mode enables
-.B \-\-no\-dumpable
-on both the payload tree and the supervisor.
+Keep the payload dumpable, opting out of profile-default or secret-triggered
+.BR PR_SET_DUMPABLE=0 .
 .TP
 .B \-\-strict\-exec
 Refuse every exec shape that cannot be redacted at syscall entry.
@@ -169,7 +417,7 @@ refuses 32-bit execs before execution because a 32-bit image keeps its real comm
 .BR comm .
 .TP
 .B \-\-stealth
-Compose
+Compose the strongest tree shape:
 .BR \-\-rexec ,
 .BR \-\-watch\-rename ,
 and
@@ -190,7 +438,7 @@ enables
 so
 .B pmask
 refuses
-.B \-\-stealth \-\-exec\-once
+.B "\-\-stealth \-\-exec\-once"
 with exit 255.
 .B pmask
 prints the chosen trade once.
@@ -254,7 +502,13 @@ An anonymous block avoids leaving a
 .B /secretmem
 VMA fingerprint in the payload.
 Payload heap and stack memory remain unencrypted.
-This option is opt-in and never the default.
+Enabled by default in
+.BR single ,
+.BR tree ,
+and
+.B tee
+profiles; opt-in only in
+.BR compat .
 .TP
 .B \-\-no\-new\-privs
 Set
@@ -270,9 +524,15 @@ and
 window extents instead of relocating them.
 The tracer overwrites the original argument extent with the label padded by spaces and one trailing NUL.
 .B /proc/\fIpid\fB/environ
-receives complete non-repeating decoy entries or the variables selected by
+receives complete non-repeating decoy entries (110 bytes by default:
+.BR PATH ,
+.BR HOME ,
+.BR LANG ,
+and
+.BR TERM )
+or the variables selected by
 .BR \-\-keep\-env .
-By default, exact mode writes the label, a plausible decoy environment (or kept variables), and
+By default, exact mode writes the label, the decoy environment (or kept variables), and
 .B AT_EXECFN
 inside the kernel
 .B [stack]
@@ -285,6 +545,11 @@ Detach each tracee once its exec completes so
 reads 0.
 Detached processes and their future children run unredacted at later execs.
 The session summary counts every detach.
+For single native binaries, prefer
+.B "\-\-profile single"
+(the default under
+.BR auto ),
+which avoids a persistent supervisor altogether.
 .TP
 .BI \-\-watch\-rename "[=strict]"
 Prevent tracees from changing
@@ -330,9 +595,10 @@ If filter installation fails, the run exits 126.
 refuses
 .B \-\-watch\-rename
 with
-.B \-\-detach
+.BR \-\-detach ,
+.BR "\-\-on\-exit detach" ,
 or
-.B "\-\-on\-exit detach"
+.B "\-\-profile single"
 (exit 255) because an unserviced filter returns
 .B ENOSYS
 in detached descendants.
@@ -357,10 +623,23 @@ emits one warning per session.
 A root tracer retains full access regardless of dumpability.
 .TP
 .B \-\-rexec
-Execute the program from a sealed memfd so
+Execute the program from a staged image so
 .B /proc/\fIpid\fB/exe
-names the label.
-The child tries carriers in order:
+and
+.B maps
+do not name the real file.
+Use
+.B \-\-rexec\-mode
+to select
+.B auto
+(default: private 0500 staged path, falling back to sealed memfd on noexec mounts),
+.B path
+(private 0500 staged file with zero
+.B /memfd:
+fingerprint), or
+.B memfd
+(sealed anonymous memfd).
+In memfd mode, the child tries carriers in order:
 .BR execveat ( AT_EMPTY_PATH ),
 then
 .BR /proc/self/fd/ N
@@ -384,7 +663,7 @@ Read program bytes from PATH without searching
 .B PATH
 and execute them from a sealed image.
 Pass
-.B \-\-image \-
+.B "\-\-image \-"
 to read standard input to EOF.
 Only ELF binaries work.
 Implies
@@ -451,7 +730,7 @@ When huge pages are unavailable,
 .B pmask
 reports the fallback and uses an ordinary memfd.
 Pipe sources from
-.B \-\-image \-
+.B "\-\-image \-"
 or
 .B \-\-image\-from\-fd
 spool first so retry succeeds.
@@ -494,19 +773,185 @@ Print every redaction event to stderr.
 .BR \-V ", " \-\-version
 Print the version.
 .TP
-.BR \-h ", " \-\-help
-Print help text.
+.BR \-h ", " \-\-help "[=\fITOPIC\fR]"
+Print a concise one-screen overview.
+Pass
+.B \-\-help=all
+for the complete flag reference, or
+.BI \-\-help= TOPIC
+(or
+.BI "pmask help " TOPIC\fR)
+for one section:
+.BR profiles ,
+.BR redact ,
+.BR secrets ,
+.BR isolate ,
+.BR daemon ,
+.BR audit ,
+.BR report ,
+.BR short ,
+or
+.BR all .
+.SH AUDIT, EXPLAIN, AND PROFILE EXPORT
+.TP
+.B \-\-explain
+Print the named observer
+.RB ( "same-uid local observer, no root" ),
+explicit non-goals, detected host capabilities (including subuid and helper-uid readiness), hidden surfaces, the
+.B EACCES
+denial tradeoff, and honest residuals for the selected
+.BR \-\-profile ,
+then exit 0.
+Add
+.B \-\-json
+for machine-readable output.
+.TP
+.B \-\-profile\-json
+Emit a versioned
+.B pmask-profile/1
+JSON contract describing observable process shape (for downstream decoy generators such as
+.BR psgen ),
+then exit 0.
+With
+.BI \-\-pid " PID" ,
+probes a live process; without
+.BR \-\-pid ,
+emits a static template for
+.B \-\-profile
+and
+.BR \-\-label .
+Never emits raw secret bytes; when
+.B \-\-token\-env
+or
+.B \-\-token\-fd
+is provided, records only
+.B safety.token_present
+and
+.B safety.token_sha256
+and scrubs any raw occurrence.
+.TP
+.B \-\-audit
+In standalone mode (with no
+.IR COMMAND ,
+or with
+.BI \-\-pid " PID" ),
+probes every
+.B /proc
+surface plus a bounded full-VMA
+.B /proc/\fIpid\fB/mem
+scan (up to 64 MiB) against invariants
+.B INV\-1
+through
+.B INV\-10
+and exits 0 on pass or 1 on failure.
+When invoked with neither
+.B \-\-pid
+nor
+.IR COMMAND ,
+runs a self-audit against a live masked child holding a fresh synthetic token on its heap.
+Add
+.B \-\-json
+for deterministic
+.B pmask-audit/1
+JSON output.
+.PP
+When combined with
+.IR COMMAND ,
+prints one residue row per tracee at each exec completion and a final residue count.
+Unreadable fields print
+.B "not reachable"
+instead of zero.
+.B pmask
+refuses
+.B \-\-audit
+with
+.I COMMAND
+outside redact mode, with
+.BR "\-\-profile single" ,
+or with stdout
+.B \-\-report=json
+(exit 255).
+.TP
+.BI \-\-pid " PID"
+Target process ID for standalone
+.B \-\-audit
+or
+.BR \-\-profile\-json .
+.TP
+.BI \-\-observer " ROLE"
+Observer perspective for standalone
+.BR \-\-audit :
+.B same\-uid
+(default) or
+.BR other\-uid .
+.TP
+.B \-\-json
+Emit JSON output for
+.BR \-\-audit ,
+.BR \-\-explain ,
+or
+.BR \-\-profile\-json .
+.TP
+.BI \-\-token\-env " VAR"
+Read the secret token to hunt during
+.B "\-\-audit \-\-pid PID"
+or
+.B "\-\-profile\-json \-\-pid PID"
+from environment variable
+.IR VAR .
+The variable is removed immediately and never emitted verbatim.
+Mutually exclusive with
+.BR \-\-token\-fd .
+.TP
+.BI \-\-token\-fd " N"
+Read the secret token to hunt during
+.B "\-\-audit \-\-pid PID"
+or
+.B "\-\-profile\-json \-\-pid PID"
+from file descriptor
+.IR N .
+Mutually exclusive with
+.BR \-\-token\-env .
+.TP
+.BI \-\-real\-exe " PATH"
+Expected real executable path to verify is hidden in
+.BR exe ,
+.BR maps ,
+.BR auxv ,
+and
+.B fd
+during
+.B "\-\-audit \-\-pid PID"
+.RB ( INV\-4 ).
+.TP
+.BI \-\-real\-cwd " PATH"
+Expected real working directory to verify is hidden in
+.B cwd
+during
+.B "\-\-audit \-\-pid PID"
+.RB ( INV\-6 ).
+.TP
+.B \-\-allow\-memfd
+Permit
+.B /memfd:
+executable paths in
+.B single
+profile during standalone
+.B \-\-audit
+without failing
+.BR INV\-4 .
 .SH MODES
 .B pmask
-selects one of three modes before reading any secret.
+selects one of three underlying execution modes before reading any secret.
 .TP
 .B redact
 Default mode where ptrace is permitted.
-The tracer redacts
+Redacts
 .BR cmdline ,
 .BR environ ,
+.BR comm ,
 and
-.B comm
+.B AT_EXECFN
 and enforces mask options.
 .TP
 .B isolate
@@ -514,7 +959,7 @@ Run the payload in fresh namespaces without a tracer.
 Selected by
 .B \-\-isolate
 or
-.B \-\-no\-redact \-\-isolate
+.B "\-\-no\-redact \-\-isolate"
 when unprivileged user namespaces are available.
 No
 .B /proc
@@ -533,8 +978,9 @@ Selection rules:
 and
 .B \-\-no\-redact
 together exit 255.
-.B \-\-redact \-\-isolate=LIST
-redacts the tree inside the named namespaces.
+.B "\-\-redact \-\-isolate=LIST"
+redacts the tree inside the named namespaces (used by
+.BR "\-\-profile tee" ).
 .B \-\-isolate=none
 creates no namespace and selects between redact and plain normally.
 .B pmask
@@ -543,31 +989,49 @@ evaluates
 before ptrace: if user namespaces work, isolation runs even when ptrace is blocked.
 If user namespaces fail,
 .B pmask
-falls back to redact when ptrace works and plain otherwise, printing the probe reason once.
+falls back to redact when ptrace works and plain otherwise, printing the probe reason once (except
+.BR "\-\-profile tee" ,
+which fails closed).
 .PP
 Tracer-only options do not apply in isolate or plain mode.
 These options are
+.BR \-\-profile ,
 .BR \-\-comm ,
 .BR \-\-argv0 ,
 .BR \-\-no\-exact ,
 .BR \-\-detach ,
+.BR \-\-follow ,
 .BR \-\-no\-follow ,
+.BR \-\-no\-exit\-kill ,
 .BR \-\-on\-exit ,
 .BR \-\-watch\-rename ,
 .BR \-\-unshare ,
 .BR \-\-no\-dumpable ,
 .BR \-\-strict\-exec ,
+.BR \-\-allow\-foreign ,
+.BR \-\-parent\-label ,
+.BR \-\-reparent ,
+.BR \-\-stealth ,
+.BR \-\-hide\-pid ,
+.BR \-\-encrypt\-memory ,
+.BR \-\-audit ,
+.BR \-\-secret\-close\-on\-exec ,
 and the image family
 .RB ( \-\-rexec ,
+.BR \-\-rexec\-mode ,
+.BR \-\-no\-rexec ,
 .BR \-\-rexec\-allow\-disk ,
 .BR \-\-image ,
 .BR \-\-image\-from\-fd ,
 .BR \-\-exec\-once ,
-.BR \-\-hugetlb ).
+.BR \-\-hugetlb ,
+.BR \-\-memfd\-name ).
 .B pmask
 records each dropped option in stderr notes and in the JSON report.
-Four flags fail closed instead of dropping:
+Six flags fail closed instead of dropping:
 .BR \-\-audit ,
+.BR \-\-hide\-pid ,
+.BR \-\-encrypt\-memory ,
 .BR \-\-image ,
 .BR \-\-image\-from\-fd ,
 and
@@ -583,7 +1047,9 @@ is already satisfied outside redact mode, and
 is satisfied in isolate mode.
 .BR \-\-env ,
 .BR \-\-env\-file ,
+.BR \-\-cwd ,
 .BR \-\-secret ,
+.BR \-\-secret\-fd ,
 and
 .B \-\-scope\-name
 apply in every mode.
@@ -596,6 +1062,32 @@ reflects whether the selected mode left the payload dumpable.
 These options and subcommands work without ptrace, except
 .BR \-\-secret\-close\-on\-exec ,
 which requires the tracer and fails in plain or isolate mode.
+.TP
+.BI \-\-secret\-fd " [NAME=]N"
+Keep caller-opened file descriptor
+.I N
+open across exec at its existing number (clearing
+.BR FD_CLOEXEC )
+and export
+.B PMASK_SECRET_FD=N
+(first unnamed fd) or
+.B PMASK_SECRET_<NAME>=N
+(named) in the payload's real environment.
+Repeatable.
+Validates that
+.I N
+is open before exec (exit 2 if invalid or closed).
+Enables
+.B \-\-no\-dumpable
+unless
+.B \-\-allow\-dumpable
+is passed.
+Works in
+.BR single ,
+.BR tree ,
+.BR tee ,
+.BR compat ,
+isolate, and plain modes.
 .TP
 .BI \-\-secret " NAME=SRC"
 Deliver a secret on file descriptor 3, 4, and upward.
@@ -633,6 +1125,7 @@ and
 .BR type=PROCTITLE ),
 wrappers, and shell history can record it.
 Use
+.BR \-\-secret\-fd ,
 .BR file: ,
 .BR agent: ,
 or
@@ -678,7 +1171,7 @@ provides
 a private
 .BR /dev/shm ,
 and
-.BR /dev/pts
+.B /dev/pts
 plus
 .B /dev/ptmx
 when available.
@@ -727,20 +1220,6 @@ enforcement stops below detached tracees and
 .B pmask
 prints a warning.
 .TP
-.B \-\-audit
-Print one residue row per tracee at each exec completion and a final residue count.
-Unreadable fields print
-.B "not reachable"
-instead of zero.
-.B pmask
-refuses
-.B \-\-audit
-outside redact mode and refuses
-.B \-\-audit
-with stdout
-.B \-\-report=json
-(exit 255).
-.TP
 .BI \-\-secret\-fd\-name " NAME"
 Name delivered secret memfds NAME instead of
 .BR pmask\-secret .
@@ -769,10 +1248,10 @@ to keep payload stdout separate from the JSON document.
 and
 .B plain
 exit 255.
-Only
+Refused with
 .B \-\-daemon
-jobs refuse
-.B \-\-report
+or explicit
+.B "\-\-profile single"
 (exit 255).
 .TP
 .BI \-\-report\-file " PATH"
@@ -857,8 +1336,19 @@ and
 .BR landlock .
 Exit status: 0 when all requested guarantees are active, 3 when any is degraded, 4 when any is unavailable, and 255 on unknown guarantee names.
 .TP
-.BR help ", " version
-Print help text or version.
+.BR help " [\fITOPIC\fR], " version
+Print concise overview, a single help topic
+.RB ( profiles ,
+.BR redact ,
+.BR secrets ,
+.BR isolate ,
+.BR daemon ,
+.BR audit ,
+.BR report ,
+.BR short ,
+or
+.BR all ),
+or version.
 .SH ALIASES
 .BR \-a " (= \-\-label), " \-a\-
 (= \-l\-),
@@ -968,14 +1458,19 @@ have no effect and emit a warning.
 .B pmask
 refuses
 .BR \-\-secret ,
+.BR \-\-secret\-fd ,
 .BR \-\-isolate ,
 .BR \-\-no\-redact ,
 .BR \-\-hide\-pid ,
 .BR \-\-encrypt\-memory ,
 .BR \-\-image ,
 .BR \-\-image\-from\-fd ,
+.BR \-\-report ,
+.BR \-\-report\-file ,
+.BR \-\-report\-fd ,
+.BR "\-\-profile single" ,
 and
-.B \-\-report
+.B "\-\-profile tee"
 with exit 255 in daemon mode.
 .SH EXIT STATUS
 .TP
@@ -991,7 +1486,9 @@ The child failed to install a delivered secret descriptor.
 .B 126
 The
 .B \-\-rexec
-image failed or the
+image failed, ptrace was refused in
+.B single
+profile, or the
 .B \-\-watch\-rename
 filter could not be installed.
 .TP
@@ -999,7 +1496,9 @@ filter could not be installed.
 The image was missing or the program could not execute.
 .TP
 .B 1
-The requested secret does not exist
+Standalone
+.B \-\-audit
+failed one or more invariants, the requested secret does not exist
 .RB ( "store get" ,
 .BR "store rm" ,
 .BR "pmask read" ,
@@ -1009,8 +1508,21 @@ or the secret descriptor in
 is unreadable.
 .TP
 .B 2
+Label impersonation policy refusal (kernel-thread
+.B [...]
+or critical daemon name without
+.BR \-\-allow\-impersonation ),
+space-form
+.B \-\-keep\-env NAME
+trap, invalid or closed
+.BR \-\-secret\-fd ,
+missing or unreadable
+.B \-\-token\-env
+or
+.BR \-\-token\-fd ,
+or
 .B pmask read
-refused to print a secret to a terminal without
+refusing to print a secret to a terminal without
 .BR \-\-tty .
 .TP
 .B "3, 4"

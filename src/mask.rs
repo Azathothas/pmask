@@ -46,11 +46,13 @@
 //! * With [`Mask::watch_rename`] the tree carries a seccomp filter and
 //!   `no_new_privs`.
 
+pub use crate::rexec::RexecMode;
 use crate::tracer::{Config, ExitState, SessionEnd, Tracer, TreeRegistry};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
@@ -208,6 +210,7 @@ pub struct Mask {
     /// enter.  `None` is the plain redaction path.
     namespaces: Option<crate::userns::ChildNs>,
     rexec: bool,
+    rexec_mode: RexecMode,
     rexec_image: Option<crate::rexec::Source>,
     rexec_exec_once: bool,
     rexec_hugetlb: bool,
@@ -223,6 +226,13 @@ pub struct Mask {
     run_as: Option<(u32, u32)>,
     secret_fds: Vec<libc::c_int>,
     secret_fds_cloexec: bool,
+    /// Caller-opened descriptors preserved across `exec` at their existing
+    /// fd numbers (`Mask::secret_fd`).
+    preserved_fds: Vec<libc::c_int>,
+    /// Working directory the child `chdir`s into after resolving `program`.
+    cwd: Option<PathBuf>,
+    /// Optional separate presentation label for the supervisor (`mask_self`).
+    parent_label: Option<String>,
     exact: bool,
     detach: bool,
     audit: bool,
@@ -267,6 +277,7 @@ impl std::fmt::Debug for Mask {
             .field("unshare", &self.unshare)
             .field("namespaces", &self.namespaces)
             .field("rexec", &self.rexec)
+            .field("rexec_mode", &self.rexec_mode)
             .field("rexec_image", &self.rexec_image.is_some())
             .field("rexec_exec_once", &self.rexec_exec_once)
             .field("rexec_hugetlb", &self.rexec_hugetlb)
@@ -280,6 +291,12 @@ impl std::fmt::Debug for Mask {
                 &format_args!("{} descriptors", self.secret_fds.len()),
             )
             .field("secret_fds_cloexec", &self.secret_fds_cloexec)
+            .field(
+                "preserved_fds",
+                &format_args!("{} descriptors", self.preserved_fds.len()),
+            )
+            .field("cwd", &self.cwd)
+            .field("parent_label", &self.parent_label)
             .finish()
     }
 }
@@ -390,6 +407,7 @@ impl Mask {
             unshare: false,
             namespaces: None,
             rexec: false,
+            rexec_mode: RexecMode::Memfd,
             rexec_image: None,
             rexec_exec_once: false,
             rexec_hugetlb: false,
@@ -401,6 +419,9 @@ impl Mask {
             run_as: None,
             secret_fds: Vec::new(),
             secret_fds_cloexec: false,
+            preserved_fds: Vec::new(),
+            cwd: None,
+            parent_label: None,
             exact: EXACT_DEFAULT,
             detach: DETACH_DEFAULT,
             audit: false,
@@ -714,6 +735,62 @@ impl Mask {
         self
     }
 
+    /// Choose the `--rexec` carrier mode (`Memfd`, `Path`, or `Auto`).
+    ///
+    /// [`RexecMode::Path`] stages a private `0500` executable inside a
+    /// `0700` staging directory so `/proc/<pid>/exe` and `/proc/<pid>/maps`
+    /// carry no `/memfd:` fingerprint.
+    pub fn rexec_mode(mut self, mode: RexecMode) -> Mask {
+        self.rexec_mode = mode;
+        self
+    }
+
+    /// The configured [`RexecMode`].
+    pub fn rexec_mode_value(&self) -> RexecMode {
+        self.rexec_mode
+    }
+
+    /// Change the child's working directory to `dir` after resolving the
+    /// executable path (so relative program paths still resolve against the
+    /// caller's original working directory).
+    pub fn cwd<P: AsRef<Path>>(mut self, dir: P) -> Mask {
+        self.cwd = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// The configured working directory, if any.
+    pub fn cwd_value(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Set a separate presentation label for the supervisor's own
+    /// `mask_self` in `tree` mode, avoiding identical twin supervisor/payload
+    /// process labels.
+    pub fn parent_label<S: AsRef<str>>(mut self, label: S) -> Mask {
+        self.parent_label = Some(label.as_ref().to_string());
+        self
+    }
+
+    /// The configured separate supervisor label, if any.
+    pub fn parent_label_value(&self) -> Option<&str> {
+        self.parent_label.as_deref()
+    }
+
+    /// Preserve a caller-opened file descriptor across `exec` at its existing
+    /// descriptor number (clears `FD_CLOEXEC` without relocating it).
+    pub fn secret_fd(mut self, fd: libc::c_int) -> Mask {
+        if !self.preserved_fds.contains(&fd) {
+            self.preserved_fds.push(fd);
+        }
+        self
+    }
+
+    /// Caller-opened descriptors registered via [`Mask::secret_fd`].
+    #[allow(clippy::misnamed_getters)]
+    pub fn secret_fds(&self) -> &[libc::c_int] {
+        &self.preserved_fds
+    }
+
     /// Run the program from the bytes of `path` instead of from the file
     /// as an executable.  This is `--image PATH`; it implies
     /// [`Mask::rexec`].
@@ -929,6 +1006,19 @@ impl Mask {
         if let Some(l) = &self.label {
             validate_label(l)?;
         }
+        if let Some(pl) = &self.parent_label {
+            validate_label(pl)?;
+        }
+        if let Some(dir) = &self.cwd {
+            if dir.as_os_str().as_bytes().contains(&0) {
+                return Err(invalid("cwd must not contain NUL bytes"));
+            }
+        }
+        for &fd in &self.preserved_fds {
+            if fd < 0 {
+                return Err(invalid("secret_fd must be non-negative"));
+            }
+        }
         if let Some(c) = &self.comm {
             // LF and CR break the parenthesised `comm` field of
             // `/proc/<pid>/stat`, which readers split on newlines; NUL
@@ -1101,7 +1191,7 @@ impl Mask {
             (None, false) => None,
         };
         if self.hide_pid {
-            let policy = crate::caps::proc_hidepid();
+            let policy = crate::caps::Caps::proc_hidepid_fast();
             if !policy.hides_non_dumpable() {
                 return Err(invalid(&format!(
                     "--hide-pid needs /proc mounted with hidepid=invisible or \
@@ -1110,16 +1200,16 @@ impl Mask {
                     policy.as_word()
                 )));
             }
+            if !crate::caps::Caps::ptrace_usable_fast() {
+                return Err(invalid(
+                    "--hide-pid needs ptrace to inject PR_SET_DUMPABLE into the tree, and \
+                     this host refuses ptrace",
+                ));
+            }
             let caps = crate::caps::Caps::cached();
             if !caps.non_dumpable {
                 return Err(invalid(
                     "--hide-pid needs PR_SET_DUMPABLE, and this host refuses it",
-                ));
-            }
-            if !caps.ptrace {
-                return Err(invalid(
-                    "--hide-pid needs ptrace to inject PR_SET_DUMPABLE into the tree, and \
-                     this host refuses ptrace",
                 ));
             }
         }
@@ -1211,10 +1301,25 @@ impl Mask {
         let pairs = self.env_pairs()?;
         // `--image PATH` names the bytes to read, not a command to search
         // in PATH; keep the exact path for the open and the messages.
-        let prog_c = if self.rexec_image.is_some() {
+        let mut prog_c = if self.rexec_image.is_some() {
             os_to_cstring(program)?
         } else {
             resolve_program(program, &pairs)?
+        };
+        let cwd_c = match &self.cwd {
+            Some(dir) => {
+                // When the child will `chdir` before `execve`, absolutize a
+                // relative resolved executable path against the caller's cwd
+                // now so `execve` still finds the binary after `chdir`.
+                if self.rexec_image.is_none() && !prog_c.to_bytes().starts_with(b"/") {
+                    if let Ok(cur) = std::env::current_dir() {
+                        let abs = cur.join(OsStr::from_bytes(prog_c.to_bytes()));
+                        prog_c = os_to_cstring(abs.as_os_str())?;
+                    }
+                }
+                Some(os_to_cstring(dir.as_os_str())?)
+            }
+            None => None,
         };
 
         let argv0: OsString = match &self.argv0 {
@@ -1336,25 +1441,36 @@ impl Mask {
                 let opts = crate::rexec::Options {
                     hugetlb: self.rexec_hugetlb,
                     memfd_name: self.rexec_memfd_name.clone(),
+                    avoid_tmp: namespaces.is_some_and(|ns| ns.private_tmp),
                 };
+                let image_fd_min = self
+                    .preserved_fds
+                    .iter()
+                    .copied()
+                    .max()
+                    .map(|m| m.saturating_add(1).max(200))
+                    .unwrap_or(200);
                 // Prepare the root process's image directly rather than
                 // caching it in `self.rexec_cache`: later execs inside the
                 // tree use `Cache::get_temp`, never `Cache::get`, and a
                 // second `Arc` held by the cache kept `Arc::strong_count`
                 // at 2 so `close_parent_image_fds` could not close fd 200
                 // in the supervisor after the fork (issue #67).
-                let prepared = crate::rexec::prepare_source(&source, &label_text, opts)
-                    .and_then(|mut image| {
-                        crate::rexec::relocate(&mut image, 200)?;
-                        Ok(std::sync::Arc::new(image))
-                    })
-                    .map_err(|e| {
-                        if self.rexec_exec_once {
-                            io::Error::new(e.kind(), format!("--rexec unavailable: {}", e))
-                        } else {
-                            e
-                        }
-                    });
+                let prepared =
+                    crate::rexec::prepare_for_mode(&source, &label_text, opts, self.rexec_mode)
+                        .and_then(|mut image| {
+                            if image.fd >= 0 {
+                                crate::rexec::relocate(&mut image, image_fd_min)?;
+                            }
+                            Ok(std::sync::Arc::new(image))
+                        })
+                        .map_err(|e| {
+                            if self.rexec_exec_once {
+                                io::Error::new(e.kind(), format!("--rexec unavailable: {}", e))
+                            } else {
+                                e
+                            }
+                        });
                 match prepared {
                     Ok(image) => {
                         if let Some(note) = &image.note {
@@ -1367,23 +1483,40 @@ impl Mask {
                                 image.backing.describe()
                             );
                         }
-                        // The temporary carrier is built in the parent:
-                        // the child cannot create a file between the fork
-                        // and the exec without unsafe allocation.
-                        let temp = if crate::testhooks::flag("PMASK_FAULT_REXEC_NO_PROC") {
-                            crate::rexec::prepare_temp_named(
-                                &image,
-                                &label_text,
-                                &self.rexec_memfd_name,
-                            )
-                        } else {
-                            crate::rexec::prepare_temp(&image, &label_text, &self.rexec_memfd_name)
-                        };
-                        match temp {
-                            Ok(t) => rexec_temp = Some(std::sync::Arc::new(t)),
-                            Err(e) => {
-                                if !self.quiet {
-                                    eprintln!("pmask: --rexec: no temporary-file fallback: {}", e);
+                        // Lazy fallback: do NOT unconditionally copy the binary
+                        // a second time into a temp file when `Memfd` mode is
+                        // active.  Only pre-build the temp carrier when the
+                        // kernel disables memfd exec (`vm.memfd_noexec >= 1`)
+                        // or when the `PMASK_FAULT_REXEC_NO_PROC` test hook
+                        // specifically exercises the named-temp fallback path.
+                        let is_private_path =
+                            matches!(image.backing, crate::rexec::Backing::PrivatePath { .. });
+                        let fault_no_proc = crate::testhooks::flag("PMASK_FAULT_REXEC_NO_PROC");
+                        let need_eager_temp = !is_private_path
+                            && (fault_no_proc || crate::rexec::memfd_noexec_active());
+                        if need_eager_temp {
+                            let temp = if fault_no_proc {
+                                crate::rexec::prepare_temp_named(
+                                    &image,
+                                    &label_text,
+                                    &self.rexec_memfd_name,
+                                )
+                            } else {
+                                crate::rexec::prepare_temp(
+                                    &image,
+                                    &label_text,
+                                    &self.rexec_memfd_name,
+                                )
+                            };
+                            match temp {
+                                Ok(t) => rexec_temp = Some(std::sync::Arc::new(t)),
+                                Err(e) => {
+                                    if !self.quiet {
+                                        eprintln!(
+                                            "pmask: --rexec: no temporary-file fallback: {}",
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1453,6 +1586,20 @@ impl Mask {
             );
         }
 
+        let rexec_private_path = rexec_image
+            .as_ref()
+            .filter(|i| matches!(i.backing, crate::rexec::Backing::PrivatePath { .. }))
+            .and_then(|i| i.path.as_ref())
+            .and_then(|p| CString::new(p.as_os_str().as_bytes()).ok());
+        let parent_label = self.parent_label.as_ref().map(|s| s.as_bytes().to_vec());
+        let parent_label_comm = self.parent_label.as_ref().map(|s| {
+            let mut c: Vec<u8> = s.bytes().take(crate::COMM_MAX).collect();
+            if c.is_empty() {
+                c.push(b' ');
+            }
+            c
+        });
+
         Ok(Prepared {
             cfg,
             prog_c,
@@ -1462,6 +1609,7 @@ impl Mask {
             envp_ptr,
             comm_z,
             err_prefix,
+            msg_cwd: c_text("pmask: cannot chdir to target cwd: errno "),
             msg_nnp: c_text("pmask: --no-new-privs unavailable: prctl failed, errno "),
             msg_seccomp: c_text(
                 "pmask: --watch-rename unavailable: seccomp filter not installed, errno ",
@@ -1482,6 +1630,7 @@ impl Mask {
             filter,
             rexec_image,
             rexec_temp,
+            rexec_private_path,
             rexec_proc_path,
             rexec_temp_proc_path,
             rexec_temp_path,
@@ -1494,6 +1643,10 @@ impl Mask {
             namespaces,
             run_as: self.run_as,
             secret_fds: self.secret_fds.clone(),
+            preserved_fds: self.preserved_fds.clone(),
+            cwd_c,
+            parent_label,
+            parent_label_comm,
         })
     }
 
@@ -1504,14 +1657,40 @@ impl Mask {
         program: P,
         args: &[A],
     ) -> io::Result<ExitState> {
+        let prepared = self.prepare(program, args)?;
+        self.run_prepared_on_current_thread(prepared)
+    }
+
+    /// Run a program directly on the calling thread without spawning a second
+    /// tracer thread.
+    ///
+    /// Obeys Invariant 1 (the tracer thread equals the forking thread),
+    /// keeps the supervisor at `Threads: 1`, and avoids thread-spawn latency.
+    pub fn run_on_current_thread(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+    ) -> io::Result<ExitState> {
+        let prepared = self.prepare(program, args)?;
+        self.run_prepared_on_current_thread(prepared)
+    }
+
+    /// Run an already-[`Prepared`] session directly on the calling thread
+    /// without spawning a second tracer thread.
+    ///
+    /// Callers (such as the CLI `tree` mode) can invoke [`Prepared::mask_self`]
+    /// or [`Prepared::mask_self_opts`] first and then pass `prepared` here so
+    /// the supervisor stays single-threaded (`Threads: 1`).
+    pub fn run_prepared_on_current_thread(&self, mut prepared: Prepared) -> io::Result<ExitState> {
         let _g = session_lock();
-        let mut prepared = self.prepare(program, args)?;
         let cfg = prepared.cfg.clone();
         let (pid, ready_fd, go_fd, report_fd) = fork_prepared(&mut prepared)?;
-        // The child has its own copy of the address space.  Drop the
-        // parent's plaintext before the session starts, so the supervisor
-        // can stay dumpable at rest.
+        // The child has its own copy of the address space.  Scrub the
+        // parent's plaintext immediately, while keeping any staged
+        // `RexecMode::Path` image alive until supervision ends so the
+        // payload's `/proc/<pid>/exe` stays clean and is removed on exit.
         prepared.scrub();
+        let _keep_rexec = prepared.take_rexec_images();
         drop(prepared);
         Tracer::new(cfg).supervise(pid, ready_fd, go_fd, report_fd)
     }
@@ -1543,7 +1722,13 @@ impl Mask {
         // traces, and `cfg.label_comm` (the supervisor's own comm once the
         // self-mask has run) is the fallback.  The live comm is not: the
         // runner path calls this before the self-mask.
-        let thread_name = tracer_thread_name(&cfg.label, &cfg.label_comm);
+        let thread_name = tracer_thread_name(
+            prepared.parent_label.as_deref().unwrap_or(&cfg.label),
+            prepared
+                .parent_label_comm
+                .as_deref()
+                .unwrap_or(&cfg.label_comm),
+        );
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
@@ -1592,17 +1777,18 @@ impl Mask {
 /// the optional kernel features.  It holds no borrowed data and can move
 /// to the tracer thread.
 pub struct Prepared {
-    cfg: Config,
-    prog_c: CString,
+    pub(crate) cfg: Config,
+    pub(crate) prog_c: CString,
     // The pointer arrays point into these vectors.  Keep them alive.
     #[allow(dead_code)]
     argv_c: Vec<CString>,
     #[allow(dead_code)]
     envp_c: Vec<CString>,
-    argv_ptr: Vec<*const libc::c_char>,
-    envp_ptr: Vec<*const libc::c_char>,
-    comm_z: CString,
+    pub(crate) argv_ptr: Vec<*const libc::c_char>,
+    pub(crate) envp_ptr: Vec<*const libc::c_char>,
+    pub(crate) comm_z: CString,
     err_prefix: CString,
+    msg_cwd: CString,
     msg_nnp: CString,
     msg_seccomp: CString,
     msg_proc: CString,
@@ -1612,23 +1798,25 @@ pub struct Prepared {
     msg_rexec_2: CString,
     msg_rexec_3: CString,
     msg_rexec_disk: CString,
-    no_new_privs: bool,
+    pub(crate) no_new_privs: bool,
     /// Test hook: make the `--watch-rename` filter install fail in the
     /// child, so the refusal path is reachable from a suite.
     fault_watch: bool,
     filter: Vec<libc::sock_filter>,
     /// The sealed image, when one was prepared.  The `Arc` keeps the
     /// descriptor open for the child and for a cached later exec.
-    rexec_image: Option<std::sync::Arc<crate::rexec::Image>>,
+    pub(crate) rexec_image: Option<std::sync::Arc<crate::rexec::Image>>,
     /// The temporary-file carrier of the same bytes.
-    rexec_temp: Option<std::sync::Arc<crate::rexec::Image>>,
+    pub(crate) rexec_temp: Option<std::sync::Arc<crate::rexec::Image>>,
+    /// Private `0500` staged path for [`RexecMode::Path`].
+    pub(crate) rexec_private_path: Option<CString>,
     /// `/proc/self/fd/N` for the two carriers.
-    rexec_proc_path: CString,
+    pub(crate) rexec_proc_path: CString,
     rexec_temp_proc_path: CString,
     /// The named temporary file, when the carrier needed a name.
     rexec_temp_path: Option<CString>,
     /// Run the on-disk program when every image carrier is refused.
-    rexec_allow_disk: bool,
+    pub(crate) rexec_allow_disk: bool,
     /// True when parent-side image preparation failed and `--rexec-allow-disk`
     /// selected the on-disk path directly, so the child still reports `b'4'`
     /// to the session summary and report counters.
@@ -1649,9 +1837,16 @@ pub struct Prepared {
     /// `--redact --isolate`: the namespaces the child enters before its
     /// exec.  `None` for the plain redaction path.
     namespaces: Option<crate::userns::ChildNs>,
-    run_as: Option<(u32, u32)>,
+    pub(crate) run_as: Option<(u32, u32)>,
     /// Descriptors to install at 3, 4, ... in the child.
-    secret_fds: Vec<libc::c_int>,
+    pub(crate) secret_fds: Vec<libc::c_int>,
+    /// Caller-opened descriptors preserved across exec at their existing numbers.
+    pub(crate) preserved_fds: Vec<libc::c_int>,
+    /// Target working directory for the child (`chdir` after resolving `prog_c`).
+    pub(crate) cwd_c: Option<CString>,
+    /// Optional separate presentation label for the supervisor (`mask_self`).
+    parent_label: Option<Vec<u8>>,
+    parent_label_comm: Option<Vec<u8>>,
 }
 
 // SAFETY: the raw pointers in `argv_ptr` and `envp_ptr` point into heap
@@ -1675,14 +1870,16 @@ impl Prepared {
         self.cfg.redact_environ
     }
 
-    /// Apply the session label to the calling process (argv block,
-    /// environment strings, `comm`).  Call it after `prepare` and before
-    /// `spawn_prepared`: `prepare` already copied argv and the
-    /// environment.
+    /// Apply the session label (or [`Mask::parent_label`] when configured) to
+    /// the calling process (argv block, environment strings, `comm`).  Call it
+    /// after `prepare` and before `spawn_prepared`: `prepare` already copied
+    /// argv and the environment.
     pub fn mask_self(&self) -> io::Result<()> {
         crate::selfmask::mask_self_label(
-            &self.cfg.label,
-            &self.cfg.label_comm,
+            self.parent_label.as_deref().unwrap_or(&self.cfg.label),
+            self.parent_label_comm
+                .as_deref()
+                .unwrap_or(&self.cfg.label_comm),
             self.cfg.redact_environ,
         )
     }
@@ -1691,8 +1888,10 @@ impl Prepared {
     /// choice.  See [`Mask::supervisor_non_dumpable`].
     pub fn mask_self_opts(&self, non_dumpable: bool) -> io::Result<()> {
         let r = crate::selfmask::mask_self_label_with_window_opts(
-            &self.cfg.label,
-            &self.cfg.label_comm,
+            self.parent_label.as_deref().unwrap_or(&self.cfg.label),
+            self.parent_label_comm
+                .as_deref()
+                .unwrap_or(&self.cfg.label_comm),
             self.cfg.redact_environ,
             non_dumpable,
         );
@@ -1702,6 +1901,18 @@ impl Prepared {
             (None, None, Some(e)) => Err(e),
             (None, None, None) => Ok(()),
         }
+    }
+
+    /// Take ownership of the staged `--rexec` image handles so the caller can
+    /// keep them alive until supervision ends (for [`RexecMode::Path`] cleanup)
+    /// while dropping the rest of `Prepared`.
+    fn take_rexec_images(
+        &mut self,
+    ) -> (
+        Option<std::sync::Arc<crate::rexec::Image>>,
+        Option<std::sync::Arc<crate::rexec::Image>>,
+    ) {
+        (self.rexec_image.take(), self.rexec_temp.take())
     }
 
     /// Zero the real argv and environment strings this plan holds.
@@ -2168,6 +2379,14 @@ fn child_exec(
             // the tracer's own warning, not turned into a different set.
         }
 
+        if p.cfg.no_dumpable {
+            let zero_core = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &zero_core);
+        }
+
         if p.no_new_privs && libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1 && !quiet {
             child_note(&p.msg_nnp, last_errno());
         }
@@ -2204,6 +2423,23 @@ fn child_exec(
         // descendant's fork.
         crate::secret::install_fds(&p.secret_fds, false);
 
+        // Preserve caller-opened descriptors registered via `Mask::secret_fd`
+        // across `execve` at their existing numbers.
+        for &fd in &p.preserved_fds {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 && (flags & libc::FD_CLOEXEC) != 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+
+        // Apply configured working directory AFTER resolving `prog_c` (which
+        // happened in `Mask::prepare`).
+        if let Some(cwd) = &p.cwd_c {
+            if libc::chdir(cwd.as_ptr()) != 0 {
+                child_fail(&p.msg_cwd, 126);
+            }
+        }
+
         if let Some(image) = &p.rexec_image {
             if p.fault_rexec_fail {
                 child_fail_errno(&p.msg_rexec, libc::EACCES, 126);
@@ -2212,73 +2448,84 @@ fn child_exec(
             let mut last = libc::EACCES;
             let skip_to_disk = p.fault_rexec_disk && p.rexec_allow_disk;
             if !skip_to_disk {
-                // Step 1: the descriptor exec the image was made for.
-                if !p.fault_rexec_no_proc {
-                    libc::syscall(
-                        libc::SYS_execveat,
-                        image.fd as libc::c_long,
-                        empty.as_ptr(),
-                        p.argv_ptr.as_ptr(),
-                        p.envp_ptr.as_ptr(),
-                        AT_EMPTY_PATH as libc::c_long,
-                    );
+                if let Some(priv_path) = &p.rexec_private_path {
+                    // `RexecMode::Path`: exec the private `0500` staged file
+                    // directly (no `/memfd:` fingerprint in `exe` or `maps`).
+                    libc::execve(priv_path.as_ptr(), p.argv_ptr.as_ptr(), p.envp_ptr.as_ptr());
                     last = last_errno();
-                    child_report(report_w, b'1');
+                    child_report(report_w, b'3');
                     if !quiet {
-                        child_note(&p.msg_rexec_1, last);
+                        child_note(&p.msg_rexec_3, last);
                     }
-                }
-
-                // Step 2: the same descriptor through the procfs magic link.
-                if !p.fault_rexec_no_proc {
-                    libc::execve(
-                        p.rexec_proc_path.as_ptr(),
-                        p.argv_ptr.as_ptr(),
-                        p.envp_ptr.as_ptr(),
-                    );
-                    last = last_errno();
-                    child_report(report_w, b'2');
-                    if !quiet {
-                        child_note(&p.msg_rexec_2, last);
-                    }
-                }
-
-                // Step 3: a temporary file on an executable mount.  Try the
-                // descriptor, the procfs link and the name in that order.
-                if let Some(temp) = &p.rexec_temp {
+                } else {
+                    // Step 1: the descriptor exec the image was made for.
                     if !p.fault_rexec_no_proc {
                         libc::syscall(
                             libc::SYS_execveat,
-                            temp.fd as libc::c_long,
+                            image.fd as libc::c_long,
                             empty.as_ptr(),
                             p.argv_ptr.as_ptr(),
                             p.envp_ptr.as_ptr(),
                             AT_EMPTY_PATH as libc::c_long,
                         );
                         last = last_errno();
-                        child_report(report_w, b'3');
+                        child_report(report_w, b'1');
                         if !quiet {
-                            child_note(&p.msg_rexec_3, last);
+                            child_note(&p.msg_rexec_1, last);
                         }
                     }
+
+                    // Step 2: the same descriptor through the procfs magic link.
                     if !p.fault_rexec_no_proc {
                         libc::execve(
-                            p.rexec_temp_proc_path.as_ptr(),
+                            p.rexec_proc_path.as_ptr(),
                             p.argv_ptr.as_ptr(),
                             p.envp_ptr.as_ptr(),
                         );
                         last = last_errno();
-                        child_report(report_w, b'3');
+                        child_report(report_w, b'2');
                         if !quiet {
-                            child_note(&p.msg_rexec_3, last);
+                            child_note(&p.msg_rexec_2, last);
                         }
                     }
-                    if let Some(path) = &p.rexec_temp_path {
-                        libc::execve(path.as_ptr(), p.argv_ptr.as_ptr(), p.envp_ptr.as_ptr());
-                        last = last_errno();
-                        child_report(report_w, b'3');
-                        if !quiet {
-                            child_note(&p.msg_rexec_3, last);
+
+                    // Step 3: a temporary file on an executable mount.  Try the
+                    // descriptor, the procfs link and the name in that order.
+                    if let Some(temp) = &p.rexec_temp {
+                        if !p.fault_rexec_no_proc {
+                            libc::syscall(
+                                libc::SYS_execveat,
+                                temp.fd as libc::c_long,
+                                empty.as_ptr(),
+                                p.argv_ptr.as_ptr(),
+                                p.envp_ptr.as_ptr(),
+                                AT_EMPTY_PATH as libc::c_long,
+                            );
+                            last = last_errno();
+                            child_report(report_w, b'3');
+                            if !quiet {
+                                child_note(&p.msg_rexec_3, last);
+                            }
+                        }
+                        if !p.fault_rexec_no_proc {
+                            libc::execve(
+                                p.rexec_temp_proc_path.as_ptr(),
+                                p.argv_ptr.as_ptr(),
+                                p.envp_ptr.as_ptr(),
+                            );
+                            last = last_errno();
+                            child_report(report_w, b'3');
+                            if !quiet {
+                                child_note(&p.msg_rexec_3, last);
+                            }
+                        }
+                        if let Some(path) = &p.rexec_temp_path {
+                            libc::execve(path.as_ptr(), p.argv_ptr.as_ptr(), p.envp_ptr.as_ptr());
+                            last = last_errno();
+                            child_report(report_w, b'3');
+                            if !quiet {
+                                child_note(&p.msg_rexec_3, last);
+                            }
                         }
                     }
                 }
@@ -2844,5 +3091,43 @@ mod tests {
         // is what `main` parses; it must not be empty.
         let argv = snapshot_argv();
         assert!(!argv.is_empty(), "the runtime vector must not be empty");
+    }
+
+    #[test]
+    fn new_mask_builders_and_getters_validate_properly() {
+        let m = Mask::new()
+            .label("worker")
+            .parent_label("supervisor")
+            .rexec()
+            .rexec_mode(RexecMode::Path)
+            .cwd("/tmp")
+            .secret_fd(7)
+            .secret_fd(9)
+            .secret_fd(7);
+        assert_eq!(m.rexec_mode_value(), RexecMode::Path);
+        assert_eq!(m.cwd_value(), Some(Path::new("/tmp")));
+        assert_eq!(m.parent_label_value(), Some("supervisor"));
+        assert_eq!(m.secret_fds(), &[7, 9]);
+        assert!(m.validate().is_ok());
+
+        assert!(Mask::new().parent_label("bad\nlabel").validate().is_err());
+        assert!(Mask::new().secret_fd(-1).validate().is_err());
+    }
+
+    #[test]
+    fn run_on_current_thread_executes_and_returns_exit_code() {
+        if !crate::caps::Caps::ptrace_usable_fast() {
+            eprintln!("skip: ptrace unavailable");
+            return;
+        }
+        let st = Mask::new()
+            .label("cur-thread")
+            .quiet()
+            .run_on_current_thread(
+                OsStr::new("/bin/sh"),
+                &[OsString::from("-c"), OsString::from("exit 7")],
+            )
+            .expect("run_on_current_thread must succeed");
+        assert_eq!(st.code, 7);
     }
 }

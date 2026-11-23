@@ -60,7 +60,7 @@ trap 'rm -rf "$D"; cleanup' EXIT
 dump_env() {  # dump_env NAME OPTIONS...
     de_name="$1"
     shift
-    KEEPME=v OTHER=h KEEPME2=z "$TOOL" -q "$@" -- \
+    KEEPME=v OTHER=h KEEPME2=z "$TOOL" -q --profile compat "$@" -- \
         /bin/sh -c 'cat /proc/self/environ' >"$D/$de_name.nul" 2>/dev/null
     tr '\0' '\n' < "$D/$de_name.nul" > "$D/$de_name"
 }

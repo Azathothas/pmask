@@ -63,10 +63,10 @@ trap 'exit 130' INT TERM
 start() {
     lab=$1; shift
     if [ "$lab" = "-" ]; then
-        env -i PATH=/usr/bin:/bin "$TOOL" -q --label-empty "$@" \
+        env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --label-empty "$@" \
             -- "$CASES" sleeper QAMARK >/dev/null 2>"$D/last.err" &
     else
-        env -i PATH=/usr/bin:/bin "$TOOL" -q -l "$lab" "$@" \
+        env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat -l "$lab" "$@" \
             -- "$CASES" sleeper QAMARK >/dev/null 2>"$D/last.err" &
     fi
     SUP=$!
@@ -215,7 +215,7 @@ A1=$(printf 'a%.0s' $(seq 40))
 A2=$(printf 'b%.0s' $(seq 40))
 A3=$(printf 'c%.0s' $(seq 40))
 L9=L9abcdef
-env -i PATH=/usr/bin:/bin "$TOOL" -q --no-exact -l "$L9" \
+env -i PATH=/usr/bin:/bin "$TOOL" -q --profile compat --no-exact -l "$L9" \
     -- "$CASES" sleeper QAMARK "$A1" "$A2" "$A3" >/dev/null 2>"$D/ne.err" &
 SUP=$!
 PAY=""

@@ -63,6 +63,21 @@ const MEMFD_NAME_MAX: usize = 249;
 /// 4, ... cannot clobber it before the exec.
 const IMAGE_FD_MIN: RawFd = 200;
 
+/// Carrier mode for `--rexec`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RexecMode {
+    /// Sealed anonymous `memfd_create` image (`execveat(AT_EMPTY_PATH)`).
+    #[default]
+    Memfd,
+    /// Private `0500` executable copy named `<sanitized_label>` inside a
+    /// private `0700` staging directory (`$XDG_RUNTIME_DIR`, `/dev/shm`,
+    /// or `/tmp`), leaving zero `/memfd:` fingerprint in `exe` and `maps`.
+    Path,
+    /// Prefer [`RexecMode::Path`] when a writable executable staging
+    /// directory is available; otherwise fall back to [`RexecMode::Memfd`].
+    Auto,
+}
+
 /// A sealed program image.
 #[derive(Debug)]
 pub struct Image {
@@ -75,6 +90,9 @@ pub struct Image {
     pub note: Option<String>,
     /// The named temporary file, when the carrier needed a name.
     pub path: Option<PathBuf>,
+    /// Private `0700` staging directory created for [`RexecMode::Path`],
+    /// removed after [`Self::path`] is unlinked.
+    pub private_dir: Option<PathBuf>,
     /// `(ctime, ctime_nsec)` of the carrier inode at the moment its bytes
     /// were finished.  A same-uid writer can rewrite the named carrier in
     /// place without changing its device, inode or length, and both readers
@@ -100,6 +118,9 @@ impl Drop for Image {
         if let Some(path) = &self.path {
             let _ = std::fs::remove_file(path);
         }
+        if let Some(dir) = &self.private_dir {
+            let _ = std::fs::remove_dir(dir);
+        }
         if let Some(wr) = self.reaper_fd.take() {
             if wr >= 0 {
                 // SAFETY: the reaper pipe write end is owned by this value.
@@ -120,6 +141,8 @@ pub enum Backing {
     HugeTlb { page_size: u64 },
     /// An `O_TMPFILE` or named temporary file on an executable mount.
     TempFile { dir: PathBuf, named: bool },
+    /// A private `0500` copy inside a private `0700` directory ([`RexecMode::Path`]).
+    PrivatePath { dir: PathBuf },
 }
 
 impl Backing {
@@ -136,6 +159,9 @@ impl Backing {
                 } else {
                     format!("O_TMPFILE in {}", dir.display())
                 }
+            }
+            Backing::PrivatePath { dir } => {
+                format!("private path in {}", dir.display())
             }
         }
     }
@@ -168,6 +194,10 @@ pub struct Options {
     /// carrier has to stay one path component, so its tag is the same
     /// name sanitised and cut to 64 bytes.
     pub memfd_name: Option<String>,
+    /// Avoid staging private path carriers under `/tmp` (required when the
+    /// child mounts a fresh private `tmpfs` over `/tmp` before `execve`, such
+    /// as `--profile tee` or `--redact --isolate=tmp`).
+    pub avoid_tmp: bool,
 }
 
 impl Options {
@@ -520,6 +550,7 @@ pub fn prepare_fd(fd: RawFd, label: &str, opts: Options) -> io::Result<Image> {
         backing: Backing::Memfd,
         note: None,
         path: None,
+        private_dir: None,
         stamp: None,
         reaper_fd: None,
     })
@@ -553,6 +584,7 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 cause
             )),
             path: None,
+            private_dir: None,
             stamp: None,
             reaper_fd: None,
         })
@@ -573,6 +605,7 @@ fn finish_hugetlb(name: &str, spool: RawFd) -> io::Result<Image> {
                 },
                 note: None,
                 path: None,
+                private_dir: None,
                 stamp: None,
                 reaper_fd: None,
             })
@@ -594,6 +627,7 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
             backing,
             note,
             path: None,
+            private_dir: None,
             stamp: None,
             reaper_fd: None,
         }),
@@ -618,6 +652,7 @@ fn fill_from(src: RawFd, label: &str, opts: Options) -> io::Result<Image> {
                 backing: Backing::Memfd,
                 note,
                 path: None,
+                private_dir: None,
                 stamp: None,
                 reaper_fd: None,
             })
@@ -641,6 +676,250 @@ pub fn prepare_source(source: &Source, label: &str, opts: Options) -> io::Result
         Source::Fd(fd) => prepare_fd(*fd, label, opts),
         Source::Stdin => prepare_fd(0, label, opts),
     }
+}
+
+/// Prepare the image according to [`RexecMode`].
+///
+/// - [`RexecMode::Memfd`]: sealed `memfd_create` carrier.
+/// - [`RexecMode::Path`]: private `0500` executable inside a `0700` staging
+///   directory (no `/memfd:` fingerprint in `exe` or `maps`).
+/// - [`RexecMode::Auto`]: prefers [`RexecMode::Path`] when an executable
+///   staging directory is available, falling back to [`RexecMode::Memfd`]
+///   when staging mounts are `noexec` or unavailable.
+pub fn prepare_for_mode(
+    source: &Source,
+    label: &str,
+    opts: Options,
+    mode: RexecMode,
+) -> io::Result<Image> {
+    match mode {
+        RexecMode::Memfd => prepare_source(source, label, opts),
+        RexecMode::Path => prepare_private_path(source, label, &opts),
+        RexecMode::Auto => match prepare_private_path(source, label, &opts) {
+            Ok(img) => Ok(img),
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Err(e),
+            Err(_) => prepare_source(source, label, opts),
+        },
+    }
+}
+
+/// Return `true` when `vm.memfd_noexec` is set (`>= 1`), meaning `execveat`
+/// on a memfd will be refused by the kernel.  Zero forks.
+pub fn memfd_noexec_active() -> bool {
+    std::fs::read_to_string("/proc/sys/vm/memfd_noexec")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .is_some_and(|v| v >= 1)
+}
+
+/// Sanitize a label into one safe filename component for [`RexecMode::Path`].
+pub fn sanitize_path_filename(label: &str) -> String {
+    let mut out = String::new();
+    for &b in label.as_bytes() {
+        if out.len() >= 64 {
+            break;
+        }
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.') {
+            out.push(b as char);
+        } else {
+            out.push('_');
+        }
+    }
+    while out.starts_with('.') {
+        out.remove(0);
+    }
+    if out.is_empty() {
+        "worker".to_string()
+    } else {
+        out
+    }
+}
+
+/// Candidate base directories for [`RexecMode::Path`], in priority order:
+/// `$XDG_RUNTIME_DIR`, `/dev/shm`, `/tmp`, then `$TMPDIR` and `/var/tmp`.
+fn private_stage_bases() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = std::env::var_os("XDG_RUNTIME_DIR") {
+        if !d.is_empty() {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    dirs.push(PathBuf::from("/dev/shm"));
+    dirs.push(PathBuf::from("/tmp"));
+    if let Some(d) = std::env::var_os("TMPDIR") {
+        if !d.is_empty() {
+            let p = PathBuf::from(d);
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+    }
+    dirs.push(PathBuf::from("/var/tmp"));
+    dirs
+}
+
+/// Create a private `0700` staging directory under the first writable
+/// executable base directory.
+///
+/// When `avoid_tmp` is set (the child will overmount `/tmp` with a private
+/// `tmpfs` before `execve`), candidate directories inside `/tmp` are skipped
+/// so the staged executable does not vanish with `ENOENT` in the child's mount
+/// namespace.
+fn create_private_stage_dir(avoid_tmp: bool) -> io::Result<PathBuf> {
+    let mut last_err: Option<io::Error> = None;
+    let tmp_canon = if avoid_tmp {
+        Some(std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp")))
+    } else {
+        None
+    };
+    for base in private_stage_bases() {
+        let Ok(canon) = std::fs::canonicalize(&base) else {
+            continue;
+        };
+        if let Some(ref tmp) = tmp_canon {
+            if canon == *tmp || canon.starts_with(tmp) {
+                continue;
+            }
+        }
+        if !mount_allows_exec(&canon) {
+            continue;
+        }
+        let Ok(md) = std::fs::metadata(&canon) else {
+            continue;
+        };
+        if !md.is_dir() {
+            continue;
+        }
+        for _ in 0..16 {
+            let dir = canon.join(format!(".rt-{}", random_tag()));
+            let c = CString::new(dir.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in staging path"))?;
+            // SAFETY: `c` is a valid NUL-terminated path.
+            if unsafe { libc::mkdir(c.as_ptr(), 0o700) } == 0 {
+                // Override process umask so the directory is strictly 0700.
+                // SAFETY: `c` is the directory we just created.
+                unsafe { libc::chmod(c.as_ptr(), 0o700) };
+                return Ok(dir);
+            }
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EEXIST) {
+                continue;
+            }
+            last_err = Some(e);
+            break;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "no writable executable directory for private rexec staging",
+        )
+    }))
+}
+
+/// Stage `source` as a private `0500` executable named `<sanitized_label>`
+/// inside a fresh `0700` directory (no `/memfd:` fingerprint in `exe`/`maps`).
+pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io::Result<Image> {
+    let image_name = opts.image_name(label);
+    crate::mem::validate_memfd_name(&image_name)?;
+    let file_name = sanitize_path_filename(&image_name);
+    // Create the staging dir BEFORE consuming any non-seekable source so
+    // `RexecMode::Auto` can fall back cleanly to `Memfd` if mounts are noexec
+    // or if `avoid_tmp` skips `/tmp` and no other executable mount exists.
+    let dir = create_private_stage_dir(opts.avoid_tmp)?;
+    let file_path = dir.join(&file_name);
+    let file_c = CString::new(file_path.as_os_str().as_bytes()).map_err(|_| {
+        let _ = std::fs::remove_dir(&dir);
+        io::Error::new(io::ErrorKind::InvalidInput, "NUL in staging path")
+    })?;
+
+    // Open destination `0600` exclusively, then chmod to `0500` once filled.
+    // SAFETY: `file_c` is a valid NUL-terminated path inside our `0700` dir.
+    let dst = unsafe {
+        libc::open(
+            file_c.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600 as libc::mode_t,
+        )
+    };
+    if dst < 0 {
+        let e = io::Error::last_os_error();
+        let _ = std::fs::remove_dir(&dir);
+        return Err(with_context(e, "create private rexec image"));
+    }
+
+    let copy_res = match source {
+        Source::Path(p) => {
+            let src_c = CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in image path"))?;
+            // SAFETY: `src_c` is a valid NUL-terminated path.
+            let src = unsafe { libc::open(src_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+            if src < 0 {
+                Err(with_context(
+                    io::Error::last_os_error(),
+                    "open program for rexec",
+                ))
+            } else {
+                let r = check_elf_magic(src).and_then(|()| copy_into(src, dst));
+                // SAFETY: `src` is owned here.
+                unsafe { libc::close(src) };
+                r
+            }
+        }
+        Source::Fd(fd) => copy_elf_stream(*fd, dst),
+        Source::Stdin => copy_elf_stream(0, dst),
+    };
+
+    if let Err(e) = copy_res {
+        // SAFETY: `dst` is owned here.
+        unsafe { libc::close(dst) };
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
+        return Err(e);
+    }
+
+    // Make read+execute only (`0500`) and close the write fd so execve never
+    // sees `ETXTBSY`.
+    // SAFETY: `dst` is owned here.
+    let chmod_rc = unsafe { libc::fchmod(dst, 0o500) };
+    // SAFETY: `dst` is owned here.
+    unsafe { libc::close(dst) };
+    if chmod_rc != 0 {
+        let e = io::Error::last_os_error();
+        let _ = std::fs::remove_file(&file_path);
+        let _ = std::fs::remove_dir(&dir);
+        return Err(with_context(e, "chmod 0500 private rexec image"));
+    }
+
+    Ok(Image {
+        fd: -1,
+        backing: Backing::PrivatePath { dir: dir.clone() },
+        note: None,
+        path: Some(file_path),
+        private_dir: Some(dir),
+        stamp: None,
+        reaper_fd: None,
+    })
+}
+
+fn copy_elf_stream(src: RawFd, dst: RawFd) -> io::Result<()> {
+    let mut magic = [0u8; 4];
+    let mut got = 0usize;
+    while got < magic.len() {
+        let n = read_some(src, &mut magic[got..])?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    if got != 4 || magic != [0x7f, b'E', b'L', b'F'] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not an ELF image",
+        ));
+    }
+    write_all_fd(dst, &magic)?;
+    copy_into(src, dst)
 }
 
 /// Move the image descriptor above the secret-install range and set
@@ -999,6 +1278,7 @@ mod carrier_tests {
                 backing: Backing::Memfd,
                 note: None,
                 path: Some(self.path.clone()),
+                private_dir: None,
                 stamp,
                 reaper_fd: None,
             }
@@ -1071,6 +1351,7 @@ mod carrier_tests {
             backing: Backing::Memfd,
             note: None,
             path: None,
+            private_dir: None,
             stamp: None,
             reaper_fd: None,
         };
@@ -1171,6 +1452,7 @@ fn fill_temp(
         backing: Backing::TempFile { dir, named },
         note: None,
         path,
+        private_dir: None,
         stamp: stamp_of(ro),
         reaper_fd: None,
     };
@@ -1651,6 +1933,7 @@ mod tests {
         let opts = Options {
             hugetlb: false,
             memfd_name: Some("image-1a2b3c4d".to_string()),
+            avoid_tmp: false,
         };
         let image = match prepare_path(&path, "the label", opts) {
             Ok(i) => i,
@@ -1693,6 +1976,7 @@ mod tests {
         let opts = Options {
             hugetlb: false,
             memfd_name: Some("a/b".to_string()),
+            avoid_tmp: false,
         };
         let err =
             prepare_path(&path, "label", opts).expect_err("a slash in the memfd name was accepted");
@@ -1872,6 +2156,7 @@ mod tests {
             backing: Backing::Memfd,
             note: None,
             path: None,
+            private_dir: None,
             stamp: None,
             reaper_fd: Some(wr),
         };
@@ -2022,5 +2307,78 @@ mod tests {
         let note = note.expect("a fallback carries a note");
         assert!(note.contains("--hugetlb unavailable"), "{}", note);
         assert!(note.contains("ordinary memfd"), "{}", note);
+    }
+
+    #[test]
+    fn sanitize_path_filename_produces_clean_component() {
+        assert_eq!(sanitize_path_filename("ci-runner"), "ci-runner");
+        assert_eq!(sanitize_path_filename("../bad/name"), "_bad_name");
+        assert_eq!(sanitize_path_filename("..."), "worker");
+        assert_eq!(sanitize_path_filename(""), "worker");
+        assert_eq!(sanitize_path_filename("worker 1"), "worker_1");
+    }
+
+    #[test]
+    fn prepare_private_path_stages_0500_file_in_0700_dir_and_cleans_up() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let src = Source::Path(exe.as_os_str().to_os_string());
+        let img = match prepare_private_path(&src, "ci-worker", &Options::default()) {
+            Ok(i) => i,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                eprintln!("skip: no executable staging mount: {}", e);
+                return;
+            }
+            Err(e) => panic!("prepare_private_path failed: {}", e),
+        };
+        let path = img.path.clone().expect("path set");
+        let dir = img.private_dir.clone().expect("private_dir set");
+        assert!(!is_memfd_path(&path.to_string_lossy()));
+        assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("ci-worker"));
+        let dir_mode = std::fs::metadata(&dir).expect("stat dir").mode() & 0o777;
+        let file_mode = std::fs::metadata(&path).expect("stat file").mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o500);
+        assert_eq!(
+            std::fs::read(&path).expect("read staged"),
+            std::fs::read(&exe).expect("read exe")
+        );
+        drop(img);
+        assert!(!path.exists(), "staged file must be unlinked on drop");
+        assert!(!dir.exists(), "private staging dir must be removed on drop");
+    }
+
+    #[test]
+    fn prepare_private_path_avoids_tmp_when_requested() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let src = Source::Path(exe.as_os_str().to_os_string());
+        let opts = Options {
+            avoid_tmp: true,
+            ..Options::default()
+        };
+        let tmp_canon = std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp"));
+        match prepare_private_path(&src, "tee-worker", &opts) {
+            Ok(img) => {
+                let path = img.path.clone().expect("path set");
+                let dir = img.private_dir.clone().expect("private_dir set");
+                assert!(
+                    !dir.starts_with(&tmp_canon),
+                    "staging dir {} must not be under {}",
+                    dir.display(),
+                    tmp_canon.display()
+                );
+                assert!(
+                    !path.starts_with(&tmp_canon),
+                    "staged file {} must not be under {}",
+                    path.display(),
+                    tmp_canon.display()
+                );
+                drop(img);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // On minimal hosts with only `/tmp` available, skipping `/tmp`
+                // returns NotFound so `RexecMode::Auto` falls back to `Memfd`.
+            }
+            Err(e) => panic!("unexpected prepare_private_path(avoid_tmp) error: {}", e),
+        }
     }
 }
