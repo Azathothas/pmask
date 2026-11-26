@@ -1,8 +1,8 @@
 #!/bin/sh
 # ============================================================================
-# pmask v0.2.0 profiles, audit, explain, profile-json, secret-fd, and UX suite.
+# pmask v0.3.0 profiles, audit, explain, profile-json, secret-fd, and UX suite.
 #
-# Tests all v0.2.0 profile and verification capabilities end-to-end:
+# Tests all v0.3.0 profile and verification capabilities end-to-end:
 #   P1  --profile single, tree, compat, tee, and auto (ELF -> single, sh -> tree)
 #   P2  single profile live invariants (TracerPid: 0, Threads: 1, no supervisor,
 #       NoNewPrivs/Seccomp unchanged, PR_SET_DUMPABLE=0, RLIMIT_CORE=0,
@@ -11,7 +11,7 @@
 #   P4  --audit --pid planted defects (argv token, environ token, real exe,
 #       real cwd, missing label, visible TracerPid on single -> ALL exit 1)
 #   P5  --explain and --explain --json (same-uid observer & root out-of-scope)
-#   P6  --profile-json and --profile-json --pid (pmask-profile/1, zero secret)
+#   P6  --profile-json and --profile-json --pid (native psgen schema: 2, zero secret)
 #   P7  --secret-fd N and --secret-fd API_KEY=N (plus invalid fd exits 2)
 #   P8  --rexec-mode=path (no /memfd: in exe/maps, staged file cleaned up)
 #   P9  --cwd /tmp (payload sees /tmp even with relative binary path)
@@ -20,6 +20,13 @@
 #   P11 --keep-env FOO /bin/true exits 2 with --keep-env=FOO hint
 #   P12 recommended paths emit ZERO stderr warnings
 #   P13 one-screen --help (<= 45 lines), full --help=all, help redact
+#   P14 SIGKILL crash cleanup leaves 0 .rt-* dirs on single and tree
+#   P15 --rexec-mode=tmpfile works cleanly with zero /memfd: and zero .rt-* dirs
+#   P16 --stealth uses private path (Auto), zero unsolicited stderr on hidepid=off,
+#       and pins /proc/<pid>/comm across rename with rc=0
+#   P17 --profile tee forwards SECRET_TOKEN when userns+/proc succeeds, or fails
+#       closed with exit 255 (never silent exit 0)
+#   P18 AT_EXECFN direct read without EIO (--allow-dumpable or root)
 #
 # POSIX sh only: dash and busybox ash must both run it.
 # ============================================================================
@@ -432,14 +439,17 @@ else
     fail "p5b-explain-json (rc=$rc err=$(cat "$T/p5j.err"))"
 fi
 
-# ---------------------------------------- P6: --profile-json & --pid
+# ---------------------------------------- P6: --profile-json & --pid (psgen schema: 2)
 "$TOOL" --profile-json --profile single --label prof-tmpl >"$T/p6a.json" 2>"$T/p6a.err"
 rc=$?
-if [ "$rc" = 0 ] && [ ! -s "$T/p6a.err" ] \
-    && grep -q '"schema": "pmask-profile/1"' "$T/p6a.json"; then
-    pass "p6a-profile-json-template"
+p6a_ok=1
+for p6_key in '"schema": 2' '"source":' '"identity":' '"status":' '"stat":' '"memory":' '"auxv":' '"fds":' '"task":' '"syscall":' '"timing":' '"children":'; do
+    grep -q "$p6_key" "$T/p6a.json" || p6a_ok=0
+done
+if [ "$rc" = 0 ] && [ ! -s "$T/p6a.err" ] && [ "$p6a_ok" = 1 ]; then
+    pass "p6a-profile-json-template-schema2"
 else
-    fail "p6a-profile-json-template (rc=$rc)"
+    fail "p6a-profile-json-template-schema2 (rc=$rc err=$(cat "$T/p6a.err"))"
 fi
 
 P6_TOK="PROF-JSON-SECRET-$$-NEVER-LEAK"
@@ -451,15 +461,18 @@ if wait_for_comm "$p6_pid" "prof-p6"; then
     PMASK_P6_TOK="$P6_TOK" "$TOOL" --profile-json --profile single --pid "$p6_pid" \
         --label prof-p6 --token-env PMASK_P6_TOK >"$T/p6b.json" 2>"$T/p6b.err"
     rc=$?
-    if [ "$rc" = 0 ] && [ ! -s "$T/p6b.err" ] \
-        && grep -q '"schema": "pmask-profile/1"' "$T/p6b.json" \
+    p6b_ok=1
+    for p6_key in '"schema": 2' '"source":' '"identity":' '"status":' '"stat":' '"memory":' '"auxv":' '"fds":' '"task":' '"syscall":' '"timing":' '"children":'; do
+        grep -q "$p6_key" "$T/p6b.json" || p6b_ok=0
+    done
+    if [ "$rc" = 0 ] && [ ! -s "$T/p6b.err" ] && [ "$p6b_ok" = 1 ] \
         && ! grep -q "$P6_TOK" "$T/p6b.json"; then
-        pass "p6b-profile-json-live-pid-no-secret"
+        pass "p6b-profile-json-live-pid-schema2-no-secret"
     else
-        fail "p6b-profile-json-live-pid-no-secret (rc=$rc)"
+        fail "p6b-profile-json-live-pid-schema2-no-secret (rc=$rc err=$(cat "$T/p6b.err"))"
     fi
 else
-    fail "p6b-profile-json-live-pid-no-secret (target did not start)"
+    fail "p6b-profile-json-live-pid-schema2-no-secret (target did not start)"
 fi
 kill -9 "$p6_pid" 2>/dev/null || true
 wait "$p6_pid" 2>/dev/null || true
@@ -622,6 +635,193 @@ if "$TOOL" help redact 2>&1 | grep -q -- '--label'; then
 else
     fail "p13c-help-redact-includes-label"
 fi
+
+# ---------------------------------------- P14: SIGKILL cleanup leaves 0 .rt-* dirs
+mkdir -p "$T/rt14s" "$T/rt14t"
+chmod 700 "$T/rt14s" "$T/rt14t"
+
+XDG_RUNTIME_DIR="$T/rt14s" "$TOOL" --profile single --rexec-mode=path --label prof-k14s \
+    -- "$CASES" sleeper >/dev/null 2>"$T/p14s.err" &
+p14s_pid=$!
+track_pid "$p14s_pid"
+wait_for_comm "$p14s_pid" "prof-k14s" || true
+kill -9 "$p14s_pid" 2>/dev/null || true
+wait "$p14s_pid" 2>/dev/null || true
+sleep 0.2 2>/dev/null || sleep 1
+p14s_left=$(find "$T/rt14s" -maxdepth 1 -name '.rt-*' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$p14s_left" = "0" ]; then
+    pass "p14a-sigkill-single-leaves-zero-rt-dirs"
+else
+    fail "p14a-sigkill-single-leaves-zero-rt-dirs (left=$p14s_left)"
+fi
+
+XDG_RUNTIME_DIR="$T/rt14t" "$TOOL" --profile tree --rexec-mode=path --label prof-k14t \
+    -- "$CASES" sleeper >/dev/null 2>"$T/p14t.err" &
+p14t_sup=$!
+track_pid "$p14t_sup"
+sleep 0.3 2>/dev/null || sleep 1
+kill -9 "$p14t_sup" 2>/dev/null || true
+wait "$p14t_sup" 2>/dev/null || true
+sleep 0.2 2>/dev/null || sleep 1
+p14t_left=$(find "$T/rt14t" -maxdepth 1 -name '.rt-*' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$p14t_left" = "0" ]; then
+    pass "p14b-sigkill-tree-leaves-zero-rt-dirs"
+else
+    fail "p14b-sigkill-tree-leaves-zero-rt-dirs (left=$p14t_left)"
+fi
+
+# ---------------------------------------- P15: --rexec-mode=tmpfile
+mkdir -p "$T/rt15"
+chmod 700 "$T/rt15"
+XDG_RUNTIME_DIR="$T/rt15" "$TOOL" --profile single --rexec-mode=tmpfile --label prof-tmpf \
+    -- /bin/true >"$T/p15chk.out" 2>"$T/p15chk.err"
+p15_chk_rc=$?
+if [ "$p15_chk_rc" = 126 ] && grep -qi 'O_TMPFILE' "$T/p15chk.err"; then
+    skip "p15-rexec-mode-tmpfile (O_TMPFILE unsupported on writable exec mounts here)"
+else
+    XDG_RUNTIME_DIR="$T/rt15" "$TOOL" --profile single --rexec-mode=tmpfile --allow-dumpable \
+        --label prof-tmpf -- "$CASES" sleeper >/dev/null 2>"$T/p15.err" &
+    p15_pid=$!
+    track_pid "$p15_pid"
+    if wait_for_comm "$p15_pid" "prof-tmpf"; then
+        p15_i=0
+        while [ "$p15_i" -lt 80 ]; do
+            p15_tr=$(status_field "$p15_pid" TracerPid)
+            [ "$p15_tr" = "0" ] && break
+            sleep 0.05 2>/dev/null || sleep 1
+            p15_i=$((p15_i + 1))
+        done
+        p15_exe=$(readlink "/proc/$p15_pid/exe" 2>/dev/null)
+        p15_memfd=0
+        case "$p15_exe" in /memfd:*) p15_memfd=1 ;; esac
+        grep -q '/memfd:' "/proc/$p15_pid/maps" 2>/dev/null && p15_memfd=1
+        p15_rt=$(find "$T/rt15" -maxdepth 1 -name '.rt-*' 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$p15_memfd" = "0" ] && [ "$p15_rt" = "0" ] && [ ! -s "$T/p15.err" ]; then
+            pass "p15-rexec-mode-tmpfile-clean (exe=$p15_exe)"
+        else
+            fail "p15-rexec-mode-tmpfile-clean (exe=$p15_exe memfd=$p15_memfd rt=$p15_rt err=$(cat "$T/p15.err"))"
+        fi
+    else
+        fail "p15-rexec-mode-tmpfile-clean (did not start: $(cat "$T/p15.err"))"
+    fi
+    kill -9 "$p15_pid" 2>/dev/null || true
+    wait "$p15_pid" 2>/dev/null || true
+fi
+
+# ---------------------------------------- P16: --stealth Auto path, quiet on hidepid=off, pinned comm
+mkdir -p "$T/rt16"
+chmod 700 "$T/rt16"
+p16_hidepid=0
+grep -E ' /proc .* - proc proc ' /proc/self/mountinfo 2>/dev/null \
+    | grep -Eq 'hidepid=(2|4|invisible|ptraceable)' && p16_hidepid=1
+
+XDG_RUNTIME_DIR="$T/rt16" "$TOOL" --stealth --label prof-st16 \
+    -- "$CASES" evilrename 1 >"$T/p16.out" 2>"$T/p16.err"
+p16_rc=$?
+if [ "$p16_rc" = 0 ] && grep -q '^comm=prof-st16$' "$T/p16.out"; then
+    pass "p16a-stealth-pins-comm-after-rename-rc0"
+else
+    fail "p16a-stealth-pins-comm-after-rename-rc0 (rc=$p16_rc out=$(tr '\n' '|' < "$T/p16.out") err=$(cat "$T/p16.err"))"
+fi
+if [ "$p16_hidepid" = 0 ]; then
+    if [ ! -s "$T/p16.err" ]; then
+        pass "p16b-stealth-zero-unsolicited-stderr-on-hidepid-off"
+    else
+        fail "p16b-stealth-zero-unsolicited-stderr-on-hidepid-off (err=$(tr '\n' '|' < "$T/p16.err"))"
+    fi
+else
+    skip "p16b-stealth-zero-unsolicited-stderr-on-hidepid-off (host uses hidepid=invisible/ptraceable)"
+fi
+
+XDG_RUNTIME_DIR="$T/rt16" "$TOOL" --stealth --allow-dumpable --label prof-st16e \
+    -- "$CASES" sleeper >/dev/null 2>"$T/p16e.err" &
+p16_sup=$!
+track_pid "$p16_sup"
+p16_child=""
+p16_i=0
+while [ "$p16_i" -lt 60 ]; do
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        if [ "$(proc_ppid "$p")" = "$p16_sup" ]; then
+            p16_child="$p"
+            break
+        fi
+    done
+    [ -n "$p16_child" ] && break
+    sleep 0.05 2>/dev/null || sleep 1
+    p16_i=$((p16_i + 1))
+done
+if [ -n "$p16_child" ] && wait_for_comm "$p16_child" "prof-st16e"; then
+    p16_exe=$(readlink "/proc/$p16_child/exe" 2>/dev/null)
+    if [ -n "$p16_exe" ]; then
+        case "$p16_exe" in
+            /memfd:*) fail "p16c-stealth-uses-auto-private-path (stuck on memfd: $p16_exe)" ;;
+            "$CASES") fail "p16c-stealth-uses-auto-private-path (exposed real exe: $p16_exe)" ;;
+            *) pass "p16c-stealth-uses-auto-private-path (exe=$p16_exe)" ;;
+        esac
+    else
+        skip "p16c-stealth-uses-auto-private-path (exe unreadable under current uid)"
+    fi
+else
+    fail "p16c-stealth-uses-auto-private-path (child not found)"
+fi
+kill -9 "$p16_sup" 2>/dev/null || true
+[ -n "$p16_child" ] && kill -9 "$p16_child" 2>/dev/null || true
+wait "$p16_sup" 2>/dev/null || true
+
+# ---------------------------------------- P17: --profile tee forwards secret OR fails closed (255)
+P17_SECRET="TEE-FWD-SECRET-$$-OK"
+p17_out=$(SECRET_TOKEN="$P17_SECRET" "$TOOL" --profile tee --label prof-tee17 \
+    -- "$CASES" getenv SECRET_TOKEN 2>"$T/p17.err")
+p17_rc=$?
+if [ "$p17_rc" = 0 ]; then
+    if [ "$p17_out" = "SECRET_TOKEN=$P17_SECRET" ]; then
+        pass "p17-profile-tee-forwards-secret-token"
+    else
+        fail "p17-profile-tee-forwards-secret-token (got=[$p17_out] want=[SECRET_TOKEN=$P17_SECRET])"
+    fi
+elif [ "$p17_rc" = 255 ] && [ -s "$T/p17.err" ]; then
+    pass "p17-profile-tee-fails-closed-exit-255 ($(tr '\n' ' ' < "$T/p17.err" | cut -c1-120))"
+else
+    fail "p17-profile-tee-fail-closed-or-forward (rc=$p17_rc out=[$p17_out] err=$(tr '\n' '|' < "$T/p17.err"))"
+fi
+
+# ---------------------------------------- P18: AT_EXECFN direct read without EIO
+p18_yama=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)
+"$TOOL" --profile single --allow-dumpable --label prof-execfn \
+    -- "$CASES" sleeper >/dev/null 2>"$T/p18.err" &
+p18_pid=$!
+track_pid "$p18_pid"
+if wait_for_comm "$p18_pid" "prof-execfn"; then
+    p18_i=0
+    while [ "$p18_i" -lt 80 ]; do
+        p18_tr=$(status_field "$p18_pid" TracerPid)
+        [ "$p18_tr" = "0" ] && break
+        sleep 0.05 2>/dev/null || sleep 1
+        p18_i=$((p18_i + 1))
+    done
+    "$TOOL" --audit --json --profile single --pid "$p18_pid" --label prof-execfn \
+        >"$T/p18.json" 2>"$T/p18a.err"
+    if [ "$MY_UID" = "0" ] || [ "$p18_yama" = "0" ]; then
+        if grep -q '"execfn_io_error": false' "$T/p18.json" \
+            && grep -q '"auxv_execfn_readable": true' "$T/p18.json" \
+            && ! grep -q '"at_execfn_str": null' "$T/p18.json"; then
+            pass "p18-at-execfn-direct-read-no-eio"
+        else
+            fail "p18-at-execfn-direct-read-no-eio ($(grep -E 'execfn' "$T/p18.json" | tr '\n' '|'))"
+        fi
+    else
+        if grep -q '"execfn_io_error": false' "$T/p18.json"; then
+            skip "p18-at-execfn-direct-read-no-eio (yama.ptrace_scope=$p18_yama denies sibling /proc/<pid>/mem as non-root)"
+        else
+            fail "p18-at-execfn-direct-read-no-eio (unexpected execfn_io_error)"
+        fi
+    fi
+else
+    fail "p18-at-execfn-direct-read-no-eio (target did not start)"
+fi
+kill -9 "$p18_pid" 2>/dev/null || true
+wait "$p18_pid" 2>/dev/null || true
 
 echo "== PROFILES: PASS=$PASS FAIL=$FAIL SKIP=$SKIP =="
 [ "$FAIL" = 0 ] || exit 1

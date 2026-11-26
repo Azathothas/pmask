@@ -20,10 +20,10 @@
 //! with zero supervisor process, `TracerPid: 0`, `Threads: 1`, `Seccomp: 0`,
 //! and `NoNewPrivs: 0` (unless explicitly requested).
 
-use crate::arch::{self, ExecClass, Regs, SyscallInfo};
+use crate::arch;
 use crate::inject;
 use crate::mask::{Mask, Prepared};
-use crate::tracer::{ExitState, State, Tracer};
+use crate::tracer::{ExitState, Tracer};
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -131,7 +131,7 @@ pub fn exec_single_with(
     if opts.reparent {
         exec_single_reparented(prepared)
     } else {
-        exec_single_inplace(prepared, None)
+        exec_single_inplace(&mut prepared, None)
     }
 }
 
@@ -139,6 +139,53 @@ pub fn exec_single_with(
 enum ExecTarget {
     Path(*const libc::c_char),
     Memfd(RawFd),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SingleTargetKind {
+    Native64,
+    Foreign32,
+    Script,
+}
+
+fn classify_single_target(target: ExecTarget) -> SingleTargetKind {
+    let mut hdr = [0u8; 5];
+    let got = match target {
+        ExecTarget::Path(ptr) => unsafe {
+            let fd = libc::open(ptr, libc::O_RDONLY | libc::O_CLOEXEC);
+            if fd < 0 {
+                return SingleTargetKind::Script;
+            }
+            let n = libc::read(fd, hdr.as_mut_ptr().cast(), hdr.len());
+            libc::close(fd);
+            n
+        },
+        ExecTarget::Memfd(fd) => unsafe { libc::pread(fd, hdr.as_mut_ptr().cast(), hdr.len(), 0) },
+    };
+    if got < 5 || &hdr[0..4] != b"\x7fELF" {
+        return SingleTargetKind::Script;
+    }
+    #[cfg(target_pointer_width = "64")]
+    const NATIVE_CLASS: u8 = 2; // ELFCLASS64
+    #[cfg(target_pointer_width = "32")]
+    const NATIVE_CLASS: u8 = 1; // ELFCLASS32
+    if hdr[4] == NATIVE_CLASS {
+        SingleTargetKind::Native64
+    } else {
+        SingleTargetKind::Foreign32
+    }
+}
+
+fn unlink_staged_paths(priv_file_c: Option<&CString>, priv_dir_c: Option<&CString>) {
+    // SAFETY: valid NUL-terminated paths owned by this session.
+    unsafe {
+        if let Some(f) = priv_file_c {
+            libc::unlink(f.as_ptr());
+        }
+        if let Some(d) = priv_dir_c {
+            libc::rmdir(d.as_ptr());
+        }
+    }
 }
 
 /// Double-fork so the payload runs reparented to PID 1 while the caller waits
@@ -173,6 +220,10 @@ fn exec_single_reparented(mut prepared: Prepared) -> io::Result<ExitState> {
         return Err(e);
     }
     if c1 == 0 {
+        // Prevent forked children (`c1`, `c2`) from running `Drop` on
+        // parent-owned buffers (`SecBuf`, staged `Image` handles) before
+        // calling `_exit`.
+        let mut prepared = std::mem::ManuallyDrop::new(prepared);
         unsafe {
             libc::close(st_r);
             libc::close(rp_w);
@@ -205,18 +256,20 @@ fn exec_single_reparented(mut prepared: Prepared) -> io::Result<ExitState> {
 
         // Move `st_w` above the secret-fd and preserved-fd ranges so
         // `install_fds` cannot overwrite it.
-        let min_fd = prepared
-            .preserved_fds
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .max(crate::secret::FIRST_FD + prepared.secret_fds.len() as libc::c_int)
-            .saturating_add(1)
-            .max(100);
-        let done_fd = move_fd_above(st_w, min_fd);
+        let min_fd = min_helper_fd(&prepared.preserved_fds, prepared.secret_fds.len());
+        let done_fd = match move_fd_above(st_w, min_fd) {
+            Ok(fd) => fd,
+            Err(e) => {
+                let errno = e.raw_os_error().unwrap_or(libc::EMFILE);
+                write_reparent_error(st_w, false, errno);
+                unsafe {
+                    libc::close(st_w);
+                    libc::_exit(126);
+                }
+            }
+        };
 
-        let res = exec_single_inplace(prepared, Some(done_fd));
+        let res = exec_single_inplace(&mut prepared, Some(done_fd));
         if let Err(e) = res {
             let refused = is_ptrace_refused(&e);
             let errno =
@@ -240,14 +293,13 @@ fn exec_single_reparented(mut prepared: Prepared) -> io::Result<ExitState> {
     reap_child(c1);
     unsafe { libc::close(rp_w) };
 
-    // Prevent parent's `Drop` of `prepared` from deleting a staged
-    // `RexecMode::Path` file that `c2`/`G` now own and will clean up.
-    disarm_rexec_cleanup(&mut prepared);
-
     let mut buf = [0u8; 5];
     let got = read_exact_or_eof(st_r, &mut buf);
     unsafe { libc::close(st_r) };
     if got == 0 {
+        // `c2`/`G` succeeded and already unlinked or took ownership of any
+        // staged `RexecMode::Path` file; disarm parent cleanup on drop.
+        disarm_rexec_cleanup(&mut prepared);
         Ok(ExitState::plain(0, None))
     } else if got == 5 {
         let errno = i32::from_ne_bytes([buf[1], buf[2], buf[3], buf[4]]);
@@ -283,15 +335,15 @@ fn disarm_rexec_cleanup(prepared: &mut Prepared) {
 
 /// Execute `prepared` in place inside the current process using a transient
 /// double-forked tracer `G`.
-fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result<ExitState> {
-    if prepared.cfg.no_dumpable {
+fn exec_single_inplace(prepared: &mut Prepared, done_fd: Option<RawFd>) -> io::Result<ExitState> {
+    if prepared.cfg.no_dumpable || prepared.no_core_dump {
         let zero_core = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
         // SAFETY: `setrlimit` on our own process with owned `rlimit`.
-        unsafe {
-            libc::setrlimit(libc::RLIMIT_CORE, &zero_core);
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero_core) } == 0 {
+            prepared.cfg.core_limit_applied = true;
         }
     }
     if prepared.no_new_privs {
@@ -338,12 +390,13 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
         if !skip_to_disk {
             if let Some(priv_path) = &prepared.rexec_private_path {
                 let err = attempt_masked_exec(
-                    &prepared,
+                    prepared,
                     ExecTarget::Path(priv_path.as_ptr()),
                     priv_file_c.as_ref(),
                     priv_dir_c.as_ref(),
                     done_fd,
                 )?;
+                unlink_staged_paths(priv_file_c.as_ref(), priv_dir_c.as_ref());
                 if is_ptrace_refused(&err) {
                     return Err(err);
                 }
@@ -358,7 +411,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                 // Step 1: `execveat(image.fd, "", ..., AT_EMPTY_PATH)`
                 if !fault_rexec_no_proc {
                     let err1 = attempt_masked_exec(
-                        &prepared,
+                        prepared,
                         ExecTarget::Memfd(image.fd),
                         None,
                         None,
@@ -382,7 +435,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                 // Step 2: `/proc/self/fd/N`
                 if !fault_rexec_no_proc && !prepared.rexec_proc_path.as_bytes().is_empty() {
                     let err2 = attempt_masked_exec(
-                        &prepared,
+                        prepared,
                         ExecTarget::Path(prepared.rexec_proc_path.as_ptr()),
                         None,
                         None,
@@ -405,7 +458,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                 if let Some(temp) = &prepared.rexec_temp {
                     if !fault_rexec_no_proc && temp.fd >= 0 {
                         let e = attempt_masked_exec(
-                            &prepared,
+                            prepared,
                             ExecTarget::Memfd(temp.fd),
                             None,
                             None,
@@ -425,7 +478,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                     if !fault_rexec_no_proc && temp.fd >= 0 {
                         if let Ok(proc_c) = CString::new(format!("/proc/self/fd/{}", temp.fd)) {
                             let e = attempt_masked_exec(
-                                &prepared,
+                                prepared,
                                 ExecTarget::Path(proc_c.as_ptr()),
                                 None,
                                 None,
@@ -449,7 +502,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                         .and_then(|p| CString::new(p.as_os_str().as_bytes()).ok())
                     {
                         let e = attempt_masked_exec(
-                            &prepared,
+                            prepared,
                             ExecTarget::Path(path_c.as_ptr()),
                             None,
                             None,
@@ -482,7 +535,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
                             None => ExecTarget::Memfd(temp.fd),
                         };
                         let err3 =
-                            attempt_masked_exec(&prepared, t, path_c.as_ref(), None, done_fd)?;
+                            attempt_masked_exec(prepared, t, path_c.as_ref(), None, done_fd)?;
                         if is_ptrace_refused(&err3) {
                             return Err(err3);
                         }
@@ -500,13 +553,14 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
 
         // Step 4: explicit on-disk last resort (never silent).
         if prepared.rexec_allow_disk {
+            unlink_staged_paths(priv_file_c.as_ref(), priv_dir_c.as_ref());
             if !quiet {
                 eprintln!(
                     "pmask: --rexec: falling back to the on-disk path (explicit last resort)"
                 );
             }
             let err4 = attempt_masked_exec(
-                &prepared,
+                prepared,
                 ExecTarget::Path(prepared.prog_c.as_ptr()),
                 None,
                 None,
@@ -522,7 +576,7 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
 
     // Standard non-rexec in-place masked exec.
     let err = attempt_masked_exec(
-        &prepared,
+        prepared,
         ExecTarget::Path(prepared.prog_c.as_ptr()),
         None,
         None,
@@ -532,6 +586,12 @@ fn exec_single_inplace(prepared: Prepared, done_fd: Option<RawFd>) -> io::Result
 }
 
 /// Run one in-place masked exec attempt.
+///
+/// Uses a zero-`PTRACE_INTERRUPT`, zero-entry-stop fast path: for native ELFs,
+/// `P` pre-swaps `argv`/`envp` to zero-exposure label/decoy buffers before
+/// calling `execve`/`execveat`, while `G` seizes `P` with `PTRACE_O_TRACEEXEC`
+/// and waits straight for `PTRACE_EVENT_EXEC`, restoring the real `argv`/`envp`
+/// directly from its fork-inherited `Prepared` vectors.
 ///
 /// Never returns on a successful `execve`/`execveat`.  Returns:
 /// - `Err(ptrace_refused_error(..))` if `G` could not seize `P`;
@@ -544,9 +604,52 @@ fn attempt_masked_exec(
     priv_dir_c: Option<&CString>,
     done_fd: Option<RawFd>,
 ) -> io::Result<io::Error> {
+    let target_kind = classify_single_target(target);
+    if target_kind == SingleTargetKind::Foreign32 && !prepared.cfg.allow_foreign {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "32-bit (foreign ABI) program refused; pass --allow-foreign to run it unredacted",
+        ));
+    }
+    if prepared.cfg.strict_exec && target_kind != SingleTargetKind::Native64 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "--strict-exec refuses non-ELF or script exec in single profile",
+        ));
+    }
+    let (sw_argv_c, sw_envp_c, env_swapped) = if target_kind == SingleTargetKind::Native64 {
+        crate::execimg::build_single_swapped_args(
+            &prepared.cfg,
+            &prepared.argv_c,
+            &prepared.envp_c,
+            prepared.run_as.map(|(uid, _)| uid),
+        )
+    } else {
+        (Vec::new(), Vec::new(), false)
+    };
+    let sw_argv_ptr: Vec<*const libc::c_char> = if target_kind == SingleTargetKind::Native64 {
+        sw_argv_c
+            .iter()
+            .map(|s| s.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let sw_envp_ptr: Vec<*const libc::c_char> = if target_kind == SingleTargetKind::Native64 {
+        sw_envp_c
+            .iter()
+            .map(|s| s.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let mut pid_pipe = [0 as libc::c_int; 2];
     let mut go_pipe = [0 as libc::c_int; 2];
     let mut ack_pipe = [0 as libc::c_int; 2];
+    let mut fail_pipe = [0 as libc::c_int; 2];
 
     // SAFETY: `pipe2` initializes 2 descriptors per array with `O_CLOEXEC`.
     if unsafe { libc::pipe2(pid_pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -568,6 +671,17 @@ fn attempt_masked_exec(
         }
         return Err(io::Error::last_os_error());
     }
+    if unsafe { libc::pipe2(fail_pipe.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        unsafe {
+            libc::close(pid_pipe[0]);
+            libc::close(pid_pipe[1]);
+            libc::close(go_pipe[0]);
+            libc::close(go_pipe[1]);
+            libc::close(ack_pipe[0]);
+            libc::close(ack_pipe[1]);
+        }
+        return Err(io::Error::last_os_error());
+    }
 
     let parent_pid = unsafe { libc::getpid() };
     // SAFETY: `P` is single-threaded; `H` immediately forks `G` and `_exit`s.
@@ -581,16 +695,31 @@ fn attempt_masked_exec(
             libc::close(go_pipe[1]);
             libc::close(ack_pipe[0]);
             libc::close(ack_pipe[1]);
+            libc::close(fail_pipe[0]);
+            libc::close(fail_pipe[1]);
         }
         return Err(e);
     }
 
     if h_pid == 0 {
-        // Intermediate child `H`.
+        // Intermediate child `H`.  Close any inherited carrier-reaper pipe
+        // write-end immediately so neither `H` nor `G` keeps the reaper alive
+        // if `P` is `SIGKILL`ed before `execve` (or once `P`'s `O_CLOEXEC`
+        // closes it after `execve` maps the binary).
+        for img in [&prepared.rexec_image, &prepared.rexec_temp]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(fd) = img.reaper_fd() {
+                // SAFETY: closing an inherited descriptor inside `H`.
+                unsafe { libc::close(fd) };
+            }
+        }
         unsafe {
             libc::close(pid_pipe[0]);
             libc::close(go_pipe[1]);
             libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
         }
         // SAFETY: grandchild `G` becomes our transient ptrace helper.
         let g_pid = unsafe { libc::fork() };
@@ -601,6 +730,7 @@ fn attempt_masked_exec(
                 libc::close(pid_pipe[1]);
                 libc::close(go_pipe[0]);
                 libc::close(ack_pipe[1]);
+                libc::close(fail_pipe[0]);
                 libc::_exit(1);
             }
         }
@@ -610,6 +740,7 @@ fn attempt_masked_exec(
                 libc::close(pid_pipe[1]);
                 libc::close(go_pipe[0]);
                 libc::close(ack_pipe[1]);
+                libc::close(fail_pipe[0]);
                 libc::_exit(0);
             }
         }
@@ -619,8 +750,11 @@ fn attempt_masked_exec(
         run_helper_tracer(
             parent_pid,
             prepared,
+            target_kind,
+            env_swapped,
             go_pipe[0],
             ack_pipe[1],
+            fail_pipe[0],
             priv_file_c,
             priv_dir_c,
             done_fd,
@@ -632,6 +766,7 @@ fn attempt_masked_exec(
         libc::close(pid_pipe[1]);
         libc::close(go_pipe[0]);
         libc::close(ack_pipe[1]);
+        libc::close(fail_pipe[0]);
     }
 
     let mut g_pid_bytes = [0u8; 4];
@@ -645,6 +780,7 @@ fn attempt_masked_exec(
         unsafe {
             libc::close(go_pipe[1]);
             libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
         }
         return Err(io::Error::other("single-mode helper failed to start"));
     }
@@ -653,14 +789,13 @@ fn attempt_masked_exec(
         unsafe {
             libc::close(go_pipe[1]);
             libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
         }
         return Err(io::Error::other("single-mode helper fork failed"));
     }
 
-    // Apply untraced pre-exec setup before signaling `G` to seize us so
-    // these syscalls never incur `PTRACE_SYSCALL` stops:
-    // - Clear `FD_CLOEXEC` on caller-preserved `--secret-fd` descriptors
-    //   (never touches `go_pipe`/`ack_pipe`, which were just opened).
+    // Apply untraced pre-exec setup before signaling `G` to seize us:
+    // - Clear `FD_CLOEXEC` on caller-preserved `--secret-fd` descriptors.
     // - Set `comm` early, ensure `P` is dumpable for the microsecond seize
     //   window (G re-applies `PR_SET_DUMPABLE=0` at `PTRACE_EVENT_EXEC`),
     //   grant Yama `PR_SET_PTRACER`, and unblock `G`.
@@ -686,19 +821,24 @@ fn attempt_masked_exec(
         libc::close(go_pipe[1]);
     }
 
-    // Read a single tag byte first so the happy path (`b'K'`) finishes in one
-    // `read(2)` and goes straight to `execve`/`execveat` without a second
-    // `read(2)` or `close(ack_pipe[0])` (`ack_pipe[0]` is `O_CLOEXEC`).
+    // Read a single tag byte: `b'K'` means `G` seized `P` with
+    // `PTRACE_O_TRACEEXEC` and is already waiting for `PTRACE_EVENT_EXEC`.
     let mut tag = [0u8; 1];
     let got_tag = read_exact_or_eof(ack_pipe[0], &mut tag);
     if got_tag == 0 {
-        unsafe { libc::close(ack_pipe[0]) };
+        unsafe {
+            libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
+        }
         return Err(ptrace_refused_error(libc::EPERM));
     }
     if tag[0] == b'E' {
         let mut eb = [0u8; 4];
         let got_eb = read_exact_or_eof(ack_pipe[0], &mut eb);
-        unsafe { libc::close(ack_pipe[0]) };
+        unsafe {
+            libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
+        }
         let errno = if got_eb == 4 {
             i32::from_ne_bytes(eb)
         } else {
@@ -707,12 +847,26 @@ fn attempt_masked_exec(
         return Err(ptrace_refused_error(errno));
     }
     if tag[0] != b'K' {
-        unsafe { libc::close(ack_pipe[0]) };
+        unsafe {
+            libc::close(ack_pipe[0]);
+            libc::close(fail_pipe[1]);
+        }
         return Err(ptrace_refused_error(libc::EPERM));
     }
 
-    // `P` is now seized and syscall-traced by `G`.  Zero allocations and
-    // zero extra syscalls on the happy path: go straight into `execve`/`execveat`.
+    let exec_argv = if target_kind == SingleTargetKind::Native64 {
+        sw_argv_ptr.as_ptr()
+    } else {
+        prepared.argv_ptr.as_ptr()
+    };
+    let exec_envp = if target_kind == SingleTargetKind::Native64 {
+        sw_envp_ptr.as_ptr()
+    } else {
+        prepared.envp_ptr.as_ptr()
+    };
+
+    // `P` is seized by `G` with `PTRACE_O_TRACEEXEC`.  Go straight into
+    // `execve`/`execveat` with zero `PTRACE_SYSCALL` entry stops.
     let mut ack_open = true;
     unsafe {
         if let Some((uid, gid)) = prepared.run_as {
@@ -721,25 +875,32 @@ fn attempt_masked_exec(
                 || libc::setuid(uid as libc::uid_t) == -1
             {
                 let err = io::Error::last_os_error();
+                signal_helper_detach(fail_pipe[1]);
+                libc::close(fail_pipe[1]);
                 libc::close(ack_pipe[0]);
                 return Ok(err);
             }
         }
         if !prepared.secret_fds.is_empty() {
-            // Close `ack_pipe[0]` before `install_fds` so `dup2` into
-            // `FIRST_FD..` cannot collide with it.
+            // Close `ack_pipe[0]` and move `fail_pipe[1]` above the secret-fd
+            // range before `install_fds` so `dup2` cannot collide with them.
             libc::close(ack_pipe[0]);
             ack_open = false;
+            let min_fd = min_helper_fd(&prepared.preserved_fds, prepared.secret_fds.len());
+            match move_fd_above(fail_pipe[1], min_fd) {
+                Ok(hi) => fail_pipe[1] = hi,
+                Err(err) => {
+                    signal_helper_detach(fail_pipe[1]);
+                    libc::close(fail_pipe[1]);
+                    return Err(err);
+                }
+            }
             crate::secret::install_fds(&prepared.secret_fds, false);
         }
 
         match target {
             ExecTarget::Path(path_ptr) => {
-                libc::execve(
-                    path_ptr,
-                    prepared.argv_ptr.as_ptr(),
-                    prepared.envp_ptr.as_ptr(),
-                );
+                libc::execve(path_ptr, exec_argv, exec_envp);
             }
             ExecTarget::Memfd(fd) => {
                 let empty: [u8; 1] = [0];
@@ -747,13 +908,17 @@ fn attempt_masked_exec(
                     libc::SYS_execveat,
                     fd as libc::c_long,
                     empty.as_ptr(),
-                    prepared.argv_ptr.as_ptr(),
-                    prepared.envp_ptr.as_ptr(),
+                    exec_argv,
+                    exec_envp,
                     AT_EMPTY_PATH,
                 );
             }
         }
         let err = io::Error::last_os_error();
+        // Signal `G` to detach cleanly (without delivering `SIGTRAP`) before
+        // returning the exec error to `P`.
+        signal_helper_detach(fail_pipe[1]);
+        libc::close(fail_pipe[1]);
         if ack_open {
             libc::close(ack_pipe[0]);
         }
@@ -762,11 +927,15 @@ fn attempt_masked_exec(
 }
 
 /// Body of the transient grandchild helper `G`.  Never returns.
+#[allow(clippy::too_many_arguments)]
 fn run_helper_tracer(
     parent_pid: libc::pid_t,
     prepared: &Prepared,
+    target_kind: SingleTargetKind,
+    env_swapped: bool,
     go_r: RawFd,
     ack_w: RawFd,
+    fail_r: RawFd,
     priv_file_c: Option<&CString>,
     priv_dir_c: Option<&CString>,
     done_fd: Option<RawFd>,
@@ -785,12 +954,35 @@ fn run_helper_tracer(
     // Redirect stdin/stdout (and stderr when quiet) to `/dev/null` and close
     // all unrelated descriptors >= 3 so `G` never holds caller pipes, secret
     // fds, or memfd handles open.
-    harden_helper_fds(go_r, ack_w, done_fd, prepared.cfg.quiet);
+    harden_helper_fds(go_r, ack_w, fail_r, done_fd, prepared.cfg.quiet);
 
     // Build `Tracer` while `P` is reaping `H` so there are zero allocations
     // on the critical path after `PTRACE_SEIZE`.
     let mut tracer = Tracer::new(prepared.cfg.clone());
-    tracer.register_single(parent_pid);
+    // Single helper owns staged cleanup on its own path; prevent `Tracer::drop`
+    // from racing a recoverable `execve` failure where `P` still owns `Image`.
+    tracer.cfg.staged_private_path = None;
+    match target_kind {
+        SingleTargetKind::Native64 => {
+            let real_argv: Vec<Vec<u8>> = prepared
+                .argv_c
+                .iter()
+                .map(|c| c.as_bytes().to_vec())
+                .collect();
+            let real_envp: Vec<Vec<u8>> = prepared
+                .envp_c
+                .iter()
+                .map(|c| c.as_bytes().to_vec())
+                .collect();
+            tracer.register_single_swapped(parent_pid, real_argv, real_envp, env_swapped);
+        }
+        SingleTargetKind::Foreign32 => {
+            tracer.register_single_foreign(parent_pid);
+        }
+        SingleTargetKind::Script => {
+            tracer.register_single_script(parent_pid);
+        }
+    }
 
     // Wait for `P` to finish `waitpid(H)` and `prctl(PR_SET_PTRACER, G)`.
     wait_pipe_eof(go_r);
@@ -799,6 +991,8 @@ fn run_helper_tracer(
     let opts: libc::c_long =
         (libc::PTRACE_O_TRACEEXEC | libc::PTRACE_O_TRACESYSGOOD) as libc::c_long;
     // SAFETY: seizing `parent_pid` which granted us `PR_SET_PTRACER`.
+    // `PTRACE_SEIZE` attaches WITHOUT stopping `P`, eliminating both the
+    // `PTRACE_INTERRUPT` stop and the `execve` entry stop.
     let rc = unsafe {
         libc::ptrace(
             arch::PTRACE_SEIZE as _,
@@ -809,10 +1003,15 @@ fn run_helper_tracer(
     };
     if rc == -1 {
         let e = last_errno();
+        if e == libc::ESRCH {
+            // `P` died (e.g. `SIGKILL`) before seize: clean up staged files.
+            unlink_staged_paths(priv_file_c, priv_dir_c);
+        }
         let eb = e.to_ne_bytes();
         write_all_raw(ack_w, &[b'E', eb[0], eb[1], eb[2], eb[3]]);
         unsafe {
             libc::close(ack_w);
+            libc::close(fail_r);
             if let Some(fd) = done_fd {
                 libc::close(fd);
             }
@@ -820,89 +1019,12 @@ fn run_helper_tracer(
         }
     }
 
-    // Interrupt `P` so we have a clean deterministic stop before acknowledging.
-    // SAFETY: `parent_pid` is seized by us.
-    let rc = unsafe {
-        libc::ptrace(
-            arch::PTRACE_INTERRUPT as _,
-            parent_pid,
-            std::ptr::null_mut::<libc::c_void>(),
-            std::ptr::null_mut::<libc::c_void>(),
-        )
-    };
-    if rc == -1 {
-        let e = last_errno();
-        let eb = e.to_ne_bytes();
-        write_all_raw(ack_w, &[b'E', eb[0], eb[1], eb[2], eb[3]]);
-        unsafe {
-            let _ = libc::ptrace(
-                libc::PTRACE_DETACH,
-                parent_pid,
-                std::ptr::null_mut::<libc::c_void>(),
-                std::ptr::null_mut::<libc::c_void>(),
-            );
-            libc::close(ack_w);
-            if let Some(fd) = done_fd {
-                libc::close(fd);
-            }
-            libc::_exit(1);
-        }
-    }
-
-    let status = loop {
-        match inject::wait_stop(parent_pid) {
-            Ok((_, st)) => {
-                if libc::WIFEXITED(st) || libc::WIFSIGNALED(st) {
-                    unsafe {
-                        libc::close(ack_w);
-                        if let Some(fd) = done_fd {
-                            libc::close(fd);
-                        }
-                        libc::_exit(0);
-                    }
-                }
-                if libc::WIFSTOPPED(st) {
-                    break st;
-                }
-            }
-            Err(_) => unsafe {
-                libc::close(ack_w);
-                if let Some(fd) = done_fd {
-                    libc::close(fd);
-                }
-                libc::_exit(1);
-            },
-        }
-    };
-
-    let sig = libc::WSTOPSIG(status);
-    let event = (status as u32) >> 16;
-    let release_sig = if event == arch::PTRACE_EVENT_STOP {
-        if sig == libc::SIGTRAP {
-            0
-        } else {
-            libc::SIGCONT
-        }
-    } else {
-        sig
-    };
-
-    // Signal `P` that seizing succeeded, then resume it under `PTRACE_SYSCALL`
-    // so we intercept its `execve`/`execveat` entry stop.
+    // Signal `P` that seizing succeeded (`P` is already running, ready for exec).
     write_all_raw(ack_w, b"K");
     unsafe { libc::close(ack_w) };
 
-    if inject::ptrace_syscall(parent_pid, release_sig).is_err() {
-        drop(tracer);
-        unsafe {
-            if let Some(fd) = done_fd {
-                libc::close(fd);
-            }
-            libc::_exit(1);
-        }
-    }
-
     const PTRACE_EVENT_EXEC: u32 = 4;
+    let mut exec_failed_detached = false;
     while let Ok((_, status)) = inject::wait_stop(parent_pid) {
         if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
             break;
@@ -913,95 +1035,57 @@ fn run_helper_tracer(
         let sig = libc::WSTOPSIG(status);
         let event = (status as u32) >> 16;
 
+        if sig == libc::SIGTRAP && event == PTRACE_EVENT_EXEC {
+            unsafe { libc::close(fail_r) };
+            finish_single_exec(&mut tracer, parent_pid, priv_file_c, priv_dir_c, done_fd);
+        }
+
+        if sig == libc::SIGTRAP && event == 0 {
+            let mut fb = [0u8; 1];
+            // SAFETY: non-blocking 1-byte read from `fail_r`.
+            let n = unsafe { libc::read(fail_r, fb.as_mut_ptr().cast(), 1) };
+            if n == 1 && fb[0] == b'F' {
+                // `execve`/`execveat` returned an error in `P`: detach cleanly
+                // without delivering `SIGTRAP` so `P` receives the exact errno.
+                unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_DETACH,
+                        parent_pid,
+                        std::ptr::null_mut::<libc::c_void>(),
+                        std::ptr::null_mut::<libc::c_void>(),
+                    );
+                }
+                exec_failed_detached = true;
+                break;
+            }
+            let _ = inject::ptrace_cont(parent_pid, sig);
+            continue;
+        }
+
         if event == arch::PTRACE_EVENT_STOP {
             let deliver = if sig == libc::SIGTRAP {
                 0
             } else {
                 libc::SIGCONT
             };
-            let _ = inject::ptrace_syscall(parent_pid, deliver);
-            continue;
-        }
-
-        if sig == libc::SIGTRAP && event == PTRACE_EVENT_EXEC {
-            finish_single_exec(&mut tracer, parent_pid, priv_file_c, priv_dir_c, done_fd);
-        }
-
-        if sig == libc::SIGTRAP | 0x80 {
-            // SAFETY: `SyscallInfo` is plain C data.
-            let mut si: SyscallInfo = unsafe { std::mem::zeroed() };
-            if inject::get_syscall_info(parent_pid, &mut si).is_err() {
-                let _ = inject::ptrace_syscall(parent_pid, 0);
-                continue;
-            }
-            if let Some(nr) = si.entry_nr() {
-                let state = tracer.tracee_state(parent_pid).unwrap_or(State::Run);
-                let class = arch::classify_exec(si.arch, nr);
-                if class == ExecClass::Native && state == State::Slow {
-                    match Regs::get(parent_pid) {
-                        Ok(regs) => tracer.on_exec_entry(parent_pid, nr, &regs),
-                        Err(_) => {
-                            tracer.set_state(parent_pid, State::Script);
-                            let _ = inject::ptrace_syscall(parent_pid, 0);
-                        }
-                    }
-                    continue;
-                }
-                if class == ExecClass::Foreign && state == State::Slow {
-                    if tracer.cfg.strict_exec && !tracer.cfg.allow_foreign {
-                        tracer.refuse(format_args!(
-                            "pid {}: --strict-exec refuses a foreign-ABI exec at entry; \
-                             the payload is killed and the run stops",
-                            parent_pid
-                        ));
-                        // SAFETY: plain kill(2) of stopped tracee.
-                        unsafe { libc::kill(parent_pid, libc::SIGKILL) };
-                        let _ = inject::ptrace_cont(parent_pid, 0);
-                        break;
-                    }
-                    tracer.set_state(parent_pid, State::Script);
-                    let _ = inject::ptrace_syscall(parent_pid, 0);
-                    continue;
-                }
-                let _ = inject::ptrace_syscall(parent_pid, 0);
-                continue;
-            }
-
-            // Syscall exit stop.
-            let state = tracer.tracee_state(parent_pid).unwrap_or(State::Run);
-            match state {
-                State::Swapped | State::Script | State::Foreign => {
-                    if si.exit_is_error() {
-                        // `execve`/`execveat` failed: restore original inline
-                        // pointers, detach cleanly, and exit so `P` receives
-                        // the exact error without any lingering tracer.
-                        tracer.clear_failed_exec_single(parent_pid);
-                        unsafe {
-                            libc::ptrace(
-                                libc::PTRACE_DETACH,
-                                parent_pid,
-                                std::ptr::null_mut::<libc::c_void>(),
-                                std::ptr::null_mut::<libc::c_void>(),
-                            );
-                        }
-                        break;
-                    }
-                    // Exec succeeded on a kernel that skipped PTRACE_EVENT_EXEC.
-                    finish_single_exec(&mut tracer, parent_pid, priv_file_c, priv_dir_c, done_fd);
-                }
-                _ => {
-                    let _ = inject::ptrace_syscall(parent_pid, 0);
-                }
-            }
+            let _ = inject::ptrace_cont(parent_pid, deliver);
             continue;
         }
 
         // Forward real signals to `parent_pid`.
-        let _ = inject::ptrace_syscall(parent_pid, sig);
+        let _ = inject::ptrace_cont(parent_pid, sig);
+    }
+
+    if !exec_failed_detached {
+        // `P` exited or was killed (e.g. `SIGKILL`) before `PTRACE_EVENT_EXEC`:
+        // remove any staged `RexecMode::Path` file + `.rt-*` dir so zero
+        // leftovers remain on disk.
+        unlink_staged_paths(priv_file_c, priv_dir_c);
     }
 
     drop(tracer);
     unsafe {
+        libc::close(fail_r);
         if let Some(fd) = done_fd {
             libc::close(fd);
         }
@@ -1023,14 +1107,7 @@ fn finish_single_exec(
     // Unlink any staged `RexecMode::Path` file + empty `0700` dir right after
     // `PTRACE_EVENT_EXEC` so zero files are left on disk even if `P` is later
     // killed with `SIGKILL`.
-    unsafe {
-        if let Some(f) = priv_file_c {
-            libc::unlink(f.as_ptr());
-        }
-        if let Some(d) = priv_dir_c {
-            libc::rmdir(d.as_ptr());
-        }
-    }
+    unlink_staged_paths(priv_file_c, priv_dir_c);
 
     if killed_foreign {
         let _ = inject::ptrace_cont(parent_pid, 0);
@@ -1064,25 +1141,43 @@ fn finish_single_exec(
 
 /// Redirect stdin/stdout (and stderr if `quiet`) to `/dev/null` and close all
 /// extra descriptors >= 3 except the helper's own pipe descriptors.
-fn harden_helper_fds(go_r: RawFd, ack_w: RawFd, done_fd: Option<RawFd>, quiet: bool) {
+fn harden_helper_fds(
+    go_r: RawFd,
+    ack_w: RawFd,
+    fail_r: RawFd,
+    done_fd: Option<RawFd>,
+    quiet: bool,
+) {
     unsafe {
         let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
         let max_std = if quiet { 2 } else { 1 };
         if devnull >= 0 {
             for std_fd in 0..=max_std {
-                if std_fd != go_r && std_fd != ack_w && done_fd != Some(std_fd) && devnull != std_fd
+                if std_fd != go_r
+                    && std_fd != ack_w
+                    && std_fd != fail_r
+                    && done_fd != Some(std_fd)
+                    && devnull != std_fd
                 {
                     libc::dup2(devnull, std_fd);
                 }
             }
-            if devnull > 2 && devnull != go_r && devnull != ack_w && done_fd != Some(devnull) {
+            if devnull > 2
+                && devnull != go_r
+                && devnull != ack_w
+                && devnull != fail_r
+                && done_fd != Some(devnull)
+            {
                 libc::close(devnull);
             }
         }
         // Collect sorted list of fds >= 3 to keep open.
-        let mut keep = [0 as RawFd; 3];
+        let mut keep = [0 as RawFd; 4];
         let mut nkeep = 0usize;
-        for fd in [Some(go_r), Some(ack_w), done_fd].into_iter().flatten() {
+        for fd in [Some(go_r), Some(ack_w), Some(fail_r), done_fd]
+            .into_iter()
+            .flatten()
+        {
             if fd >= 3 {
                 keep[nkeep] = fd;
                 nkeep += 1;
@@ -1114,18 +1209,40 @@ fn harden_helper_fds(go_r: RawFd, ack_w: RawFd, done_fd: Option<RawFd>, quiet: b
     }
 }
 
-fn move_fd_above(fd: RawFd, min_fd: RawFd) -> RawFd {
+/// Signal the transient helper `G` that `execve`/`setuid` failed and trigger
+/// a clean detach stop, temporarily unblocking `SIGTRAP` in case the caller
+/// masked it.
+unsafe fn signal_helper_detach(fail_fd: RawFd) {
+    write_all_raw(fail_fd, b"F");
+    let mut trap_set: libc::sigset_t = std::mem::zeroed();
+    let mut old_set: libc::sigset_t = std::mem::zeroed();
+    libc::sigemptyset(&mut trap_set);
+    libc::sigaddset(&mut trap_set, libc::SIGTRAP);
+    let unblocked = libc::sigprocmask(libc::SIG_UNBLOCK, &trap_set, &mut old_set) == 0;
+    libc::raise(libc::SIGTRAP);
+    if unblocked {
+        libc::sigprocmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+    }
+}
+
+fn min_helper_fd(preserved_fds: &[libc::c_int], secret_fd_count: usize) -> RawFd {
+    let max_preserved = preserved_fds.iter().copied().max().unwrap_or(0);
+    let max_secret = crate::secret::FIRST_FD.saturating_add(secret_fd_count as libc::c_int);
+    max_preserved.max(max_secret).saturating_add(1).max(3)
+}
+
+fn move_fd_above(fd: RawFd, min_fd: RawFd) -> io::Result<RawFd> {
     if fd >= min_fd {
-        return fd;
+        return Ok(fd);
     }
     // SAFETY: duplicating our own descriptor with `O_CLOEXEC`.
     let hi = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, min_fd) };
-    if hi >= 0 {
-        unsafe { libc::close(fd) };
-        hi
-    } else {
-        fd
+    if hi < 0 {
+        return Err(io::Error::last_os_error());
     }
+    // SAFETY: `fd` has been duplicated to `hi`.
+    unsafe { libc::close(fd) };
+    Ok(hi)
 }
 
 fn reap_child(pid: libc::pid_t) {
@@ -1485,7 +1602,7 @@ mod tests {
             assert_eq!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
             write_all_raw(p[1], b"FD_SECRET_PAYLOAD");
             unsafe { libc::close(p[1]) };
-            let secret_fd = move_fd_above(p[0], 11);
+            let secret_fd = move_fd_above(p[0], 11).expect("move_fd_above");
             let script = format!(
                 "printf 'PWD=%s\\nFD=%s\\n' \"$(pwd)\" \"$(cat /proc/self/fd/{})\"",
                 secret_fd
@@ -1550,5 +1667,30 @@ mod tests {
             std::process::id(),
             "reparented payload must not have test runner as ppid"
         );
+    }
+
+    #[test]
+    fn min_helper_fd_avoids_arbitrary_floor_and_collisions() {
+        assert_eq!(min_helper_fd(&[], 0), crate::secret::FIRST_FD + 1);
+        assert_eq!(min_helper_fd(&[], 4), crate::secret::FIRST_FD + 4 + 1);
+        assert_eq!(min_helper_fd(&[11, 7], 2), 12);
+    }
+
+    #[test]
+    fn exec_single_strict_exec_refuses_script_before_forking() {
+        let script_path = std::env::temp_dir().join(format!(
+            "pmask-single-strict-script-{}.sh",
+            std::process::id()
+        ));
+        std::fs::write(&script_path, "#!/bin/sh\nexit 0\n").expect("write script");
+        let c = CString::new(script_path.as_os_str().as_bytes()).expect("no nul");
+        unsafe { libc::chmod(c.as_ptr(), 0o700) };
+
+        let mask = Mask::new().label("strict-worker").strict_exec().quiet();
+        let err = exec_single(&mask, script_path.as_os_str(), &[], false)
+            .expect_err("--strict-exec must refuse script in single profile");
+        let _ = std::fs::remove_file(&script_path);
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("--strict-exec"), "{}", err);
     }
 }

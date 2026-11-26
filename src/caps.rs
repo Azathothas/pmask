@@ -1024,58 +1024,51 @@ fn kernel_release() -> String {
     "unknown".to_string()
 }
 
-/// Lightweight `ptrace` usability probe for the hot path.
+/// Lightweight zero-fork `ptrace` usability probe for the hot path.
 ///
-/// Avoids forking completely when no seccomp filter is installed on the
-/// current process; when a seccomp filter is active (for example in a
-/// container), runs only the single `PTRACE_TRACEME` child probe instead of
-/// the full 8-fork [`Caps::detect`] suite.
+/// Works with zero forks even inside containers with a seccomp filter
+/// (`Seccomp: 2`): `ptrace(PTRACE_SEIZE, -1, 0, 0)` passes through seccomp
+/// before pid lookup, returning `ENOSYS`/`EPERM`/`EACCES` when blocked by
+/// seccomp/LSM and `ESRCH` when `ptrace` is permitted.
 fn probe_ptrace_fast() -> bool {
     const CAP_SYS_PTRACE_BIT: u64 = 1u64 << 19;
     let ptrace_scope = sysctl("kernel/yama/ptrace_scope").and_then(|v| v.parse::<u32>().ok());
     if ptrace_scope.is_some_and(|s| s >= 3) {
         return false;
     }
-    let mut seccomp_filter = false;
-    let mut cap_effective = 0u64;
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("Seccomp:") {
-                if let Some(v) = rest.split_whitespace().next() {
-                    seccomp_filter = v != "0";
-                }
-            } else if let Some(rest) = line.strip_prefix("CapEff:") {
-                if let Some(hex) = rest.split_whitespace().next() {
-                    cap_effective = u64::from_str_radix(hex, 16).unwrap_or(0);
+    if ptrace_scope == Some(2) {
+        let mut cap_effective = 0u64;
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("CapEff:") {
+                    if let Some(hex) = rest.split_whitespace().next() {
+                        cap_effective = u64::from_str_radix(hex, 16).unwrap_or(0);
+                    }
+                    break;
                 }
             }
         }
-    }
-    if ptrace_scope == Some(2) && (cap_effective & CAP_SYS_PTRACE_BIT) == 0 {
-        return false;
-    }
-    if !seccomp_filter {
-        // SAFETY: querying `PTRACE_SEIZE` on pid -1 cannot attach to any
-        // process; the kernel answers ESRCH when ptrace is reachable and
-        // ENOSYS/EPERM/EACCES when blocked.
-        let rc = unsafe {
-            libc::ptrace(
-                crate::arch::PTRACE_SEIZE as _,
-                -1 as libc::pid_t,
-                std::ptr::null_mut::<libc::c_void>(),
-                std::ptr::null_mut::<libc::c_void>(),
-            )
-        };
-        if rc == -1 {
-            let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            return !matches!(e, libc::ENOSYS | libc::EPERM | libc::EACCES);
+        if (cap_effective & CAP_SYS_PTRACE_BIT) == 0 {
+            return false;
         }
-        return true;
     }
-    probe_in_child(|| {
-        // SAFETY: plain ptrace in a throwaway child that exits immediately.
-        unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) == 0 }
-    })
+    // SAFETY: querying `PTRACE_SEIZE` on pid -1 cannot attach to any
+    // process; the kernel answers ESRCH when ptrace is reachable and
+    // ENOSYS/EPERM/EACCES when blocked (including by a container seccomp
+    // filter, which evaluates before `sys_ptrace` looks up the pid).
+    let rc = unsafe {
+        libc::ptrace(
+            crate::arch::PTRACE_SEIZE as _,
+            -1 as libc::pid_t,
+            std::ptr::null_mut::<libc::c_void>(),
+            std::ptr::null_mut::<libc::c_void>(),
+        )
+    };
+    if rc == -1 {
+        let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return !matches!(e, libc::ENOSYS | libc::EPERM | libc::EACCES);
+    }
+    true
 }
 
 /// Run `f` in a forked child and return its boolean verdict.

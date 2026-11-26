@@ -578,6 +578,19 @@ pub struct DaemonConfig {
     pub job_timeout_secs: u64,
     /// Run each job as the uid and gid of its client (root daemon only).
     pub run_as_uid: bool,
+    /// Run each job as a fixed helper `(uid, gid)` (root daemon only).
+    pub run_as_fixed: Option<(u32, u32)>,
+    /// Always force `PR_SET_DUMPABLE=0` on every job, even cross-UID jobs.
+    pub force_no_dumpable: bool,
+    /// Leave jobs dumpable (`PR_SET_DUMPABLE=1`), even for same-UID jobs.
+    /// The daemon itself always stays non-dumpable.
+    pub allow_dumpable: bool,
+    /// Stage readable, non-setuid ELF job binaries into an unlinked or private
+    /// carrier so `/proc/<pid>/exe` and `maps` do not name the on-disk path
+    /// (default: `true`; `#!` scripts still run directly).
+    pub rexec: bool,
+    /// Carrier mode for `--rexec` (`Auto`, `Path`, `Tmpfile`, or `Memfd`).
+    pub rexec_mode: crate::RexecMode,
     /// Largest number of concurrent jobs; 1 runs jobs in the daemon itself.
     pub jobs: usize,
     /// Cap on the sum of `len + 1` over the job arguments.
@@ -604,6 +617,11 @@ impl DaemonConfig {
             io_timeout_secs: 30,
             job_timeout_secs: 0,
             run_as_uid: false,
+            run_as_fixed: None,
+            force_no_dumpable: false,
+            allow_dumpable: false,
+            rexec: true,
+            rexec_mode: crate::RexecMode::Auto,
             jobs: 1,
             max_job_bytes: MAX_JOB_ARGV,
             verbose: false,
@@ -2071,7 +2089,7 @@ pub fn serve(mut cfg: DaemonConfig) -> io::Result<()> {
             "--jobs needs a number of at least 1",
         ));
     }
-    if cfg.run_as_uid && me != 0 {
+    if (cfg.run_as_uid || cfg.run_as_fixed.is_some()) && me != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "--run-as-uid needs a daemon that runs as root",
@@ -2552,7 +2570,7 @@ fn daemon_status(
         protocol: PROTOCOL_VERSION,
         label: cfg.label.clone(),
         uid: daemon_uid,
-        run_as_uid: cfg.run_as_uid,
+        run_as_uid: cfg.run_as_uid || cfg.run_as_fixed.is_some(),
         jobs: cfg.jobs,
         env_vars: cfg.env.len(),
         allow_uids: cfg.allow_uids.clone(),
@@ -2589,6 +2607,114 @@ fn restore_stdio(saved: &[RawFd]) {
     }
 }
 
+/// Decide whether a job running as `job_uid` on behalf of `peer_uid` should
+/// receive `PR_SET_DUMPABLE=0`.
+///
+/// Cross-UID jobs (`job_uid != peer_uid`) are already isolated from the caller
+/// by kernel Unix DAC, so keeping them dumpable by default avoids the same-UID
+/// `dumpable=0` anomaly and preserves coherent `/proc/<pid>/stat` spans.
+/// Same-UID jobs always stay non-dumpable unless `--allow-dumpable` was set.
+fn job_should_be_non_dumpable(cfg: &DaemonConfig, job_uid: u32, peer_uid: u32) -> bool {
+    let cross_uid = job_uid != peer_uid;
+    cfg.force_no_dumpable || (!cfg.allow_dumpable && !cross_uid)
+}
+
+/// Return `true` when `program` (resolved via `env`'s `PATH` when it has no
+/// `/`) is a regular, executable, non-setuid/non-setgid ELF binary readable by
+/// `(job_uid, job_gid)`.
+///
+/// When running as root on behalf of a non-root job (`euid == 0 && job_uid != 0`),
+/// the open executes under a thread-local [`crate::rexec::FsCredGuard`]
+/// (`setfsuid`/`setfsgid`) so root never stages a binary the target account
+/// cannot read.  Scripts (`#!`), FIFOs, unreadable binaries, and setuid/setgid
+/// binaries return `false` so they run or fail through ordinary `execve` after
+/// `setuid(job_uid)`.
+fn job_can_rexec_elf(
+    program: &OsStr,
+    env: &[(OsString, OsString)],
+    job_uid: u32,
+    job_gid: u32,
+) -> bool {
+    if program.is_empty() {
+        return false;
+    }
+    let Ok(resolved) = crate::mask::resolve_program(program, env) else {
+        return false;
+    };
+    let fd = {
+        let Ok(_guard) = crate::rexec::FsCredGuard::enter(job_uid, job_gid) else {
+            return false;
+        };
+        // SAFETY: `resolved` is a valid NUL-terminated path; `O_NONBLOCK`
+        // prevents blocking on FIFOs.
+        unsafe {
+            libc::open(
+                resolved.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        }
+    };
+    if fd < 0 {
+        return false;
+    }
+    let ok = (|| {
+        // SAFETY: `libc::stat` is plain old data; `fstat` initializes it.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is an open descriptor owned here.
+        if unsafe { libc::fstat(fd, &mut st) } != 0 {
+            return false;
+        }
+        let mode = st.st_mode as u32;
+        if (mode & libc::S_IFMT) != libc::S_IFREG {
+            return false;
+        }
+        if (mode & (libc::S_ISUID | libc::S_ISGID)) != 0 {
+            return false;
+        }
+        if (mode & 0o111) == 0 {
+            return false;
+        }
+        // SAFETY: geteuid/getegid cannot fail.
+        let (euid, egid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let exec_ok =
+            if crate::rexec::mode_allows_exec(mode, st.st_uid, st.st_gid, job_uid, job_gid) {
+                true
+            } else if job_uid == euid && job_gid == egid {
+                // Same-UID job retains the daemon's supplementary groups.
+                // SAFETY: `resolved` is a valid NUL-terminated path.
+                unsafe {
+                    libc::faccessat(
+                        libc::AT_FDCWD,
+                        resolved.as_ptr(),
+                        libc::X_OK,
+                        libc::AT_EACCESS,
+                    ) == 0
+                }
+            } else {
+                false
+            };
+        if !exec_ok {
+            return false;
+        }
+        let mut magic = [0u8; 4];
+        loop {
+            // SAFETY: `magic` is a valid 4-byte writable buffer.
+            let n =
+                unsafe { libc::pread(fd, magic.as_mut_ptr() as *mut libc::c_void, magic.len(), 0) };
+            if n < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            return n == 4 && magic == [0x7f, b'E', b'L', b'F'];
+        }
+    })();
+    // SAFETY: `fd` is owned here.
+    unsafe { libc::close(fd) };
+    ok
+}
+
 /// Start one job with the client's stdio on descriptors 0, 1 and 2 and
 /// wait for it.  The daemon closes the received descriptors before the
 /// job starts, and puts its own 0, 1 and 2 back as soon as the fork is
@@ -2620,14 +2746,12 @@ fn run_job(
 
     let mut mask = Mask::new()
         .label(label)
+        .no_core_dump()
         // The daemon holds the job environment and the secret store for
         // its whole life.  Its own self-mask made it non-dumpable; a job
         // tracer that toggled the process back to dumpable at rest would
-        // undo that.  The job is non-dumpable for the same reason: it
-        // receives the secret descriptor and its own memory, and a
-        // same-uid peer must not read either (issue 004).
+        // undo that.
         .supervisor_non_dumpable(true)
-        .no_dumpable()
         .envs(cfg.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     // A job that degrades must say so on the daemon's stderr: invariant 13
     // applies to a daemon's jobs too.  `--quiet` is the operator asking for
@@ -2638,8 +2762,21 @@ fn run_job(
     if cfg.keep_env {
         mask = mask.keep_environ_visible();
     }
-    if cfg.run_as_uid {
+    let (job_uid, job_gid) = if let Some((u, g)) = cfg.run_as_fixed {
+        mask = mask.run_as(u, g);
+        (u, g)
+    } else if cfg.run_as_uid {
         mask = mask.run_as(uid, gid);
+        (uid, gid)
+    } else {
+        // SAFETY: geteuid and getegid cannot fail.
+        unsafe { (libc::geteuid(), libc::getegid()) }
+    };
+    if job_should_be_non_dumpable(cfg, job_uid, uid) {
+        mask = mask.no_dumpable();
+    }
+    if cfg.rexec && job_can_rexec_elf(&argv[0], &cfg.env, job_uid, job_gid) {
+        mask = mask.rexec().rexec_mode(cfg.rexec_mode);
     }
     let rest: Vec<OsString> = argv[1..].to_vec();
     let spawned = mask.spawn(&argv[0], &rest);
@@ -3375,5 +3512,118 @@ mod tests {
             "a non-constant duration reaches the deadline addition: {:?}",
             bare
         );
+    }
+
+    #[test]
+    fn cross_uid_jobs_stay_dumpable_by_default_and_same_uid_stays_non_dumpable() {
+        let mut cfg = DaemonConfig::new();
+        // Same-UID job stays non-dumpable by default.
+        assert!(job_should_be_non_dumpable(&cfg, 2000, 2000));
+        // Cross-UID job stays dumpable by default (Unix DAC protects it).
+        assert!(!job_should_be_non_dumpable(&cfg, 2001, 2000));
+
+        // --no-dumpable forces PR_SET_DUMPABLE=0 even for cross-UID jobs.
+        cfg.force_no_dumpable = true;
+        assert!(job_should_be_non_dumpable(&cfg, 2001, 2000));
+        assert!(job_should_be_non_dumpable(&cfg, 2000, 2000));
+
+        // --allow-dumpable keeps even same-UID jobs dumpable.
+        cfg.force_no_dumpable = false;
+        cfg.allow_dumpable = true;
+        assert!(!job_should_be_non_dumpable(&cfg, 2000, 2000));
+        assert!(!job_should_be_non_dumpable(&cfg, 2001, 2000));
+    }
+
+    #[test]
+    fn daemon_status_reports_run_as_uid_for_fixed_helper_uid() {
+        let mut cfg = DaemonConfig::new();
+        assert!(!daemon_status(&cfg, 0, 0, PeerMethod::CredsOnly).run_as_uid);
+
+        cfg.run_as_fixed = Some((2001, 2001));
+        assert!(daemon_status(&cfg, 0, 0, PeerMethod::CredsOnly).run_as_uid);
+
+        cfg.run_as_fixed = None;
+        cfg.run_as_uid = true;
+        assert!(daemon_status(&cfg, 0, 0, PeerMethod::CredsOnly).run_as_uid);
+    }
+
+    #[test]
+    fn daemon_config_defaults_enable_auto_rexec() {
+        let cfg = DaemonConfig::new();
+        assert!(cfg.rexec);
+        assert_eq!(cfg.rexec_mode, crate::RexecMode::Auto);
+    }
+
+    #[test]
+    fn job_can_rexec_elf_checks_magic_exec_bits_setuid_and_uid() {
+        let d = test_dir("rexec-check");
+        // SAFETY: geteuid/getegid cannot fail.
+        let (me_uid, me_gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+
+        // Readable executable ELF (the current test binary) passes both by
+        // direct path and via PATH search.
+        let exe = std::env::current_exe().expect("current_exe");
+        assert!(job_can_rexec_elf(exe.as_os_str(), &[], me_uid, me_gid));
+        let bin_copy = d.join("my-elf");
+        std::fs::copy(&exe, &bin_copy).expect("copy elf");
+        std::fs::set_permissions(&bin_copy, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path_env = vec![(OsString::from("PATH"), d.as_os_str().to_os_string())];
+        assert!(job_can_rexec_elf(
+            OsStr::new("my-elf"),
+            &path_env,
+            me_uid,
+            me_gid
+        ));
+        // Mode 0700 owned by `me_uid` must not be staged for a different non-root uid.
+        let other_uid = if me_uid == 65534 { 65533 } else { 65534 };
+        assert!(!job_can_rexec_elf(
+            bin_copy.as_os_str(),
+            &[],
+            other_uid,
+            other_uid
+        ));
+
+        // Non-executable ELF is rejected.
+        let non_exec = d.join("non-exec-elf");
+        std::fs::copy(&exe, &non_exec).expect("copy non-exec");
+        std::fs::set_permissions(&non_exec, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!job_can_rexec_elf(
+            non_exec.as_os_str(),
+            &[],
+            me_uid,
+            me_gid
+        ));
+
+        // `#!` script is rejected so it executes directly via `execve`.
+        let script = d.join("job.sh");
+        std::fs::write(&script, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!job_can_rexec_elf(script.as_os_str(), &[], me_uid, me_gid));
+
+        // Setuid ELF is rejected even when executable and readable.
+        let suid_elf = d.join("suid-elf");
+        std::fs::copy(&exe, &suid_elf).expect("copy suid");
+        if std::fs::set_permissions(&suid_elf, std::fs::Permissions::from_mode(0o4755)).is_ok() {
+            let actual_mode = std::fs::metadata(&suid_elf).unwrap().mode();
+            if (actual_mode & libc::S_ISUID) != 0 {
+                assert!(!job_can_rexec_elf(
+                    suid_elf.as_os_str(),
+                    &[],
+                    me_uid,
+                    me_gid
+                ));
+            }
+        }
+
+        // Empty or missing program returns false.
+        assert!(!job_can_rexec_elf(OsStr::new(""), &[], me_uid, me_gid));
+        assert!(!job_can_rexec_elf(
+            OsStr::new("/nonexistent/pmaskd-elf"),
+            &[],
+            me_uid,
+            me_gid
+        ));
+
+        std::fs::remove_dir_all(&d).ok();
     }
 }

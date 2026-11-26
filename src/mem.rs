@@ -83,6 +83,7 @@ enum Backing {
         ptr: *mut u8,
         len: usize,
         fd: libc::c_int,
+        owner_pid: libc::pid_t,
     },
 }
 
@@ -220,11 +221,23 @@ impl SecBuf {
             }
             return Ok(None);
         }
+        // Exclude secretmem mappings from core dumps and forked children so
+        // descendants never inherit the supervisor's key or secret buffer.
+        // Record the owning PID so `Drop` in a forked child never touches the
+        // `MADV_DONTFORK`-unmapped address.
+        // SAFETY: `ptr` is a page-aligned mapping of `want` bytes we own;
+        // `getpid` is always safe.
+        let owner_pid = unsafe {
+            let _ = libc::madvise(ptr, want, libc::MADV_DONTDUMP);
+            let _ = libc::madvise(ptr, want, libc::MADV_DONTFORK);
+            libc::getpid()
+        };
         Ok(Some(SecBuf {
             inner: Backing::SecretMmap {
                 ptr: ptr as *mut u8,
                 len: want,
                 fd,
+                owner_pid,
             },
             len,
             locked: true,
@@ -284,17 +297,27 @@ impl SecBuf {
 
 impl Drop for SecBuf {
     fn drop(&mut self) {
-        self.as_mut_slice().zeroize();
         match &mut self.inner {
             Backing::Heap(v) => {
+                v.as_mut_slice().zeroize();
                 unlock_range(v.as_ptr(), v.len());
             }
-            Backing::SecretMmap { ptr, len, fd } => {
-                // Wipe the whole mapping, not just the logical length.
-                // SAFETY: the mapping is ours and is unmapped once.
+            Backing::SecretMmap {
+                ptr,
+                len,
+                fd,
+                owner_pid,
+            } => {
+                // SAFETY: `getpid` is always safe and `fd` is owned by this
+                // buffer.  Only the owning process has `*ptr` mapped (forked
+                // children lost the VMA via `MADV_DONTFORK`), so any other PID
+                // must skip touching or unmapping `*ptr` and only close `*fd`.
                 unsafe {
-                    std::ptr::write_bytes(*ptr, 0, *len);
-                    libc::munmap(*ptr as *mut libc::c_void, *len);
+                    if libc::getpid() == *owner_pid {
+                        // Wipe the whole mapping, not just the logical length.
+                        std::slice::from_raw_parts_mut(*ptr, *len).zeroize();
+                        libc::munmap(*ptr as *mut libc::c_void, *len);
+                    }
                     libc::close(*fd);
                 }
             }
@@ -678,5 +701,32 @@ mod tests {
             libc::FD_CLOEXEC,
             "memfd_secret must be created O_CLOEXEC"
         );
+    }
+
+    #[test]
+    fn secbuf_drop_in_forked_child_does_not_fault() {
+        let buf = SecBuf::from_slice(b"fork-safe-secret").unwrap();
+        // SAFETY: forked child drops its copy of `buf` and exits immediately.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            drop(buf);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0i32;
+        loop {
+            let w = unsafe { libc::waitpid(pid, &mut status, 0) };
+            if w == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            assert_eq!(w, pid);
+            break;
+        }
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "child failed on SecBuf drop: status={:#x}",
+            status
+        );
+        assert_eq!(buf.as_slice(), b"fork-safe-secret");
     }
 }

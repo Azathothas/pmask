@@ -1,6 +1,13 @@
 # Execution Profiles, Audit Invariants, and `psgen` Integration
 
-`pmask` v0.2.0 organizes masking, image staging, dumpability, memory hygiene, and isolation into explicit execution profiles (`auto`, `single`, `tree`, `tee`, and `compat`), paired with a machine-verifiable audit engine (`pmask --audit`) and a versioned profile export (`pmask --profile-json`) for decoy population tools such as `psgen`.
+`pmask` v0.3.0 organizes masking, image staging, dumpability, memory hygiene, and isolation into explicit execution profiles (`auto`, `single`, `tree`, `tee`, and `compat`), paired with a machine-verifiable audit engine (`pmask --audit`) and a native `psgen` `schema: 2` profile export (`pmask --profile-json`) requiring zero adapter.
+
+## Profile Ranking (Which Mode to Choose)
+
+1. **`single` (#1 for direct native ELFs, default under `--profile auto`)**: In-place masked `execve`/`execveat` with zero persistent supervisor, `TracerPid: 0`, `Threads: 1`, `Seccomp: 0`, `NoNewPrivs: 0`, `--rexec` (`auto`), and `PR_SET_DUMPABLE=0`. Note: `cwd` stays real unless `--cwd PATH` is passed (same-uid reads still get `EACCES` while non-dumpable).
+2. **`tree` (default under `--profile auto` for shells, `#!` scripts, and descendants)**: Single-threaded (`Threads: 1`) supervisor tracking every fork, shell pipeline, and re-exec. `--stealth` is a `tree`-mode preset (`--rexec-mode=auto`, `--watch-rename`, hidepid-aware `--no-dumpable`, silent on `hidepid=off`).
+3. **Cross-UID `pmaskd --run-as-uid=UID[:GID]` (or dedicated host uid / subuid)**: Eliminates the same-uid `EACCES` denial signal by placing the payload on a separate host uid; jobs default to `dumpable=1` because Linux DAC naturally denies restricted `/proc` surfaces to other unprivileged uids.
+4. **`tee` (fail-closed namespaces)**: Composes redaction with user, pid, and mount namespaces, private `/proc` and `/tmp`, and `cwd=/` normalization. Fails closed with exit `255` whenever unprivileged userns OR the private `/proc` mount is refused.
 
 ## Honest Threat Model
 
@@ -26,8 +33,8 @@ Run `pmask --explain [--profile NAME] [--json]` on any host to inspect the activ
 | `Seccomp` / `NoNewPrivs` added | `0` / `0` (unless `--watch-rename` / `--exec-once`) | **`0` / `0`** (unless `--no-new-privs`) | `0` / `0` (unless `--watch-rename` / `--exec-once`) | namespace/isolation defaults | `0` / `0` (opt-in) |
 | `PR_SET_DUMPABLE=0` default | yes (`--allow-dumpable` opts out) | **yes** | **yes** (skipped by `--stealth` on `hidepid`) | **yes** | no (opt-in via `--no-dumpable` or `--secret`) |
 | `--rexec` default | yes for native ELFs (`--rexec-mode=auto`) | **yes** (`--rexec-mode=auto`, opt out via `--no-rexec`) | **yes** for native ELFs (`--rexec-mode=auto`) | **yes** for native ELFs (`--rexec-mode=auto`) | no (opt-in via `--rexec`) |
-| `--encrypt-memory` default | yes | **yes** | **yes** | **yes** | no (opt-in) |
-| namespaces & private `/proc` | none (unless `--isolate` / `--unshare`) | none (refuses `--isolate`/`--unshare`) | none (optional `--isolate`/`--unshare`) | **required** (user, pid, mount, private `/proc`, private `/tmp`; fails closed) | none (opt-in) |
+| `--encrypt-memory` default | `tree` only | opt-in (helper exits before `main()`) | **yes** | **yes** | no (opt-in) |
+| namespaces & private `/proc` | none (unless `--isolate` / `--unshare`) | none (refuses `--isolate`/`--unshare`) | none (optional `--isolate`/`--unshare`) | **required** (user, pid, mount, private `/proc`, private `/tmp`, `cwd=/`; fails closed with exit `255`) | none (opt-in) |
 | descendant coverage | `single`: none; `tree`: full tree | none (single native binary) | full descendant tree | full descendant tree inside namespaces | full descendant tree |
 
 ### How `--profile auto` chooses
@@ -70,16 +77,27 @@ When the observer has a different host uid, Linux naturally denies restricted `/
 
 > **Linux `CLONE_NEWUSER` note (`--profile tee`):** In `--profile tee`, `pmask` creates unprivileged user/PID/mount namespaces (with private `/proc` and `/tmp`) to isolate the **host from the payload**, and applies `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, `MADV_DONTDUMP`, staged `--rexec-mode=auto`, and default `cwd=/`. However, Linux `security/commoncap.c:cap_capable()` unconditionally grants the user-namespace creator's host uid `CAP_SYS_PTRACE` over the child user namespace (even when `newuidmap` maps the child to a subuid). As a result, same-uid host observers still receive `EACCES` on `mem`, `environ`, `auxv`, and `fd` (via `root:root` VFS DAC), while `exe` (staged path), `maps`, `cwd` (`/`), and `stat` fields 48-51 remain readable to the creator uid (reported as the `userns_owner_read_bypass` residual by `pmask --audit`). To close all seven surfaces with `EACCES` against a same-uid host observer, use `--profile single` or `--profile tree` (which stay in the host user namespace); for true host-to-payload separation without same-uid `EACCES`, run under a separate host uid (`pmaskd`) or a microVM.
 
-## `memfd` vs `--rexec-mode=path` Tradeoff
+## `--rexec-mode` Carriers (`path`, `tmpfile`, `memfd`, `auto`)
 
-Hiding the real executable path from `/proc/<pid>/exe`, `/proc/<pid>/maps`, and `/proc/<pid>/smaps` requires executing a staged copy (`--rexec`). `pmask` supports two carriers selected by `--rexec-mode`:
+Hiding the real executable path from `/proc/<pid>/exe`, `/proc/<pid>/maps`, and `/proc/<pid>/smaps` requires executing a staged copy (`--rexec`). `pmask` supports four `--rexec-mode` settings:
 
 | carrier | mechanism | `/proc/<pid>/exe` & `maps` | pros | cons |
 |---|---|---|---|---|
-| `path` (preferred by `auto`) | private `0500` executable named `<sanitized_label>` inside a private `0700` dir (`$XDG_RUNTIME_DIR`, `/dev/shm`, or `/tmp`), unlinked after exec | private file path (or `EACCES` when non-dumpable); **zero `/memfd:` fingerprint** | passes `INV-4` cleanly with no `memfd:` tell; works where `vm.memfd_noexec` blocks memfd execution | requires a writable, executable mount (`exec`, not `noexec`); briefly stages file bytes before unlink |
+| `path` (preferred by `auto`) | private `0500` executable named `<sanitized_label>` inside a private `0700` dir (`$XDG_RUNTIME_DIR`, `/dev/shm`, or `/tmp`), unlinked immediately at `PTRACE_EVENT_EXEC` with a `SIGKILL`-safe reaper | private file path (or `EACCES` when non-dumpable); **zero `/memfd:` fingerprint** | passes `INV-4` cleanly with no `memfd:` tell; works where `vm.memfd_noexec` blocks memfd execution; zero `.rt-*` dirs left even on `SIGKILL` | requires a writable, executable mount (`exec`, not `noexec`) |
+| `tmpfile` | unnamed `O_TMPFILE` inode on an executable mount executed via `execveat(fd, "", AT_EMPTY_PATH)` | `<mount>/#inode (deleted)` (or `EACCES` when non-dumpable); **zero directory entry, zero `/memfd:` fingerprint** | never links a directory entry on disk (100% immune to `SIGKILL` at any microsecond); ideal for containers and CI runners | requires filesystem `O_TMPFILE` support on a writable `exec` mount |
 | `memfd` | `memfd_create` with `F_SEAL_SEAL\|SHRINK\|GROW\|WRITE`, executed via `execveat(AT_EMPTY_PATH)` | `/memfd:<name> (deleted)` (or `EACCES` when non-dumpable) | no staging directory on disk; works with `--image -`, `--image-from-fd`, `--hugetlb` | exposes `/memfd:` fingerprint to readable observers (`INV-4` fails in `single` unless `--allow-memfd`); blocked by `vm.memfd_noexec=2` |
 
-`--rexec-mode=auto` (the default) tries `path` first and falls back to `memfd` only when no writable executable staging directory is available. Use `--no-rexec` to opt out of image staging entirely.
+`--rexec-mode=auto` (the default, including under `--stealth`) tries `path` first and falls back to `memfd` only when no writable executable staging directory is available. Use `--no-rexec` to opt out of image staging entirely.
+
+## Container & CI/CD Deployment Guidance
+
+Run `pmask doctor [--json]` in your container or CI image before executing secrets. `pmask doctor` reports:
+
+- **Private-`/proc` userns mount readiness (`tee`):** proves both `CLONE_NEWUSER` and mounting a fresh `/proc` succeed (many container runtimes allow `unshare(CLONE_NEWUSER)` but block mounting `/proc` with AppArmor/seccomp or masked `/proc` subpaths, causing `--profile tee` to fail closed with exit `255`).
+- **`O_TMPFILE` exec staging readiness (`--rexec-mode=tmpfile`):** checks whether `$XDG_RUNTIME_DIR`, `/dev/shm`, or `/tmp` is mounted writable + `exec` and accepts `O_TMPFILE`.
+- **`/etc/subuid` + `newuidmap` cross-UID readiness:** reports whether unprivileged multi-UID mapping is configured; for zero same-uid `EACCES` in CI, prefer a root-managed `pmaskd --run-as-uid=UID[:GID]` service account.
+
+Decoy `/proc/<pid>/environ` size (when dumpable or inspected via `--allow-dumpable`): `110` bytes as root (`HOME=/root`) or `109` bytes as non-root (`HOME=/tmp`) (`PATH`, `HOME`, `LANG`, `TERM`), truncated to complete entries only if the kernel window is smaller.
 
 ## `pmask-audit/1` Invariants (`INV-1` through `INV-10`)
 
@@ -94,75 +112,123 @@ Hiding the real executable path from `/proc/<pid>/exe`, `/proc/<pid>/maps`, and 
 | `INV-5` | `no_mask_fingerprint` | In `single` profile: `TracerPid == 0`, `Seccomp_filters <= baseline`, `NoNewPrivs <= baseline`, and no supervisor/payload label-twin parent. Other profiles declare their supervisor residuals explicitly. |
 | `INV-6` | `process_shape_and_cwd` | Process shape (`status`, `stat`, `ppid`, `threads`, `fd_count`, `rss_kb`, `starttime`) is readable and `/proc/<pid>/cwd` does not expose `--real-cwd`. |
 | `INV-7` | `core_dump_hygiene` | Either `PR_SET_DUMPABLE=0` is active (`dumpable_zero == true`) or `RLIMIT_CORE == 0` (`core_limit_zero == true`), or `limits` is denied to an `other-uid` observer. |
-| `INV-8` | `profile_export_clean` | Exporting `pmask-profile/1` JSON from the probed snapshot produces the required schema identifier and contains zero raw bytes of the secret token. |
+| `INV-8` | `profile_export_clean` | Exporting native `psgen` `schema: 2` JSON from the probed snapshot emits `"schema": 2` and contains zero raw bytes of the secret token or unredacted secret patterns. |
 | `INV-9` | `audit_verdict_enforced` | Live target `status` or `cmdline` was actively probed so the exit code reflects a real verdict rather than a vacuous check. |
 | `INV-10` | `cross_uid_non_amplification` | Under `--observer other-uid`, verifies the other-uid observer sees neither the secret token nor restricted `/proc` surfaces (`environ`, `auxv`, `mem`). |
 
-Never pass secret tokens on `pmask --audit`'s command line: use `--token-env VAR` (scrubbed immediately) or `--token-fd N`. Raw secret bytes are scrubbed from all report fields and replaced with `safety.token_present` and `safety.token_sha256`.
+Never pass secret tokens on `pmask --audit`'s command line: use `--token-env VAR` (scrubbed immediately) or `--token-fd N`. Raw secret bytes are scrubbed from all report fields and replaced with `memory.token_present` and `memory.token_sha256`.
 
-## `pmask-profile/1` Schema and `psgen` Integration
+## Native `psgen` `schema: 2` Export (Zero-Adapter Pipeline)
 
-`pmask` redacts individual processes and process trees; it does not spawn synthetic background processes. Generating matching decoy process populations is the responsibility of `psgen`, which consumes the `pmask-profile/1` JSON contract emitted by `pmask --profile-json`.
+`pmask` redacts individual processes and process trees; it does not spawn synthetic background processes. Generating matching decoy process populations is the responsibility of `psgen`, which natively consumes the strict `schema: 2` JSON emitted directly by `pmask --profile-json` with zero adapter script.
 
 ### Generating a profile
 
 ```sh
-# From a live masked process:
+# From a live masked process (captures 1-level children, parent, and tracer):
 pmask --profile-json --pid "$PID" --profile single --label ci-runner > profile.json
 
 # Static template without a live PID:
 pmask --profile-json --profile single --label ci-runner > profile.json
 ```
 
-### Schema (`pmask-profile/1`)
+### Schema (`schema: 2`, strict 18-key contract)
 
 ```json
 {
-  "schema": "pmask-profile/1",
-  "profile": "single",
-  "profile_version": 1,
-  "label": "ci-runner",
-  "observer_uid": 1000,
-  "target_uid": 1000,
-  "process": {
-    "comm": "ci-runner",
-    "cmdline": ["ci-runner"],
-    "exe_kind": "denied",
-    "exe_basename": "",
-    "ppid": 1,
-    "ppid_kind": "init",
-    "threads": 1,
-    "tracer_pid": 0,
-    "no_new_privs": 0,
-    "seccomp_filters": 0,
-    "dumpable": false,
-    "rss_kb": 4096,
-    "vm_data_kb": 208,
-    "fd_count": null,
-    "cwd_kind": "denied",
-    "children": 0
+  "schema": 2,
+  "source": {
+    "masker": "pmask",
+    "profile": "single",
+    "version": "0.3.0",
+    "observer_uid": 1000
   },
-  "safety": {
-    "token_present": false,
-    "token_sha256": null
-  },
-  "psgen_hint": {
+  "identity": {
+    "label": "ci-runner",
     "comm": "ci-runner",
     "argv": ["ci-runner"],
-    "exe_basename": "",
-    "threads": 1,
-    "ppid_kind": "init",
-    "rss_kb": 4096,
-    "vm_data_kb": 208,
-    "match_fields": ["comm", "cmdline", "exe_basename", "ppid_kind", "threads", "rss_kb", "vm_data_kb"]
-  }
+    "cmdline_raw_nuls": 1,
+    "pid": 4242,
+    "ppid": 1,
+    "pgid": 4242,
+    "sid": 4242,
+    "uid": 1000,
+    "gid": 1000,
+    "groups": [1000],
+    "starttime": 123456,
+    "cwd": "",
+    "root": "/",
+    "exe": "",
+    "ns": {}
+  },
+  "status": {
+    "Name": "ci-runner",
+    "State": "S",
+    "PPid": 1,
+    "Uid": "1000 1000 1000 1000",
+    "Gid": "1000 1000 1000 1000",
+    "Threads": 1,
+    "TracerPid": 0,
+    "NoNewPrivs": 0,
+    "Seccomp": 0,
+    "Seccomp_filters": 0,
+    "CapEff": "0000000000000000",
+    "CapPrm": "0000000000000000",
+    "CapBnd": "0000000000000000"
+  },
+  "stat": {
+    "ppid": 1,
+    "num_threads": 1,
+    "starttime": 123456,
+    "vsize": 0,
+    "rss": 512,
+    "arg_start": 0,
+    "arg_end": 0,
+    "env_start": 0,
+    "env_end": 0,
+    "startstack": 0
+  },
+  "memory": {
+    "maps": [],
+    "smaps": [],
+    "token_present": false,
+    "token_sha256": null,
+    "token_placements": [],
+    "readable_by": ["uid:1000"],
+    "denied_by": ["environ", "mem", "maps", "smaps", "auxv", "exe", "fd", "cwd"]
+  },
+  "fds": [],
+  "auxv": {
+    "AT_EXECFN": null,
+    "AT_PLATFORM": "x86_64",
+    "AT_BASE": 0,
+    "AT_ENTRY": 0
+  },
+  "environ": [],
+  "environ_raw_len": 0,
+  "environ_all_nul": false,
+  "task": [
+    {"tid": 4242, "comm": "ci-runner", "state": "S"}
+  ],
+  "syscall": {
+    "syscall": "poll",
+    "wchan": "do_poll",
+    "policy": 0,
+    "priority": 20
+  },
+  "timing": {
+    "exec_ms": 0.0,
+    "first_conceal_ms": 0.0
+  },
+  "dumpable": false,
+  "children": []
 }
 ```
 
 ### Contract guarantees for `psgen`
 
-- **Secret-free by construction (`INV-8`):** Raw token bytes are scrubbed before serialization; `safety` carries only boolean `token_present` and optional SHA-256 hex digest `token_sha256`.
-- **Shape alignment:** `psgen_hint` summarizes the fields (`comm`, `cmdline`, `exe_basename`, `ppid_kind`, `threads`) that decoy peers should match so the masked workload does not stand out as a singleton outlier.
+- **Secret-free by construction (`INV-8`):** Explicit tokens (`--token-env`/`--token-fd`), sensitive environment keys (`SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `API_KEY`, `APIKEY`, `PRIVATE_KEY`, `CREDENTIAL`, `AUTH_KEY`), and inline secret patterns (`ghp_`, `github_pat_`, `xoxb-`, `xoxp-`, `AKIA...`, PEM private keys) are scrubbed to `<REDACTED:len=N>` across every field before serialization. `memory` records only `token_present`, optional `token_sha256`, `token_len`, `token_charset`, and `token_placements` (`anon`, `argv`, `environ`, `heap`, `stack`).
+- **Strict schema compliance:** Emits numeric `"schema": 2` and zero unknown fields at any nesting level, matching `psgen`'s `Profile::from_json` and `Profile::validate` directly.
 - **Label policy:** Both `pmask` and `pmask --audit` reject kernel-thread bracket names (`[...]`) and critical system services (`sshd`, `systemd`, `init`, `cron`, `auditd`, etc.) by default (exit 2) unless `--allow-impersonation` is passed explicitly.
 
 ## Residual Risks Table

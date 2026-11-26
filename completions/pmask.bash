@@ -19,7 +19,7 @@ _pmask() {
 --isolate --redact --no-redact --audit --allow-argv-secret --secret-burn \
 --secret-close-on-exec --report --report-file --report-fd \
 --secret-fd-name --memfd-name \
--q --quiet -v --verbose -V --version -h --help -a -E -F -K -f -c"
+-q --quiet -v --verbose -V --version -h --help --help-all -a -E -F -K -f -c"
 
     if [ "$COMP_CWORD" -eq 1 ] && [[ "$cur" != -* ]]; then
         COMPREPLY=( $(compgen -W "run store agent get read probe doctor help version" -- "$cur") )
@@ -32,7 +32,7 @@ _pmask() {
             return 0
             ;;
         --rexec-mode)
-            COMPREPLY=( $(compgen -W "auto path memfd" -- "$cur") )
+            COMPREPLY=( $(compgen -W "auto path tmpfile memfd" -- "$cur") )
             return 0
             ;;
         --observer)

@@ -179,6 +179,8 @@ pub struct Mask {
     /// only after the tree is gone.
     session_end_explicit: bool,
     no_dumpable: bool,
+    /// Apply `RLIMIT_CORE = 0` in the child without forcing `PR_SET_DUMPABLE = 0`.
+    no_core_dump: bool,
     /// Keep the supervisor non-dumpable for the whole session.  The
     /// default is false: the supervisor scrubs its at-rest copies, stays
     /// dumpable, and is therefore not a hidden pid on a host whose
@@ -209,6 +211,9 @@ pub struct Mask {
     /// The namespace set `--redact --isolate` asked the redaction child to
     /// enter.  `None` is the plain redaction path.
     namespaces: Option<crate::userns::ChildNs>,
+    /// Fail closed if requested namespaces or private mounts (`/proc`, `/tmp`)
+    /// cannot be entered instead of degrading to a plain fork.
+    require_namespaces: bool,
     rexec: bool,
     rexec_mode: RexecMode,
     rexec_image: Option<crate::rexec::Source>,
@@ -272,10 +277,12 @@ impl std::fmt::Debug for Mask {
             )
             .field("session_end", &self.session_end)
             .field("no_dumpable", &self.no_dumpable)
+            .field("no_core_dump", &self.no_core_dump)
             .field("watch_rename", &self.watch_rename)
             .field("no_new_privs", &self.no_new_privs)
             .field("unshare", &self.unshare)
             .field("namespaces", &self.namespaces)
+            .field("require_namespaces", &self.require_namespaces)
             .field("rexec", &self.rexec)
             .field("rexec_mode", &self.rexec_mode)
             .field("rexec_image", &self.rexec_image.is_some())
@@ -395,6 +402,7 @@ impl Mask {
             session_end: SessionEnd::Detach,
             session_end_explicit: false,
             no_dumpable: false,
+            no_core_dump: false,
             supervisor_non_dumpable: false,
             allow_foreign: false,
             hide_pid: false,
@@ -406,6 +414,7 @@ impl Mask {
             no_new_privs: false,
             unshare: false,
             namespaces: None,
+            require_namespaces: false,
             rexec: false,
             rexec_mode: RexecMode::Memfd,
             rexec_image: None,
@@ -557,6 +566,15 @@ impl Mask {
     /// Core dumps and same-uid debugger attach stop working.
     pub fn no_dumpable(mut self) -> Mask {
         self.no_dumpable = true;
+        self
+    }
+
+    /// Set `RLIMIT_CORE = 0` in the child without forcing `PR_SET_DUMPABLE = 0`.
+    ///
+    /// Useful when cross-UID supervision needs the payload to stay dumpable
+    /// while still preventing core dumps.
+    pub fn no_core_dump(mut self) -> Mask {
+        self.no_core_dump = true;
         self
     }
 
@@ -718,6 +736,13 @@ impl Mask {
     /// exactly the set the caller named.
     pub fn namespaces(mut self, ns: crate::userns::ChildNs) -> Mask {
         self.namespaces = Some(ns);
+        self
+    }
+
+    /// Fail closed instead of degrading to a plain fork when requested
+    /// namespaces or private mounts (`/proc`, `/tmp`) cannot be entered.
+    pub fn require_namespaces(mut self, on: bool) -> Mask {
+        self.require_namespaces = on;
         self
     }
 
@@ -1269,6 +1294,15 @@ impl Mask {
                 && self.namespaces.is_none()
                 && self.run_as.is_none(),
             tree: TreeRegistry::default(),
+            staged_private_path: None,
+            staged_reaper_fd: None,
+            target_uid: self
+                .run_as
+                .map(|(u, _)| u as libc::uid_t)
+                // SAFETY: geteuid(2) is always safe and cannot fail.
+                .unwrap_or_else(|| unsafe { libc::geteuid() }),
+            skip_comm_prctl: false,
+            core_limit_applied: false,
         })
     }
 
@@ -1297,7 +1331,7 @@ impl Mask {
         args: &[A],
     ) -> io::Result<Prepared> {
         let program = program.as_ref();
-        let cfg = self.to_config(program)?;
+        let mut cfg = self.to_config(program)?;
         let pairs = self.env_pairs()?;
         // `--image PATH` names the bytes to read, not a command to search
         // in PATH; keep the exact path for the open and the messages.
@@ -1366,6 +1400,12 @@ impl Mask {
 
         let mut unshare = self.unshare;
         if unshare && !crate::userns::available() {
+            if self.require_namespaces {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "--unshare unavailable: user namespaces are not permitted here",
+                ));
+            }
             if !self.quiet {
                 eprintln!("pmask: --unshare unavailable: user namespaces are not permitted here");
             }
@@ -1378,6 +1418,12 @@ impl Mask {
         // different set.
         let mut namespaces = self.namespaces;
         if namespaces.is_some() && !crate::userns::available() {
+            if self.require_namespaces {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "--isolate unavailable: user namespaces are not permitted here",
+                ));
+            }
             if !self.quiet {
                 eprintln!(
                     "pmask: --isolate unavailable: user namespaces are not permitted here; \
@@ -1438,10 +1484,15 @@ impl Mask {
                 }
             };
             if let Some(source) = source {
+                // SAFETY: geteuid(2) is always safe and cannot fail.
+                let run_as_cred = self
+                    .run_as
+                    .filter(|&(u, _)| unsafe { libc::geteuid() } == 0 && u != 0);
                 let opts = crate::rexec::Options {
                     hugetlb: self.rexec_hugetlb,
                     memfd_name: self.rexec_memfd_name.clone(),
                     avoid_tmp: namespaces.is_some_and(|ns| ns.private_tmp),
+                    run_as: run_as_cred,
                 };
                 let image_fd_min = self
                     .preserved_fds
@@ -1456,21 +1507,75 @@ impl Mask {
                 // second `Arc` held by the cache kept `Arc::strong_count`
                 // at 2 so `close_parent_image_fds` could not close fd 200
                 // in the supervisor after the fork (issue #67).
-                let prepared =
-                    crate::rexec::prepare_for_mode(&source, &label_text, opts, self.rexec_mode)
-                        .and_then(|mut image| {
-                            if image.fd >= 0 {
-                                crate::rexec::relocate(&mut image, image_fd_min)?;
+                let raw_image = if let Some((uid, gid)) = self.run_as {
+                    if matches!(self.rexec_mode, RexecMode::Auto | RexecMode::Path) {
+                        // A `PrivatePath` (`0700` dir owned by the supervisor)
+                        // fails with `EACCES` after `setuid(uid)`.  Prefer an
+                        // unnamed `O_TMPFILE` chowned to `(uid, gid)`, falling
+                        // back to `Memfd`.
+                        let tmp = crate::rexec::prepare_for_mode(
+                            &source,
+                            &label_text,
+                            opts.clone(),
+                            RexecMode::Tmpfile,
+                        )
+                        .and_then(|img| {
+                            // SAFETY: `img.fd` is an open descriptor owned by `img`.
+                            if img.fd >= 0
+                                && unsafe {
+                                    libc::fchown(img.fd, uid as libc::uid_t, gid as libc::gid_t)
+                                } != 0
+                            {
+                                return Err(io::Error::last_os_error());
                             }
-                            Ok(std::sync::Arc::new(image))
-                        })
-                        .map_err(|e| {
-                            if self.rexec_exec_once {
-                                io::Error::new(e.kind(), format!("--rexec unavailable: {}", e))
-                            } else {
-                                e
-                            }
+                            Ok(img)
                         });
+                        match tmp {
+                            Ok(img) => Ok(img),
+                            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Err(e),
+                            Err(_) => crate::rexec::prepare_for_mode(
+                                &source,
+                                &label_text,
+                                opts,
+                                RexecMode::Memfd,
+                            ),
+                        }
+                    } else {
+                        let res = crate::rexec::prepare_for_mode(
+                            &source,
+                            &label_text,
+                            opts,
+                            self.rexec_mode,
+                        );
+                        if let Ok(ref img) = res {
+                            if matches!(img.backing, crate::rexec::Backing::TempFile { .. })
+                                && img.fd >= 0
+                            {
+                                // SAFETY: `img.fd` is an open descriptor owned by `img`.
+                                unsafe {
+                                    libc::fchown(img.fd, uid as libc::uid_t, gid as libc::gid_t);
+                                }
+                            }
+                        }
+                        res
+                    }
+                } else {
+                    crate::rexec::prepare_for_mode(&source, &label_text, opts, self.rexec_mode)
+                };
+                let prepared = raw_image
+                    .and_then(|mut image| {
+                        if image.fd >= 0 {
+                            crate::rexec::relocate(&mut image, image_fd_min)?;
+                        }
+                        Ok(std::sync::Arc::new(image))
+                    })
+                    .map_err(|e| {
+                        if self.rexec_exec_once {
+                            io::Error::new(e.kind(), format!("--rexec unavailable: {}", e))
+                        } else {
+                            e
+                        }
+                    });
                 match prepared {
                     Ok(image) => {
                         if let Some(note) = &image.note {
@@ -1591,6 +1696,26 @@ impl Mask {
             .filter(|i| matches!(i.backing, crate::rexec::Backing::PrivatePath { .. }))
             .and_then(|i| i.path.as_ref())
             .and_then(|p| CString::new(p.as_os_str().as_bytes()).ok());
+        if let Some(ref img) = rexec_image {
+            if matches!(img.backing, crate::rexec::Backing::PrivatePath { .. }) {
+                if let (Some(fp), Some(dp)) = (&img.path, &img.private_dir) {
+                    if let (Ok(fc), Ok(dc)) = (
+                        CString::new(fp.as_os_str().as_bytes()),
+                        CString::new(dp.as_os_str().as_bytes()),
+                    ) {
+                        cfg.staged_private_path = Some((fc, dc));
+                    }
+                    // When the staged executable's basename equals `label_comm`
+                    // (<= 15 bytes), kernel `execve` sets `comm` automatically,
+                    // saving an injected `PR_SET_NAME` syscall stop.
+                    if let Some(base) = fp.file_name() {
+                        if base.as_bytes() == cfg.label_comm.as_slice() {
+                            cfg.skip_comm_prctl = true;
+                        }
+                    }
+                }
+            }
+        }
         let parent_label = self.parent_label.as_ref().map(|s| s.as_bytes().to_vec());
         let parent_label_comm = self.parent_label.as_ref().map(|s| {
             let mut c: Vec<u8> = s.bytes().take(crate::COMM_MAX).collect();
@@ -1641,6 +1766,8 @@ impl Mask {
             fault_rexec_no_proc: crate::testhooks::flag("PMASK_FAULT_REXEC_NO_PROC"),
             unshare,
             namespaces,
+            require_namespaces: self.require_namespaces,
+            no_core_dump: self.no_core_dump,
             run_as: self.run_as,
             secret_fds: self.secret_fds.clone(),
             preserved_fds: self.preserved_fds.clone(),
@@ -1683,12 +1810,17 @@ impl Mask {
     /// the supervisor stays single-threaded (`Threads: 1`).
     pub fn run_prepared_on_current_thread(&self, mut prepared: Prepared) -> io::Result<ExitState> {
         let _g = session_lock();
-        let cfg = prepared.cfg.clone();
+        prepared.attach_private_path_reaper();
+        let mut cfg = prepared.cfg.clone();
         let (pid, ready_fd, go_fd, report_fd) = fork_prepared(&mut prepared)?;
-        // The child has its own copy of the address space.  Scrub the
-        // parent's plaintext immediately, while keeping any staged
-        // `RexecMode::Path` image alive until supervision ends so the
-        // payload's `/proc/<pid>/exe` stays clean and is removed on exit.
+        // Transfer staged `RexecMode::Path` cleanup and reaper pipe ownership
+        // to `Tracer` (which unlinks and closes the reaper immediately on the
+        // master's `PTRACE_EVENT_EXEC`, or on `Drop` if the child dies before
+        // exec) so `SIGKILL`ing a running supervisor never leaves `.rt-*`
+        // directories on disk and the reaper never lingers after exec.
+        if cfg.staged_private_path.is_some() {
+            cfg.staged_reaper_fd = prepared.disarm_rexec_paths();
+        }
         prepared.scrub();
         let _keep_rexec = prepared.take_rexec_images();
         drop(prepared);
@@ -1715,7 +1847,7 @@ impl Mask {
         let tree = cfg.tree.clone();
         let (pid_tx, pid_rx) = mpsc::channel();
         let (st_tx, st_rx) = mpsc::channel();
-        let cfg_thread = cfg.clone();
+        let mut cfg_thread = cfg.clone();
         // A fixed name here names every supervised tree on the host: the
         // task directory is not part of the label.  Naming the thread
         // after the session label makes it read like the process it
@@ -1734,6 +1866,7 @@ impl Mask {
             .spawn(move || {
                 let _g = session_lock();
                 let mut prepared = prepared;
+                prepared.attach_private_path_reaper();
                 let (pid, ready_fd, go_fd, report_fd) = match fork_prepared(&mut prepared) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1741,6 +1874,12 @@ impl Mask {
                         return;
                     }
                 };
+                // Transfer staged `RexecMode::Path` cleanup and reaper pipe
+                // ownership to `Tracer` so it is unlinked and the reaper is
+                // closed right after `PTRACE_EVENT_EXEC`.
+                if cfg_thread.staged_private_path.is_some() {
+                    cfg_thread.staged_reaper_fd = prepared.disarm_rexec_paths();
+                }
                 // The child has its own copy.  The parent keeps only the
                 // image descriptor the tracer needs for later execs.
                 prepared.scrub();
@@ -1780,10 +1919,8 @@ pub struct Prepared {
     pub(crate) cfg: Config,
     pub(crate) prog_c: CString,
     // The pointer arrays point into these vectors.  Keep them alive.
-    #[allow(dead_code)]
-    argv_c: Vec<CString>,
-    #[allow(dead_code)]
-    envp_c: Vec<CString>,
+    pub(crate) argv_c: Vec<CString>,
+    pub(crate) envp_c: Vec<CString>,
     pub(crate) argv_ptr: Vec<*const libc::c_char>,
     pub(crate) envp_ptr: Vec<*const libc::c_char>,
     pub(crate) comm_z: CString,
@@ -1837,6 +1974,10 @@ pub struct Prepared {
     /// `--redact --isolate`: the namespaces the child enters before its
     /// exec.  `None` for the plain redaction path.
     namespaces: Option<crate::userns::ChildNs>,
+    /// Fail closed when requested namespaces or private mounts cannot be entered.
+    require_namespaces: bool,
+    /// Apply `RLIMIT_CORE = 0` without forcing `PR_SET_DUMPABLE = 0`.
+    pub(crate) no_core_dump: bool,
     pub(crate) run_as: Option<(u32, u32)>,
     /// Descriptors to install at 3, 4, ... in the child.
     pub(crate) secret_fds: Vec<libc::c_int>,
@@ -1901,6 +2042,42 @@ impl Prepared {
             (None, None, Some(e)) => Err(e),
             (None, None, None) => Ok(()),
         }
+    }
+
+    /// Attach a double-forked carrier reaper for a staged `RexecMode::Path`
+    /// image (for `tree`/`tee`/`pmaskd`, never `single` which has its own
+    /// transient helper `G`).  Called inside `session_lock()` before `fork()`.
+    fn attach_private_path_reaper(&mut self) {
+        if let Some(arc) = self.rexec_image.as_mut() {
+            if let Some(img) = std::sync::Arc::get_mut(arc) {
+                if matches!(img.backing, crate::rexec::Backing::PrivatePath { .. }) {
+                    if let Err(e) = img.attach_reaper() {
+                        if !self.cfg.quiet {
+                            eprintln!(
+                                "pmask: --rexec: carrier reaper could not be started ({}); \
+                                 staged path may remain after SIGKILL",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Disarm `path`, `private_dir`, and `reaper_fd` deletion on the parent's
+    /// `Image` handles once cleanup ownership has been transferred to `Tracer`,
+    /// returning the owned reaper pipe write end (if any).
+    pub(crate) fn disarm_rexec_paths(&mut self) -> Option<RawFd> {
+        let mut reaper = None;
+        if let Some(arc) = self.rexec_image.as_mut() {
+            if let Some(img) = std::sync::Arc::get_mut(arc) {
+                img.path = None;
+                img.private_dir = None;
+                reaper = img.take_reaper_fd();
+            }
+        }
+        reaper
     }
 
     /// Take ownership of the staged `--rexec` image handles so the caller can
@@ -2240,6 +2417,20 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
                 pid
             }
             Err(e) => {
+                if p.require_namespaces {
+                    // SAFETY: all created pipe ends are owned by this call.
+                    unsafe {
+                        libc::close(rdy_r);
+                        libc::close(rdy_w);
+                        libc::close(go_r);
+                        libc::close(go_w);
+                        if report_r >= 0 {
+                            libc::close(report_r);
+                            libc::close(report_w);
+                        }
+                    }
+                    return Err(e);
+                }
                 if !p.cfg.quiet {
                     eprintln!("pmask: --unshare unavailable: {}", e);
                 }
@@ -2272,6 +2463,23 @@ fn fork_prepared(p: &mut Prepared) -> io::Result<(libc::pid_t, RawFd, RawFd, Raw
         if report_r >= 0 {
             // SAFETY: the child does not read its own report.
             unsafe { libc::close(report_r) };
+        }
+        // Close any inherited carrier reaper pipe write end immediately after
+        // `fork()` (before waiting on `go_r` or calling `execve`) so the child
+        // never keeps the reaper pipe open if the supervisor is SIGKILLed.
+        for img in [&p.rexec_image, &p.rexec_temp].into_iter().flatten() {
+            if let Some(fd) = img.reaper_fd() {
+                if fd >= 0 {
+                    // SAFETY: closing the child's inherited copy of the reaper pipe write end.
+                    unsafe { libc::close(fd) };
+                }
+            }
+        }
+        if let Some(fd) = p.cfg.staged_reaper_fd {
+            if fd >= 0 {
+                // SAFETY: closing the child's inherited copy of the reaper pipe write end.
+                unsafe { libc::close(fd) };
+            }
         }
         child_exec(
             p,
@@ -2362,15 +2570,23 @@ fn child_exec(
         if let Some(ns) = entered {
             if ns.procfs {
                 if let Err(e) = crate::userns::child_setup_proc() {
+                    let errno = e.raw_os_error().unwrap_or(0);
+                    if p.require_namespaces {
+                        child_fail_errno(&p.msg_proc, errno, 126);
+                    }
                     if !quiet {
-                        child_note(&p.msg_proc, e.raw_os_error().unwrap_or(0));
+                        child_note(&p.msg_proc, errno);
                     }
                 }
             }
             if ns.private_tmp {
                 if let Err(e) = crate::userns::child_private_tmp() {
+                    let errno = e.raw_os_error().unwrap_or(0);
+                    if p.require_namespaces {
+                        child_fail_errno(&p.msg_tmp, errno, 126);
+                    }
                     if !quiet {
-                        child_note(&p.msg_tmp, e.raw_os_error().unwrap_or(0));
+                        child_note(&p.msg_tmp, errno);
                     }
                 }
             }
@@ -2379,7 +2595,7 @@ fn child_exec(
             // the tracer's own warning, not turned into a different set.
         }
 
-        if p.cfg.no_dumpable {
+        if p.cfg.no_dumpable || p.no_core_dump {
             let zero_core = libc::rlimit {
                 rlim_cur: 0,
                 rlim_max: 0,
@@ -2649,7 +2865,10 @@ fn default_path() -> OsString {
     }
 }
 
-fn resolve_program(program: &OsStr, pairs: &[(OsString, OsString)]) -> io::Result<CString> {
+pub(crate) fn resolve_program(
+    program: &OsStr,
+    pairs: &[(OsString, OsString)],
+) -> io::Result<CString> {
     let c = os_to_cstring(program)?;
     if program.as_bytes().contains(&b'/') {
         return Ok(c);
@@ -3103,11 +3322,15 @@ mod tests {
             .cwd("/tmp")
             .secret_fd(7)
             .secret_fd(9)
-            .secret_fd(7);
+            .secret_fd(7)
+            .require_namespaces(true)
+            .no_core_dump();
         assert_eq!(m.rexec_mode_value(), RexecMode::Path);
         assert_eq!(m.cwd_value(), Some(Path::new("/tmp")));
         assert_eq!(m.parent_label_value(), Some("supervisor"));
         assert_eq!(m.secret_fds(), &[7, 9]);
+        assert!(m.require_namespaces);
+        assert!(m.no_core_dump);
         assert!(m.validate().is_ok());
 
         assert!(Mask::new().parent_label("bad\nlabel").validate().is_err());

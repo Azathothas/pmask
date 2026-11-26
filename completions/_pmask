@@ -7,14 +7,14 @@ _pmask() {
         '--auto[alias for --profile auto (the default)]' \
         '--follow[follow and redact all descendants (tree mode)]' \
         '--no-rexec[opt out of profile-default --rexec image staging]' \
-        '--rexec-mode[image carrier for --rexec]:mode:(auto path memfd)' \
+        '--rexec-mode[image carrier for --rexec]:mode:(auto path tmpfile memfd)' \
         '--cwd[change child working directory after resolving COMMAND]:dir:_directories' \
         '--parent-label[separate presentation label for tree-mode supervisor]:label:' \
         '--reparent[double-fork masked payload to PID 1 in single profile]' \
         '--allow-impersonation[allow kernel-thread or critical-service labels]' \
         '--secret-fd[keep caller fd open across exec and export PMASK_SECRET_*]:spec:' \
         '--explain[print observer, capabilities, tradeoffs, and residuals]' \
-        '--profile-json[emit versioned pmask-profile/1 JSON contract]' \
+        '--profile-json[emit native psgen schema: 2 profile JSON]' \
         '--pid[target PID for standalone --audit or --profile-json]:pid:' \
         '--observer[observer perspective for --audit]:role:(same-uid other-uid)' \
         '--json[emit JSON output for --audit, --explain, or --profile-json]' \
@@ -75,6 +75,7 @@ _pmask() {
         '(-v --verbose)'{-v,--verbose}'[trace every event]' \
         '(-V --version)'{-V,--version}'[print version]' \
         '(-h --help)'{-h,--help}'[print help (--help=all for full reference)]' \
+        '--help-all[print complete flag reference]' \
         '(-l --label)'{-a}'[alias for --label]:label:' \
         '(-E)'-E'[alias for --keep-env]' \
         '(-F)'-F'[alias for --no-follow]' \

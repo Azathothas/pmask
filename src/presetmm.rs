@@ -192,17 +192,27 @@ pub fn map_size() -> Option<u32> {
     }
     unsafe { libc::close(rd) };
     let mut status = 0i32;
+    let mut reaped = false;
     loop {
         let w = unsafe { libc::waitpid(pid, &mut status, 0) };
         if w == -1 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
+            }
+            // The child writes the 4-byte size only after `prctl` returns 0.
+            // If `SIGCHLD` is `SIG_IGN` or another thread reaped the child
+            // (`ECHILD`), a complete 4-byte pipe read still proves success.
+            if err.raw_os_error() == Some(libc::ECHILD) && have == got.len() {
+                break;
             }
             return None;
         }
+        reaped = true;
         break;
     }
-    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 && have == got.len() {
+    if (!reaped || (libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0)) && have == got.len()
+    {
         Some(u32::from_ne_bytes(got))
     } else {
         None
@@ -289,7 +299,7 @@ pub fn relocate(
     if write_mem(pid, map_addr, &buf) != buf.len() as isize {
         return Relocated::NoFields;
     }
-    let r = crate::inject::run_remote_syscall(
+    let r = crate::inject::run_remote_syscall_fast(
         pid,
         orig,
         arch::SYS_PRCTL,

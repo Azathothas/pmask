@@ -13,7 +13,7 @@ pmask --profile tree --label ci-runner --secret-fd 3 -- sh -c './deploy.sh' 3<to
 pmask --profile tee --label ci-runner -- ./worker
 ```
 
-`ps`, `top`, `htop`, `/proc/<pid>/cmdline`, and `/proc/<pid>/comm` display `ci-runner`. `/proc/<pid>/environ` displays a minimal decoy environment (110 bytes by default: `PATH`, `HOME`, `LANG`, `TERM`, or the variables named by `--keep-env`). In the default profiles (`auto`, `single`, `tree`, `tee`), `pmask` also stages native ELFs via `--rexec` (`--rexec-mode=auto`, preferring a private `0500` path with zero `/memfd:` fingerprint), sets `PR_SET_DUMPABLE=0` (denying same-uid reads of `environ`, `maps`, `auxv`, `exe`, `fd`, `cwd`, and `/proc/<pid>/mem` with `EACCES`), and encrypts supervisor at-rest copies.
+`ps`, `top`, `htop`, `/proc/<pid>/cmdline`, and `/proc/<pid>/comm` display `ci-runner`. `/proc/<pid>/environ` displays a minimal decoy environment (`110 B` as root with `HOME=/root` or `109 B` as non-root with `HOME=/tmp`: `PATH`, `HOME`, `LANG`, `TERM`, truncated to complete entries only if the kernel window is smaller, or the variables named by `--keep-env`). In the default profiles (`auto`, `single`, `tree`, `tee`), `pmask` also stages native ELFs via `--rexec` (`--rexec-mode=auto`, preferring a private `0500` path unlinked immediately at `PTRACE_EVENT_EXEC`, or `--rexec-mode=tmpfile` for an unnamed `O_TMPFILE` carrier with zero `/memfd:` fingerprint), sets `PR_SET_DUMPABLE=0` (denying same-uid reads of `environ`, `maps`, `auxv`, `exe`, `fd`, `cwd`, and `/proc/<pid>/mem` with `EACCES`), and (in `tree` and `tee`) encrypts supervisor at-rest copies.
 
 > **Honest scope:** `pmask` is designed for **9+/10 confidentiality and low-residue execution against a same-uid local observer, not root**. Root on the host, `CAP_SYS_PTRACE`, kernel modules, eBPF/perf tracers, hypervisors, and hardware enclaves are explicitly out of scope. Run `pmask --explain` to inspect your host capabilities, hidden surfaces, `EACCES` tradeoffs, and residuals. See [`docs/PROFILES.md`](docs/PROFILES.md) for the full profile guide, audit invariants (`INV-1..INV-10`), and `psgen` integration contract.
 
@@ -32,30 +32,38 @@ Other local users read command-line arguments through `ps`, same-uid agents can 
 
 ## Execution profiles
 
-`pmask` v0.2.0 organizes redaction into five profiles via `--profile NAME` (full comparison in [`docs/PROFILES.md`](docs/PROFILES.md)):
+`pmask` v0.3.0 organizes redaction into five profiles via `--profile NAME` (ranked below; full comparison in [`docs/PROFILES.md`](docs/PROFILES.md)):
+
+1. **`single` (#1 for direct native ELFs, chosen automatically by `auto`)**: in-place masked exec with zero persistent supervisor and `TracerPid: 0`.
+2. **`tree` (chosen automatically by `auto` for shells, `#!` scripts, and descendants)**: single-threaded (`Threads: 1`) supervisor tracking every fork and re-exec (`--stealth` is a `tree`-mode preset).
+3. **Cross-UID `pmaskd --run-as-uid=UID[:GID]`**: runs jobs under a dedicated service uid so Linux DAC blocks other unprivileged uids naturally without same-uid `EACCES`.
+4. **`tee` (fail-closed namespaces)**: redaction + user/pid/mount namespaces, private `/proc` and `/tmp`, and `cwd=/` normalization; exits `255` if userns or private `/proc` mount is refused.
 
 | profile | behavior | `TracerPid` / supervisor | defaults |
 |---|---|---|---|
-| `auto` (default) | Selects `single` for direct native ELF binaries; `tree` for shells, launchers, `#!` scripts, and tree flags | `0` (none) for ELFs; `Threads: 1` supervisor for trees | `--rexec` (`--rexec-mode=auto`), `--no-dumpable`, `--encrypt-memory` |
-| `single` | In-place masked `execve`/`execveat` via a transient double-forked helper that detaches and exits immediately | **`TracerPid: 0`**, **zero persistent supervisor**, `Threads: 1`, `Seccomp: 0`, `NoNewPrivs: 0` | `--rexec` (`auto`), `--no-dumpable`, `--encrypt-memory`; optional `--reparent` |
+| `auto` (default) | Selects `single` for direct native ELF binaries; `tree` for shells, launchers, `#!` scripts, and tree flags | `0` (none) for ELFs; `Threads: 1` supervisor for trees | `--rexec` (`--rexec-mode=auto`), `--no-dumpable`, `--encrypt-memory` (in `tree`) |
+| `single` | In-place masked `execve`/`execveat` via a transient double-forked helper that detaches and exits immediately | **`TracerPid: 0`**, **zero persistent supervisor**, `Threads: 1`, `Seccomp: 0`, `NoNewPrivs: 0` | `--rexec` (`auto`), `--no-dumpable` (optional `--reparent`, opt-in `--encrypt-memory`) |
 | `tree` | Single-threaded (`Threads: 1`) supervisor following forks, shells, `#!` scripts, and all descendants | supervisor pid in `TracerPid` (use `--parent-label` to avoid a label twin) | `--rexec` (`auto` for ELFs), `--no-dumpable`, `--encrypt-memory` |
-| `tee` | Redaction composed with user, pid, and mount namespaces + private `/proc` (and private `/tmp`) | fails closed if unprivileged user namespaces are unavailable | `--rexec` (`auto`), `--no-dumpable`, `--encrypt-memory`, namespaces |
+| `tee` | Redaction composed with user, pid, and mount namespaces + private `/proc`, private `/tmp`, and `cwd=/` | fails closed (exit `255`) if userns or private `/proc` mount is refused | `--rexec` (`auto`), `--no-dumpable`, `--encrypt-memory`, namespaces |
 | `compat` | Legacy `v0.1.0` flag-driven defaults (metadata-only, dumpable unless `--no-dumpable` or `--secret`) | `Threads: 1` supervisor (`0` with `--detach`) | opt-in `--rexec`, `--no-dumpable`, `--encrypt-memory` |
 
-### Self-audit, explain, and `psgen` export
+### Self-audit, explain, and zero-adapter `psgen` `schema: 2` export
 
 ```sh
 # 1. Inspect host capabilities, observer scope, EACCES tradeoff, and residuals:
 pmask --explain --profile single --label ci-runner
 
-# 2. Live self-audit (launches a masked child with a synthetic heap token,
+# 2. Check container & CI/CD readiness (userns private /proc, O_TMPFILE, subuid):
+pmask doctor --json
+
+# 3. Live self-audit (launches a masked child with a synthetic heap token,
 #    probes every /proc surface + full-VMA /proc/<pid>/mem scan against INV-1..INV-10):
 pmask --audit --json
 
-# 3. Audit an existing masked PID (pass secret via --token-env or --token-fd, never argv):
+# 4. Audit an existing masked PID (pass secret via --token-env or --token-fd, never argv):
 pmask --audit --pid "$PID" --profile single --label ci-runner --token-fd 4 --json
 
-# 4. Export versioned pmask-profile/1 JSON for psgen (never emits raw secret bytes):
+# 5. Export native psgen schema: 2 JSON directly (zero adapter, zero secret bytes):
 pmask --profile-json --pid "$PID" --profile single --label ci-runner > profile.json
 ```
 
@@ -68,7 +76,7 @@ pmask --profile-json --pid "$PID" --profile single --label ci-runner > profile.j
 | another unprivileged uid | the label in `cmdline` and `comm`, with no real `argv`, `environ`, `exe`, `maps`, `fd`, `cwd`, or `mem` |
 | same-uid observer, default profiles (`auto` / `single` / `tree` / `tee`) | the label in `cmdline` and `comm`. `PR_SET_DUMPABLE=0` denies **seven** `/proc` surfaces (`environ`, `maps`, `auxv`, `exe`, `fd`, `cwd`, and `/proc/<pid>/mem`) with `EACCES`, and Linux zeroes `/proc/<pid>/stat` fields 48–51 (`arg_start`..`env_end`). Those `EACCES` refusals are themselves an observable denial signal; use a helper uid / subuid namespace (`--profile tee` with subuid) or `pmaskd` under a dedicated uid to eliminate same-uid `EACCES` |
 | same-uid observer, `--profile compat` or `--allow-dumpable` | the label and minimal decoy `environ`, plus `exe`, `maps`, `fd/*`, `cwd`, and real `argv`/`environ` in `/proc/<pid>/mem` (unless `--rexec` hides `exe`/`maps`) |
-| same-uid observer, `--stealth` | on `hidepid=0`, the label plus `--rexec`, `--watch-rename`, and `--no-dumpable`. On `hidepid=invisible` or `hidepid=ptraceable`, keeps the tree dumpable to avoid creating a hidden pid, so same-uid `environ` and memory reads stay open |
+| same-uid observer, `--stealth` | `tree` mode preset: on `hidepid=0`, applies `--rexec` (`--rexec-mode=auto`, private path preferred), `--watch-rename`, and `--no-dumpable` with zero unsolicited stderr warnings. On `hidepid=invisible` or `hidepid=ptraceable`, keeps the tree dumpable to avoid creating a hidden pid, so same-uid `environ` and memory reads stay open |
 | same-uid observer, `--hide-pid` | the pid disappears from same-uid `/proc` `readdir` and `stat` on `hidepid=invisible` or `hidepid=ptraceable` (`EPERM` on existing inode under `ptraceable`). `cgroup.procs`, `cgroup.threads`, `kill(0)`, `pidfd_open`, `sched_getaffinity`, `getpriority`, `prlimit`, and root still see the pid |
 | `ps` output pasted into a ticket or chat | the label |
 | root / `CAP_SYS_PTRACE` on the host | **that** a pid exists, its `/proc/<pid>/exe`, `maps`, open files, cgroups, and memory via `PTRACE_ATTACH` |
@@ -95,7 +103,7 @@ pmask --label 'ci-runner' -- ./deploy.sh --env prod
 exec pmask --profile tree --label 'dev-shell' bash --login -i
 ```
 
-Run `pmask --help` for the concise one-screen summary, `pmask --help=all` for the complete flag reference, or `pmask help <topic>` (`profiles`, `redact`, `secrets`, `isolate`, `daemon`, `audit`, `report`, `short`, `all`).
+Run `pmask --help` for the concise one-screen summary, `pmask --help=all` (or `--help-all`) for the complete flag reference, or `pmask help <topic>` (`profiles`, `redact`, `secrets`, `isolate`, `daemon`, `audit`, `report`, `short`, `all`).
 
 Key options:
 
@@ -107,20 +115,20 @@ Key options:
 | `--parent-label NAME` | sets a separate label for the `tree`-mode supervisor so parent and payload are not label twins |
 | `--reparent` | in `single` profile, double-forks the masked payload to PID 1 (or nearest subreaper) and returns 0 once masked exec detaches |
 | `--cwd PATH` | changes the child's working directory after resolving `COMMAND`, normalizing `/proc/<pid>/cwd` |
-| `--rexec`, `--rexec-mode auto\|path\|memfd`, `--no-rexec` | executes from a staged image (`auto` prefers a private `0500` file in a `0700` dir for zero `/memfd:` fingerprint, falling back to sealed `memfd` on `noexec` mounts). Enabled by default in `single`, `tree`, and `tee` for native ELFs (`--no-rexec` opts out). Fails closed (126/127) unless `--rexec-allow-disk` is passed |
-| `--secret-fd [NAME=]N` | preserves caller-opened fd `N` across exec at its existing number and exports `PMASK_SECRET_FD=N` or `PMASK_SECRET_<NAME>=N`. Enables `--no-dumpable` unless `--allow-dumpable` is passed |
+| `--rexec`, `--rexec-mode auto\|path\|tmpfile\|memfd`, `--no-rexec` | executes from a staged image (`auto` prefers a private `0500` file unlinked immediately at `PTRACE_EVENT_EXEC` for zero `/memfd:` fingerprint, falling back to sealed `memfd` on `noexec` mounts; `tmpfile` uses an unnamed `O_TMPFILE` inode with zero directory entry and `SIGKILL` immunity). Enabled by default in `single`, `tree`, and `tee` for native ELFs (`--no-rexec` opts out). Fails closed (126/127) unless `--rexec-allow-disk` is passed |
+| `--secret-fd [NAME=]N` | preserves caller-opened fd `N` across exec at its existing number and exports `PMASK_SECRET_FD=N` or `PMASK_SECRET_<NAME>=N`. Enables `--no-dumpable` in redaction mode unless `--allow-dumpable` is passed (plain `--no-redact` mode runs without a tracer and sets `RLIMIT_CORE=0`) |
 | `--secret NAME=SRC` | delivers a secret on sealed memfd 3, 4, ... (`file:PATH`, `env:VAR`, `agent:NAME`, `stdin`, `literal:VAL`) and exports `PMASK_SECRET_<NAME>=<fd>`. Pair with `--secret-burn`, `--secret-close-on-exec`, `--secret-fd-name NAME` |
 | `--args-from-fd N` | reads a NUL-separated command vector (up to 8 MiB) from fd `N`, keeping secrets off `pmask`'s argv and shell history |
 | `--keep-env`, `--keep-env=NAME[,...]` | leaves `environ` visible in full or only for named variables. Inline `=` is required for variable lists; space form `--keep-env NAME cmd` fails fast with exit 2 |
 | `--env K=V`, `--env-file PATH` | sets variables in the child's real environment |
 | `--no-dumpable`, `--allow-dumpable` | toggles `PR_SET_DUMPABLE=0` (blocks seven same-uid `/proc` surfaces: `environ`, `maps`, `auxv`, `exe`, `fd`, `cwd`, `mem`). Default on in `single`, `tree`, `tee`, and `--secret`/`--secret-fd` runs; `--allow-dumpable` opts out |
-| `--encrypt-memory` | seals supervisor at-rest `argv`/`environ` with XChaCha20-Poly1305 under a `memfd_secret` key (or `mlock`'ed heap) and marks the payload's anonymous redaction block `MADV_DONTDUMP`. Default on in `single`, `tree`, and `tee`; opt-in in `compat` |
+| `--encrypt-memory` | seals supervisor at-rest `argv`/`environ` with XChaCha20-Poly1305 under a `memfd_secret` key (or `mlock`'ed heap) and marks the payload's anonymous redaction block `MADV_DONTDUMP`. Enabled by default in `tree` and `tee` profiles (in `single`, the transient helper exits before `main()` runs; pass `--encrypt-memory` to seal even that brief window); opt-in in `compat` |
 | `--follow`, `--no-follow`, `--on-exit detach\|wait\|kill`, `--detach` | controls descendant supervision and exit policy in `tree`/`compat` modes |
 | `--watch-rename[=strict]` | traps `prctl(PR_SET_NAME)` and `/proc/.../comm` opens (plus write syscalls under `=strict`) to keep `comm` at the label. Implies `--no-new-privs`, defaults `--on-exit` to `wait`, and refuses `--detach`, `--on-exit detach`, and `--profile single` |
 | `--strict-exec`, `--allow-foreign` | `--strict-exec` refuses `#!` scripts, `vfork`, and post-exec fallbacks with `SIGKILL`; 32-bit images are refused by default unless `--allow-foreign` is set |
 | `--stealth`, `--hide-pid` | `--stealth` composes `--rexec`, `--watch-rename`, and hidepid-aware `--no-dumpable`; `--hide-pid` hides pids on `hidepid=invisible\|ptraceable` mounts |
 | `--isolate[=LIST]`, `--unshare`, `--redact`, `--no-redact` | namespace isolation (`pid`, `net`, `tmp`, `all`, `none`) and redaction mode controls |
-| `--explain`, `--profile-json`, `--audit` | host/profile explainer, `pmask-profile/1` JSON exporter for `psgen`, and standalone self/PID `/proc` + `/proc/<pid>/mem` invariant auditor (`INV-1..INV-10`; also `--pid`, `--observer`, `--json`, `--token-env`, `--token-fd`, `--real-exe`, `--real-cwd`, `--allow-memfd`) |
+| `--explain`, `--profile-json`, `--audit` | host/profile explainer, native `psgen` `schema: 2` JSON exporter, and standalone self/PID `/proc` + `/proc/<pid>/mem` invariant auditor (`INV-1..INV-10`; also `--pid`, `--observer`, `--json`, `--token-env`, `--token-fd`, `--real-exe`, `--real-cwd`, `--allow-memfd`) |
 | `--report=json`, `--report-file PATH`, `--report-fd N` | structured run report (`json` only; use `--report-file` or `--report-fd` to keep payload stdout clean; refused with `--daemon` and explicit `--profile single`) |
 | `--image PATH`, `--image-from-fd N`, `--exec-once`, `--hugetlb`, `--memfd-name NAME`, `--scope-name NAME`, `--no-exact`, `--no-new-privs`, `--argv0 NAME` | advanced image loading, caching, systemd scope wrapping, and window/privilege controls (see `man pmask.1`) |
 
@@ -128,7 +136,7 @@ Key options:
 
 ```toml
 [dependencies]
-pmask = { git = "https://github.com/Azathothas/pmask", tag = "v0.2.0" }
+pmask = { git = "https://github.com/Azathothas/pmask", tag = "v0.3.0" }
 ```
 
 ```rust
@@ -164,14 +172,14 @@ pmask --daemon "$XDG_RUNTIME_DIR/pmask.sock" -- ./deploy.sh --env prod
 
 `--daemon` refuses local-only flags that the daemon cannot honor: `--secret`, `--secret-fd`, `--isolate`, `--no-redact`, `--hide-pid`, `--encrypt-memory`, `--image`, `--image-from-fd`, `--report*`, `--profile single`, and `--profile tee` (exit 255). Other mask options besides `--label` and `--label-empty` emit one warning and have no effect.
 
-**Warning:** Any allowed uid can execute arbitrary programs with the daemon's privileges and environment. Grant `--allow-uid` only to trusted uids. On a root daemon, pass `--run-as-uid` to run each job under the client's uid and gid.
+**Warning:** Any allowed uid can execute arbitrary programs with the daemon's privileges and environment. Grant `--allow-uid` only to trusted uids. On a root daemon, pass `--run-as-uid` to run each job under the client's uid and gid, or `--run-as-uid=UID[:GID]` to run every job under a dedicated service uid/gid (cross-UID jobs default to `dumpable=1` so Linux DAC isolates `/proc` with zero same-uid `EACCES`; override with `--no-dumpable` or `--allow-dumpable`).
 
 ## Secret delivery without a daemon: `--secret-fd` and `--secret`
 
 - **`--secret-fd [NAME=]N`** keeps an already-open caller descriptor `N` open across exec (clearing `FD_CLOEXEC`) and exports `PMASK_SECRET_FD=N` (unnamed) or `PMASK_SECRET_<NAME>=N` (named) in the payload's real environment. Because the secret never passes through `pmask`'s `argv` or `environ`, nothing enters shell history or kernel `EXECVE` audit records.
 - **`--secret NAME=SRC`** loads a secret from `file:PATH`, `env:VAR`, `agent:NAME`, `stdin`, or `literal:VALUE` into a sealed memfd on descriptor 3, 4, ... and exports `PMASK_SECRET_<NAME>=<fd>`. Inside the payload, read the descriptor directly or run `pmask read NAME`.
 
-Use `--secret-fd`, `file:`, `agent:`, or `stdin` (plus `--args-from-fd` for sensitive arguments) so secrets never appear in `pmask`'s own `argv`, shell history, or kernel audit logs (`type=EXECVE`, `type=PROCTITLE`). In redaction modes, both `--secret-fd` and `--secret` enforce `--no-dumpable` by default (`--allow-dumpable` opts out).
+Use `--secret-fd`, `file:`, `agent:`, or `stdin` (plus `--args-from-fd` for sensitive arguments) so secrets never appear in `pmask`'s own `argv`, shell history, or kernel audit logs (`type=EXECVE`, `type=PROCTITLE`). In redaction modes, both `--secret-fd` and `--secret` enforce `--no-dumpable` by default (`--allow-dumpable` opts out); in plain (`--no-redact`) mode without a tracer, `RLIMIT_CORE=0` is set instead.
 
 ## Modes: what each mode redacts
 
@@ -190,7 +198,7 @@ Underneath the profiles, `pmask` selects one of three execution modes:
 1. **In-place single-process engine (`single` profile, default for direct ELFs).** A transient double-forked helper grants `PR_SET_PTRACER` (compatible with `yama.ptrace_scope=1`), seizes `pmask`, intercepts the `execve`/`execveat` entry and completion stops, completes the redaction, unlinks any staged `--rexec-mode=path` carrier, and immediately detaches and exits. The payload runs in place with `TracerPid: 0`, `Threads: 1`, `Seccomp: 0`, and `NoNewPrivs: 0`.
 2. **Single-threaded process-tree supervision (`tree`, `tee`, `compat`).** `PTRACE_O_TRACE{FORK,VFORK,CLONE,EXEC,EXIT}` auto-attaches children, grandchildren, threads, `posix_spawn()`, `system()`, double-forking daemons, static binaries, Go runtimes, and `#!` scripts from a single-threaded supervisor (`Threads: 1`), with no `LD_PRELOAD` and no libc requirement.
 3. **Exec-entry pointer swap for zero exposure.** At `execve`/`execveat` entry, the tracer replaces the old image's `argv`/`envp` pointer arrays with the label and filler strings so the kernel never copies the real command line into the new image of an ELF target.
-4. **Batched exec-completion restoration & `[stack]` relocation.** At `PTRACE_EVENT_EXEC`, the tracer writes the real strings into an anonymous `MADV_DONTDUMP` mapping in the tracee, repoints the stack's inline `argv`/`envp` arrays, sets `comm` via `prctl(PR_SET_NAME)` through an existing syscall gadget (never W+X), installs a 110-byte decoy `environ` (or `--keep-env` entries), rewrites `AT_EXECFN` in both `saved_auxv` and the stack auxiliary vector, and relocates `arg_start..env_end` inside `[stack]` with one unprivileged `prctl(PR_SET_MM, PR_SET_MM_MAP)`.
+4. **Batched exec-completion restoration & `[stack]` relocation.** At `PTRACE_EVENT_EXEC`, the tracer writes the real strings into an anonymous `MADV_DONTDUMP` mapping in the tracee, repoints the stack's inline `argv`/`envp` arrays, sets `comm` via `prctl(PR_SET_NAME)` through an existing syscall gadget (never W+X), installs a minimal decoy `environ` (`110 B` as root with `HOME=/root` or `109 B` as non-root with `HOME=/tmp`: `PATH`, `HOME`, `LANG`, `TERM`, truncated to complete entries only if the kernel window is smaller, or `--keep-env` entries), rewrites `AT_EXECFN` in both `saved_auxv` and the stack auxiliary vector, and relocates `arg_start..env_end` inside `[stack]` with one unprivileged `prctl(PR_SET_MM, PR_SET_MM_MAP)`.
 5. **Same-uid protection and job control.** `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0` block same-uid reads across seven `/proc` surfaces and disable core dumps. `PTRACE_LISTEN` preserves job control (`Ctrl-Z`, `SIGSTOP`, `SIGCONT`) inside masked shells.
 
 Scripts (`#!`), `vfork` children, and settled re-execs take the post-exec path unless `--strict-exec` refuses them. 32-bit images are refused before execution unless `--allow-foreign` is set.
@@ -203,8 +211,8 @@ Scripts (`#!`), `vfork` children, and settled re-execs take the post-exec path u
 |---|---|---|
 | `EACCES` denial + zeroed `stat` 48–51 | Same-uid reads of `environ`, `maps`, `auxv`, `exe`, `fd`, `cwd`, and `mem` return `EACCES`; `/proc/<pid>/stat` fields 48–51 read `0 0 0 0` | default in `single`, `tree`, `tee`, and `--no-dumpable` runs. Avoidable by crossing a uid boundary (helper uid / subuid / dedicated `pmaskd` uid) |
 | supervisor & `TracerPid` | single-threaded (`Threads: 1`) parent supervisor and non-zero `TracerPid` | `tree`, `tee` (host view), and `compat` modes. **Absent in `single` profile** (`TracerPid: 0`, zero persistent supervisor) |
-| staged `exe` carrier | private `0500` staged file path (`--rexec-mode=path`, zero `/memfd:` tell) or `/memfd:<name> (deleted)` (`--rexec-mode=memfd`) | `--rexec` (default for ELFs in `single`, `tree`, `tee`; hidden by `EACCES` from same-uid observers when non-dumpable) |
-| decoy `environ` window | minimal 110-byte decoy environment (`PATH`, `HOME`, `LANG`, `TERM`), or `--keep-env` entries | readable when dumpable (`compat` or `--allow-dumpable`) |
+| staged `exe` carrier | private `0500` staged file path (`--rexec-mode=path`, unlinked at `PTRACE_EVENT_EXEC`, zero `/memfd:` tell), unnamed `O_TMPFILE` inode (`--rexec-mode=tmpfile`, zero dir entry), or `/memfd:<name> (deleted)` (`--rexec-mode=memfd`) | `--rexec` (default for ELFs in `single`, `tree`, `tee`; hidden by `EACCES` from same-uid observers when non-dumpable) |
+| decoy `environ` window | minimal decoy environment (`110 B` as root with `HOME=/root` or `109 B` as non-root with `HOME=/tmp`: `PATH`, `HOME`, `LANG`, `TERM`, truncated to complete entries only if the kernel window is smaller), or `--keep-env` entries | readable when dumpable (`compat`, cross-UID `pmaskd`, or `--allow-dumpable`) |
 | seccomp status fingerprint | `NoNewPrivs: 1` and `Seccomp_filters` delta above host baseline | `--watch-rename`, `--exec-once` (with wait/kill), `--stealth`. **Zero added filters in `single` and default `tree`** |
 | launch window & audit log | sub-millisecond window on `#!` scripts / `vfork`; kernel audit `EXECVE`/`PROCTITLE` captures `pmask`'s own `argv` if `literal:` secrets are passed | use `--secret-fd` / `--args-from-fd` / `file:` / `agent:` and `--strict-exec` to eliminate |
 
@@ -255,7 +263,7 @@ chmod +x pmask-x86_64-unknown-linux-musl
 Pin a specific release tag:
 
 ```sh
-V=v0.2.0
+V=v0.3.0
 curl -fLO "https://github.com/Azathothas/pmask/releases/download/$V/pmask-x86_64-unknown-linux-musl"
 chmod +x pmask-x86_64-unknown-linux-musl
 ./pmask-x86_64-unknown-linux-musl --version

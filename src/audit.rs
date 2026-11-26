@@ -10,9 +10,9 @@
 //! - [`audit_pid`] probes every observable `/proc/<pid>` surface, performs a
 //!   bounded full-VMA `/proc/<pid>/mem` scan, checks invariants `INV-1`
 //!   through `INV-10`, and emits an honest list of residuals.
-//! - [`export_profile_for_pid`] and [`export_profile_template`] emit versioned
-//!   `pmask-profile/1` JSON for downstream decoy generators (`psgen`) without
-//!   ever serializing raw secret bytes.
+//! - [`export_profile_for_pid`] and [`export_profile_template`] emit native
+//!   `psgen` `schema: 2` JSON for downstream decoy generators without ever
+//!   serializing raw secret bytes.
 //! - [`render_explain`] prints what a profile hides, denies, and leaves
 //!   exposed against the named observer (`same-uid local observer, no root`).
 
@@ -28,14 +28,17 @@ use zeroize::Zeroize;
 use crate::caps::{proc_hidepid, Caps};
 use crate::COMM_MAX;
 
-/// Version of the profile contract.
-pub const PROFILE_VERSION: u32 = 1;
+/// Version of the profile contract (`psgen` native `schema: 2`).
+pub const PROFILE_VERSION: u32 = 2;
+
+/// Native `psgen` numeric schema version emitted by `--profile-json`.
+pub const PROFILE_SCHEMA_VERSION: u32 = 2;
 
 /// Schema identifier for `--audit --json` output.
 pub const AUDIT_SCHEMA: &str = "pmask-audit/1";
 
-/// Schema identifier for `--profile-json` output.
-pub const PROFILE_SCHEMA: &str = "pmask-profile/1";
+/// Human-readable schema label for `--profile-json` output.
+pub const PROFILE_SCHEMA: &str = "psgen-profile/2";
 
 /// Hard upper bound on total bytes scanned across `/proc/<pid>/mem` mappings
 /// during one audit pass (64 MiB).
@@ -442,6 +445,12 @@ pub struct AuxvSurface {
     pub at_execfn: Option<u64>,
     /// Sanitized `AT_EXECFN` string dereferenced from `/proc/<pid>/mem` if readable.
     pub at_execfn_str: Option<String>,
+    /// Whether dereferencing `AT_EXECFN` from `/proc/<pid>/mem` succeeded.
+    pub at_execfn_readable: Option<bool>,
+    /// True when reading `AT_EXECFN` from `/proc/<pid>/mem` failed with `EIO`.
+    pub execfn_io_error: bool,
+    /// Sanitized `AT_PLATFORM` string dereferenced from `/proc/<pid>/mem` if readable.
+    pub at_platform: Option<String>,
     pub at_random: Option<u64>,
     pub at_base: Option<u64>,
     pub at_entry: Option<u64>,
@@ -631,6 +640,11 @@ pub struct AuditReport {
     pub target_uid: Option<u32>,
     pub pid: libc::pid_t,
     pub label: Option<String>,
+    pub denied_surfaces: usize,
+    pub seccomp_delta: u32,
+    pub no_new_privs_delta: u32,
+    pub auxv_execfn_readable: Option<bool>,
+    pub execfn_io_error: bool,
     pub token_present: bool,
     pub token_sha256: Option<String>,
     pub surfaces: ProcSnapshot,
@@ -658,6 +672,23 @@ impl AuditReport {
         let _ = writeln!(out, "  \"pid\": {},", self.pid);
         let _ = writeln!(out, "  \"label\": {},", opt_str_json(self.label.as_deref()));
         let _ = writeln!(out, "  \"passed\": {},", bool_json(self.passed()));
+        let _ = writeln!(out, "  \"denied_surfaces\": {},", self.denied_surfaces);
+        let _ = writeln!(out, "  \"seccomp_delta\": {},", self.seccomp_delta);
+        let _ = writeln!(
+            out,
+            "  \"no_new_privs_delta\": {},",
+            self.no_new_privs_delta
+        );
+        let _ = writeln!(
+            out,
+            "  \"auxv_execfn_readable\": {},",
+            opt_bool_json(self.auxv_execfn_readable)
+        );
+        let _ = writeln!(
+            out,
+            "  \"execfn_io_error\": {},",
+            bool_json(self.execfn_io_error)
+        );
         let _ = writeln!(out, "  \"safety\": {{");
         let _ = writeln!(
             out,
@@ -702,10 +733,13 @@ impl AuditReport {
         );
         let _ = writeln!(
             out,
-            "    \"auxv\": {{\"status\": \"{}\", \"at_execfn\": {}, \"at_execfn_str\": {}, \"at_random\": {}, \"at_base\": {}, \"at_entry\": {}, \"has_token\": {}, \"has_real_exe\": {}, \"has_memfd\": {}}},",
+            "    \"auxv\": {{\"status\": \"{}\", \"at_execfn\": {}, \"at_execfn_str\": {}, \"at_execfn_readable\": {}, \"execfn_io_error\": {}, \"at_platform\": {}, \"at_random\": {}, \"at_base\": {}, \"at_entry\": {}, \"has_token\": {}, \"has_real_exe\": {}, \"has_memfd\": {}}},",
             s.auxv.status.as_str(),
             opt_u64_json(s.auxv.at_execfn),
             opt_str_json(s.auxv.at_execfn_str.as_deref()),
+            opt_bool_json(s.auxv.at_execfn_readable),
+            bool_json(s.auxv.execfn_io_error),
+            opt_str_json(s.auxv.at_platform.as_deref()),
             opt_u64_json(s.auxv.at_random),
             opt_u64_json(s.auxv.at_base),
             opt_u64_json(s.auxv.at_entry),
@@ -1500,8 +1534,9 @@ fn evaluate_invariants(
             name: "core_dump_hygiene",
             passed: true,
             detail: format!(
-                "dumpable_zero={:?}, core_limit_zero={:?}",
-                snap.dumpable_zero, snap.limits.core_limit_zero
+                "dumpable_zero={}, core_limit_zero={}",
+                fmt_opt_yes_no(snap.dumpable_zero),
+                fmt_opt_yes_no(snap.limits.core_limit_zero)
             ),
         }
     } else if opts.observer == ObserverRole::OtherUid
@@ -1522,27 +1557,31 @@ fn evaluate_invariants(
         }
     };
 
-    // INV-8: Exported profile.json matches schema pmask-profile/1 and contains zero secret bytes.
+    // INV-8: Exported profile.json matches native psgen schema: 2 and contains zero secret bytes.
     let exported = format_profile_json_from_snapshot(
         &snap,
         opts.profile,
         opts.label.as_deref(),
         token_present,
         token_sha256.as_deref(),
+        opts.token.as_deref(),
         needles,
     );
-    let schema_ok = exported.contains(&format!("\"schema\": \"{PROFILE_SCHEMA}\""));
-    let secret_free = !needles.matches_str(&exported);
+    let schema_ok = exported.contains(&format!("\"schema\": {PROFILE_SCHEMA_VERSION},"));
+    let secret_free =
+        !needles.matches_str(&exported) && !contains_unredacted_secret_pattern(&exported);
     let inv8 = InvariantResult {
         id: "INV-8",
         name: "profile_export_clean",
         passed: schema_ok && secret_free,
         detail: if schema_ok && secret_free {
-            format!("exported {PROFILE_SCHEMA} JSON contains zero secret bytes")
+            format!(
+                "exported psgen schema: {PROFILE_SCHEMA_VERSION} JSON contains zero secret bytes"
+            )
         } else if !secret_free {
-            "exported profile.json contained secret bytes".to_string()
+            "exported profile.json contained secret bytes or unredacted secret pattern".to_string()
         } else {
-            "exported profile.json missing required schema field".to_string()
+            "exported profile.json missing required schema: 2 field".to_string()
         },
     };
 
@@ -1604,6 +1643,17 @@ fn evaluate_invariants(
 
     let invariants = vec![inv1, inv2, inv3, inv4, inv5, inv6, inv7, inv8, inv9, inv10];
     let residuals = collect_residuals(&snap, opts.observer);
+    let denied_surfaces = count_denied_surfaces(&snap);
+    let seccomp_delta = snap
+        .status
+        .seccomp_filters
+        .saturating_sub(snap.baseline_seccomp_filters);
+    let no_new_privs_delta = snap
+        .status
+        .no_new_privs
+        .saturating_sub(snap.baseline_no_new_privs);
+    let auxv_execfn_readable = snap.auxv.at_execfn_readable;
+    let execfn_io_error = snap.auxv.execfn_io_error;
 
     AuditReport {
         schema: AUDIT_SCHEMA,
@@ -1614,12 +1664,43 @@ fn evaluate_invariants(
         target_uid: snap.target_uid,
         pid: snap.pid,
         label: opts.label.clone(),
+        denied_surfaces,
+        seccomp_delta,
+        no_new_privs_delta,
+        auxv_execfn_readable,
+        execfn_io_error,
         token_present,
         token_sha256,
         surfaces: snap,
         invariants,
         residuals,
     }
+}
+
+fn count_denied_surfaces(snap: &ProcSnapshot) -> usize {
+    let mut n = 0usize;
+    if snap.environ.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.mem.status == MemScanStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.auxv.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.exe.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.maps.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.fd.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    if snap.cwd.status == AccessStatus::DeniedEacces {
+        n += 1;
+    }
+    n
 }
 
 fn collect_residuals(snap: &ProcSnapshot, observer: ObserverRole) -> Vec<Residual> {
@@ -1633,9 +1714,14 @@ fn collect_residuals(snap: &ProcSnapshot, observer: ObserverRole) -> Vec<Residua
         || snap.cwd.status == AccessStatus::DeniedEacces;
 
     if any_eacces && observer == ObserverRole::SameUid {
+        let detail = if snap.dumpable_zero == Some(false) {
+            "yama.ptrace_scope denies same-uid ptrace/mem attach while the target remains dumpable (environ, exe, maps, auxv, fd, and cwd are readable)"
+        } else {
+            "PR_SET_DUMPABLE=0 causes same-uid /proc reads to fail with EACCES; use a helper uid or userns to remove the denial signal"
+        };
         residuals.push(Residual {
             code: "eacces_denial",
-            detail: "PR_SET_DUMPABLE=0 causes same-uid /proc reads to fail with EACCES; use a helper uid or userns to remove the denial signal".to_string(),
+            detail: detail.to_string(),
         });
     }
     if snap.misc.userns_owner_read_bypass && observer == ObserverRole::SameUid {
@@ -1645,11 +1731,16 @@ fn collect_residuals(snap: &ProcSnapshot, observer: ObserverRole) -> Vec<Residua
         });
     }
     if snap.stat.arg_span_hidden {
+        let detail = if observer == ObserverRole::OtherUid {
+            "kernel zeroes /proc/<pid>/stat fields 48-51 (arg_start..env_end) for non-owner observers without ptrace access"
+        } else if snap.dumpable_zero == Some(false) {
+            "kernel zeroes /proc/<pid>/stat fields 48-51 (arg_start..env_end) while dumpable=0 or ptrace access is denied"
+        } else {
+            "kernel zeroes /proc/<pid>/stat fields 48-51 (arg_start..env_end) while dumpable=0"
+        };
         residuals.push(Residual {
             code: "arg_span_hidden",
-            detail:
-                "kernel zeroes /proc/<pid>/stat fields 48-51 (arg_start..env_end) while dumpable=0"
-                    .to_string(),
+            detail: detail.to_string(),
         });
     }
     if snap.exe.is_memfd || snap.maps.has_memfd || snap.maps.smaps_has_memfd || snap.auxv.has_memfd
@@ -2014,6 +2105,44 @@ fn probe_environ(path: &str, real_exe: Option<&str>, needles: &SecretNeedles) ->
     }
 }
 
+/// Read a NUL-terminated string from `/proc/<pid>/mem` without crossing into an
+/// unmapped guard page past the top of `[stack]`. Reads up to the current 4 KiB
+/// page boundary first, then continues into the next page only if no NUL byte
+/// was seen yet.
+fn read_mem_cstring_bounded(file: &File, addr: u64, max_len: usize) -> Result<Vec<u8>, io::Error> {
+    if max_len == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity(max_len.min(256));
+    let mut cur = addr;
+    let mut remaining = max_len;
+    let mut chunk = [0u8; 256];
+    while remaining > 0 {
+        let page_rem = (4096u64 - (cur & 4095)) as usize;
+        let want = remaining.min(page_rem).min(chunk.len()).max(1);
+        match file.read_at(&mut chunk[..want], cur) {
+            Ok(0) => break,
+            Ok(n) => {
+                let slice = &chunk[..n];
+                if let Some(nul) = slice.iter().position(|&b| b == 0) {
+                    out.extend_from_slice(&slice[..nul]);
+                    return Ok(out);
+                }
+                out.extend_from_slice(slice);
+                cur = cur.saturating_add(n as u64);
+                remaining = remaining.saturating_sub(n);
+            }
+            Err(e) => {
+                if !out.is_empty() {
+                    return Ok(out);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn probe_auxv(
     auxv_path: &str,
     mem_path: &str,
@@ -2022,12 +2151,14 @@ fn probe_auxv(
 ) -> AuxvSurface {
     const AT_BASE: u64 = 7;
     const AT_ENTRY: u64 = 9;
+    const AT_PLATFORM: u64 = 15;
     const AT_RANDOM: u64 = 25;
     const AT_EXECFN: u64 = 31;
 
     match read_bounded_bytes(auxv_path, 64 * 1024) {
         Ok(raw) => {
             let mut at_execfn = None;
+            let mut at_platform_addr = None;
             let mut at_random = None;
             let mut at_base = None;
             let mut at_entry = None;
@@ -2057,6 +2188,7 @@ fn probe_auxv(
                 }
                 match k {
                     AT_EXECFN => at_execfn = Some(v),
+                    AT_PLATFORM => at_platform_addr = Some(v),
                     AT_RANDOM => at_random = Some(v),
                     AT_BASE => at_base = Some(v),
                     AT_ENTRY => at_entry = Some(v),
@@ -2069,25 +2201,52 @@ fn probe_auxv(
             let mut has_real_exe = false;
             let mut has_memfd = false;
             let mut at_execfn_str = None;
+            let mut at_execfn_readable = None;
+            let mut execfn_io_error = false;
+            let mut at_platform = None;
 
+            let mem_file = File::open(mem_path);
             if let Some(addr) = at_execfn {
                 if addr != 0 && addr <= i64::MAX as u64 {
-                    if let Ok(f) = File::open(mem_path) {
-                        let mut buf = [0u8; MAX_EXECFN_BYTES];
-                        if let Ok(n) = f.read_at(&mut buf, addr) {
-                            let slice = &buf[..n];
-                            let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-                            let raw_str = String::from_utf8_lossy(&slice[..end]);
-                            if needles.matches_str(&raw_str) {
-                                has_token = true;
+                    match &mem_file {
+                        Ok(f) => match read_mem_cstring_bounded(f, addr, MAX_EXECFN_BYTES) {
+                            Ok(bytes) => {
+                                let raw_str = String::from_utf8_lossy(&bytes);
+                                if needles.matches_str(&raw_str) {
+                                    has_token = true;
+                                }
+                                if real_exe.is_some_and(|r| raw_str.contains(r)) {
+                                    has_real_exe = true;
+                                }
+                                if raw_str.contains("/memfd:") || raw_str.starts_with("memfd:") {
+                                    has_memfd = true;
+                                }
+                                at_execfn_str = Some(needles.scrub_string(&raw_str));
+                                at_execfn_readable = Some(true);
                             }
-                            if real_exe.is_some_and(|r| raw_str.contains(r)) {
-                                has_real_exe = true;
+                            Err(e) => {
+                                at_execfn_readable = Some(false);
+                                if e.raw_os_error() == Some(libc::EIO) {
+                                    execfn_io_error = true;
+                                }
                             }
-                            if raw_str.contains("/memfd:") || raw_str.starts_with("memfd:") {
-                                has_memfd = true;
+                        },
+                        Err(e) => {
+                            if classify_io_err(e) != AccessStatus::DeniedEacces {
+                                at_execfn_readable = Some(false);
                             }
-                            at_execfn_str = Some(needles.scrub_string(&raw_str));
+                        }
+                    }
+                }
+            }
+            if let Some(addr) = at_platform_addr {
+                if addr != 0 && addr <= i64::MAX as u64 {
+                    if let Ok(ref f) = mem_file {
+                        if let Ok(bytes) = read_mem_cstring_bounded(f, addr, 64) {
+                            if !bytes.is_empty() {
+                                let s = String::from_utf8_lossy(&bytes);
+                                at_platform = Some(needles.scrub_string(&s));
+                            }
                         }
                     }
                 }
@@ -2097,6 +2256,9 @@ fn probe_auxv(
                 status: AccessStatus::Readable,
                 at_execfn,
                 at_execfn_str,
+                at_execfn_readable,
+                execfn_io_error,
+                at_platform,
                 at_random,
                 at_base,
                 at_entry,
@@ -2109,6 +2271,9 @@ fn probe_auxv(
             status: classify_io_err(&e),
             at_execfn: None,
             at_execfn_str: None,
+            at_execfn_readable: None,
+            execfn_io_error: false,
+            at_platform: None,
             at_random: None,
             at_base: None,
             at_entry: None,
@@ -2891,34 +3056,1175 @@ fn probe_misc(base: &str, pid: libc::pid_t, parent_is_twin: bool) -> MiscSurface
     }
 }
 
-/// Export the observable profile of a live process in `pmask-profile/1` JSON.
+/// Maximum `maps` entries captured in native `psgen` `schema: 2` export.
+const MAX_PROFILE_MAPS_LINES: usize = 512;
+
+/// Maximum `smaps` entries captured in native `psgen` `schema: 2` export.
+const MAX_PROFILE_SMAPS_LINES: usize = 256;
+
+fn contains_ascii_ci(hay: &str, needle_upper: &[u8]) -> bool {
+    let hb = hay.as_bytes();
+    if needle_upper.len() > hb.len() {
+        return false;
+    }
+    hb.windows(needle_upper.len()).any(|w| {
+        w.iter()
+            .zip(needle_upper.iter())
+            .all(|(&a, &b)| a.to_ascii_uppercase() == b)
+    })
+}
+
+fn is_sensitive_env_key(key: &str) -> bool {
+    "SECRET,TOKEN,PASSWORD,PASSWD,API_KEY,APIKEY,PRIVATE_KEY,CREDENTIAL,AUTH_KEY"
+        .split(',')
+        .any(|k| contains_ascii_ci(key, k.as_bytes()))
+}
+
+fn contains_unredacted_secret_pattern(s: &str) -> bool {
+    if (s.contains("-----BEGIN ") && s.contains("PRIVATE KEY-----"))
+        || s.contains("ghp_")
+        || s.contains("github_pat_")
+        || s.contains("xoxb-")
+        || s.contains("xoxp-")
+    {
+        return true;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() >= 20 {
+        for i in 0..=bytes.len() - 20 {
+            if &bytes[i..i + 4] == b"AKIA"
+                && bytes[i + 4..i + 20]
+                    .iter()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn find_inline_secret_str(s: &str) -> Option<&str> {
+    struct InlineRule {
+        pfx: &'static [u8],
+        min_len: usize,
+        max_len: usize,
+        dash: bool,
+        under: bool,
+        req_b: bool,
+    }
+    const RULES: &[InlineRule] = &[
+        InlineRule {
+            pfx: b"TOK-",
+            min_len: 10,
+            max_len: 68,
+            dash: true,
+            under: true,
+            req_b: true,
+        },
+        InlineRule {
+            pfx: b"github_pat_",
+            min_len: 21,
+            max_len: 107,
+            dash: false,
+            under: true,
+            req_b: false,
+        },
+        InlineRule {
+            pfx: b"ghp_",
+            min_len: 14,
+            max_len: 68,
+            dash: false,
+            under: false,
+            req_b: false,
+        },
+        InlineRule {
+            pfx: b"xoxb-",
+            min_len: 13,
+            max_len: 69,
+            dash: true,
+            under: false,
+            req_b: false,
+        },
+        InlineRule {
+            pfx: b"xoxp-",
+            min_len: 13,
+            max_len: 69,
+            dash: true,
+            under: false,
+            req_b: false,
+        },
+    ];
+    let hay = s.as_bytes();
+    for i in 0..hay.len() {
+        let rest = &hay[i..];
+        let boundary = i == 0 || !hay[i - 1].is_ascii_alphanumeric();
+        for r in RULES {
+            if (!r.req_b || boundary) && rest.starts_with(r.pfx) {
+                let mut end = r.pfx.len();
+                let lim = rest.len().min(r.max_len);
+                while end < lim
+                    && (rest[end].is_ascii_alphanumeric()
+                        || (r.dash && rest[end] == b'-')
+                        || (r.under && rest[end] == b'_'))
+                {
+                    end += 1;
+                }
+                if end >= r.min_len {
+                    if let Ok(found) = std::str::from_utf8(&rest[..end]) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        if boundary
+            && rest.len() >= 20
+            && &rest[..4] == b"AKIA"
+            && rest[4..20]
+                .iter()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        {
+            if let Ok(found) = std::str::from_utf8(&rest[..20]) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn redacted_len_marker(len: usize) -> String {
+    format!("<REDACTED:len={len}>")
+}
+
+fn scrub_profile_str(s: &str, needles: &SecretNeedles) -> String {
+    let mut out = s.to_string();
+    for needle in &needles.variants {
+        if let Ok(ns) = std::str::from_utf8(needle) {
+            if !ns.is_empty() && out.contains(ns) {
+                out = out.replace(ns, &redacted_len_marker(ns.len()));
+            }
+        }
+    }
+    if needles.matches_str(&out) {
+        out = redacted_len_marker(s.len());
+    }
+    while let Some(found) = find_inline_secret_str(&out).map(ToOwned::to_owned) {
+        out = out.replace(&found, &redacted_len_marker(found.len()));
+    }
+    if contains_unredacted_secret_pattern(&out) {
+        out = redacted_len_marker(s.len());
+    }
+    out
+}
+
+fn scrub_profile_environ_entry(entry: &str, needles: &SecretNeedles) -> String {
+    if let Some((k, v)) = entry.split_once('=') {
+        let mut clean_v = v.to_string();
+        for needle in &needles.variants {
+            if let Ok(ns) = std::str::from_utf8(needle) {
+                if !ns.is_empty() && clean_v.contains(ns) {
+                    clean_v = clean_v.replace(ns, &redacted_len_marker(ns.len()));
+                }
+            }
+        }
+        let key_flagged = is_sensitive_env_key(k) && !v.is_empty() && !v.starts_with("<REDACTED");
+        let pat_flagged = contains_unredacted_secret_pattern(&clean_v);
+        let final_v = if key_flagged || pat_flagged {
+            redacted_len_marker(v.len())
+        } else {
+            scrub_profile_str(&clean_v, needles)
+        };
+        let clean_k = scrub_profile_str(k, needles);
+        format!("{clean_k}={final_v}")
+    } else {
+        scrub_profile_str(entry, needles)
+    }
+}
+
+fn is_safe_ancestor_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "PATH" | "HOME" | "LANG" | "TERM" | "USER" | "LOGNAME" | "SHELL" | "PWD" | "SHLVL"
+    ) || key.starts_with("LC_")
+}
+
+fn filter_and_scrub_profile_environ(
+    raw_env: &[u8],
+    depth: usize,
+    needles: &SecretNeedles,
+) -> Vec<String> {
+    raw_env
+        .split(|&b| b == 0)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let s = String::from_utf8_lossy(part);
+            if depth > 0 {
+                let key = s.split_once('=').map(|(k, _)| k)?;
+                if !is_safe_ancestor_env_key(key) {
+                    return None;
+                }
+            }
+            Some(scrub_profile_environ_entry(&s, needles))
+        })
+        .collect()
+}
+
+fn fmt_opt_yes_no(v: Option<bool>) -> &'static str {
+    match v {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+fn classify_token_charset(tok: &str) -> String {
+    if tok.is_empty() {
+        return "ascii".to_string();
+    }
+    if let Some(pos) = tok.rfind(['-', '_']) {
+        let pfx = &tok[..=pos];
+        let suffix = &tok[pos + 1..];
+        if pfx.len() >= 2
+            && pfx.len() <= 8
+            && suffix.len() >= 3
+            && suffix.len() >= pfx.len()
+            && pfx.as_bytes()[0].is_ascii_alphabetic()
+            && pfx
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || b == b'-' || b == b'_')
+        {
+            if suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return format!("prefix:{pfx}:hex");
+            }
+            if suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                return format!("prefix:{pfx}:alnum");
+            }
+        }
+    }
+    if tok.bytes().all(|b| b.is_ascii_hexdigit()) {
+        "hex".to_string()
+    } else if tok.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        "alnum".to_string()
+    } else if tok
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-'))
+    {
+        "base64".to_string()
+    } else {
+        "ascii".to_string()
+    }
+}
+
+fn detect_exe_memfd(exe: &str) -> Option<String> {
+    let trimmed = exe.strip_prefix('/').unwrap_or(exe);
+    let rest = trimmed.strip_prefix("memfd:")?;
+    let name = rest.strip_suffix(" (deleted)").unwrap_or(rest).trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn normalize_maps_for_profile(text: &str, needles: &SecretNeedles) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines().take(MAX_PROFILE_MAPS_LINES) {
+        let mut parts = line.split_ascii_whitespace();
+        let (Some(_), Some(perms)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let mut s = String::with_capacity(64);
+        s.push_str("<addr>");
+        for p in [
+            perms,
+            parts.next().unwrap_or("00000000"),
+            parts.next().unwrap_or("00:00"),
+            parts.next().unwrap_or("0"),
+        ]
+        .into_iter()
+        .chain(parts)
+        {
+            s.push(' ');
+            s.push_str(p);
+        }
+        out.push(scrub_profile_str(&s, needles));
+    }
+    out
+}
+
+fn normalize_smaps_for_profile(text: &str, needles: &SecretNeedles) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur_header: Option<String> = None;
+    let mut rss = 0u64;
+    let mut pdirty = 0u64;
+    let mut anon = 0u64;
+
+    let flush = |out: &mut Vec<String>, hdr: &mut Option<String>, r: u64, p: u64, a: u64| {
+        if let Some(h) = hdr.take() {
+            if out.len() < MAX_PROFILE_SMAPS_LINES {
+                out.push(scrub_profile_str(
+                    &format!("{h} Rss:{r}kB Private_Dirty:{p}kB Anonymous:{a}kB"),
+                    needles,
+                ));
+            }
+        }
+    };
+
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if !k.contains(' ') && !k.contains('-') {
+                let parsed = v
+                    .split_ascii_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                match k {
+                    "Rss" => rss = parsed,
+                    "Private_Dirty" => pdirty = parsed,
+                    "Anonymous" => anon = parsed,
+                    _ => {}
+                }
+                continue;
+            }
+        }
+        flush(&mut out, &mut cur_header, rss, pdirty, anon);
+        rss = 0;
+        pdirty = 0;
+        anon = 0;
+        let mut parts = line.split_ascii_whitespace();
+        let _addr = parts.next();
+        let perms = parts.next().unwrap_or("----");
+        let mut hdr = perms.to_string();
+        let mut any = false;
+        for p in parts.skip(3) {
+            hdr.push(' ');
+            hdr.push_str(p);
+            any = true;
+        }
+        if !any {
+            hdr.push_str(" [anon]");
+        }
+        cur_header = Some(hdr);
+    }
+    flush(&mut out, &mut cur_header, rss, pdirty, anon);
+    out
+}
+
+fn decode_syscall_name(raw_syscall: Option<&str>) -> String {
+    let Some(text) = raw_syscall else {
+        return "unknown".to_string();
+    };
+    let first = text.split_ascii_whitespace().next().unwrap_or("");
+    if first.is_empty() {
+        return "unknown".to_string();
+    }
+    if first == "running" {
+        return "running".to_string();
+    }
+    let Ok(nr_l) = first.parse::<libc::c_long>() else {
+        return first.to_string();
+    };
+    if nr_l < 0 {
+        return first.to_string();
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if nr_l == libc::SYS_poll {
+            return "poll".to_string();
+        }
+        if nr_l == libc::SYS_select {
+            return "select".to_string();
+        }
+        if nr_l == libc::SYS_pause {
+            return "pause".to_string();
+        }
+        if nr_l == libc::SYS_epoll_wait {
+            return "epoll_wait".to_string();
+        }
+    }
+    match nr_l {
+        libc::SYS_read => "read".to_string(),
+        libc::SYS_write => "write".to_string(),
+        libc::SYS_ppoll => "ppoll".to_string(),
+        libc::SYS_pselect6 => "pselect6".to_string(),
+        libc::SYS_epoll_pwait => "epoll_pwait".to_string(),
+        libc::SYS_nanosleep => "nanosleep".to_string(),
+        libc::SYS_clock_nanosleep => "clock_nanosleep".to_string(),
+        libc::SYS_futex => "futex".to_string(),
+        libc::SYS_wait4 => "wait4".to_string(),
+        libc::SYS_rt_sigsuspend => "rt_sigsuspend".to_string(),
+        libc::SYS_accept4 => "accept4".to_string(),
+        libc::SYS_recvfrom => "recvfrom".to_string(),
+        _ => format!("syscall_{nr_l}"),
+    }
+}
+
+fn is_stop_ancestor_comm(comm: &str) -> bool {
+    let t = comm.trim();
+    "init,systemd,podman-init,tini,dumb-init,conmon,catatonit,docker-init,pause,s6-svscan,supervisord,runit,sshd,login"
+        .split(',')
+        .any(|s| s == t)
+}
+
+fn discover_direct_children(pid: libc::pid_t) -> Vec<libc::pid_t> {
+    let mut children: Vec<libc::pid_t> = Vec::new();
+    let task_dir = format!("/proc/{pid}/task");
+    let mut used_proc_children = false;
+    if let Ok(entries) = fs::read_dir(&task_dir) {
+        for entry in entries.flatten() {
+            let tid_s = entry.file_name();
+            if !tid_s.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let cpath = entry.path().join("children");
+            if let Ok(text) = read_bounded_string(&cpath.to_string_lossy(), 64 * 1024) {
+                used_proc_children = true;
+                for tok in text.split_ascii_whitespace() {
+                    if let Ok(cpid) = tok.parse::<libc::pid_t>() {
+                        if cpid > 0 && cpid != pid && !children.contains(&cpid) {
+                            children.push(cpid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !used_proc_children {
+        if let Ok(entries) = fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Ok(cpid) = name.to_string_lossy().parse::<libc::pid_t>() else {
+                    continue;
+                };
+                if cpid <= 0 || cpid == pid {
+                    continue;
+                }
+                if let Ok(text) = read_bounded_string(&format!("/proc/{cpid}/stat"), 4096) {
+                    if let Some(rp) = text.rfind(')') {
+                        let ppid = text[rp + 1..]
+                            .split_ascii_whitespace()
+                            .nth(1)
+                            .and_then(|s| s.parse::<libc::pid_t>().ok())
+                            .unwrap_or(0);
+                        if ppid == pid && !children.contains(&cpid) {
+                            children.push(cpid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    children.sort_unstable();
+    children
+}
+
+/// Native `psgen` `schema: 2` profile model.
+struct PsgenProfile {
+    schema: u32,
+    masker: String,
+    profile: String,
+    version: String,
+    observer_uid: Option<u32>,
+    // identity
+    label: String,
+    comm: String,
+    argv: Vec<String>,
+    cmdline_raw_nuls: Option<usize>,
+    pid: i32,
+    ppid: i32,
+    pgid: i32,
+    sid: i32,
+    uid: u32,
+    gid: u32,
+    groups: Vec<u32>,
+    starttime: u64,
+    cwd: String,
+    root: String,
+    exe: String,
+    exe_memfd: Option<String>,
+    ns_pid: Option<String>,
+    ns_mnt: Option<String>,
+    ns_user: Option<String>,
+    ns_net: Option<String>,
+    // status
+    st_name: String,
+    st_state: String,
+    st_ppid: i32,
+    st_uid: String,
+    st_gid: String,
+    st_threads: u32,
+    st_tracer_pid: i32,
+    st_no_new_privs: u32,
+    st_seccomp: u32,
+    st_seccomp_filters: u32,
+    st_cap_eff: String,
+    st_cap_prm: String,
+    st_cap_bnd: String,
+    st_vm_lck: Option<u64>,
+    st_rss_shmem: Option<u64>,
+    // stat
+    stat_ppid: i32,
+    stat_num_threads: u32,
+    stat_starttime: u64,
+    stat_vsize: u64,
+    stat_rss: u64,
+    stat_flags: Option<u64>,
+    stat_arg_start: u64,
+    stat_arg_end: u64,
+    stat_env_start: u64,
+    stat_env_end: u64,
+    stat_startstack: u64,
+    // memory
+    maps: Vec<String>,
+    smaps: Vec<String>,
+    token_present: bool,
+    token_sha256: Option<String>,
+    token_len: Option<u32>,
+    token_charset: Option<String>,
+    token_placements: Vec<String>,
+    readable_by: Vec<String>,
+    denied_by: Vec<String>,
+    // fds
+    fds: Vec<(i32, String)>,
+    // auxv
+    at_execfn: Option<String>,
+    at_platform: Option<String>,
+    at_base: u64,
+    at_entry: u64,
+    // environ
+    environ: Vec<String>,
+    environ_raw_len: u64,
+    environ_all_nul: bool,
+    // task
+    task: Vec<(i32, String, String)>,
+    // syscall
+    syscall_name: String,
+    wchan: String,
+    policy: i32,
+    priority: i32,
+    // timing
+    exec_ms: f64,
+    first_conceal_ms: f64,
+    // optional / tree
+    dumpable: Option<bool>,
+    children: Vec<PsgenProfile>,
+    parent: Option<Box<PsgenProfile>>,
+    tracer: Option<Box<PsgenProfile>>,
+}
+
+fn push_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+}
+
+fn f64_json(v: f64) -> String {
+    let clean = if v.is_finite() && v >= 0.0 { v } else { 0.0 };
+    if clean.fract() == 0.0 {
+        format!("{clean:.1}")
+    } else {
+        format!("{clean}")
+    }
+}
+
+fn u32_vec_json(items: &[u32]) -> String {
+    let mut out = String::from("[");
+    for (i, n) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        let _ = write!(out, "{n}");
+    }
+    out.push(']');
+    out
+}
+
+impl PsgenProfile {
+    fn to_json(&self) -> String {
+        let mut out = String::with_capacity(2048);
+        self.write_json(&mut out, 0);
+        out.push('\n');
+        out
+    }
+
+    fn write_json(&self, out: &mut String, depth: usize) {
+        let ind = depth + 1;
+        let ind2 = depth + 2;
+        out.push_str("{\n");
+
+        // 1. schema
+        push_indent(out, ind);
+        let _ = writeln!(out, "\"schema\": {},", self.schema);
+
+        // 2. source
+        push_indent(out, ind);
+        out.push_str("\"source\": {\n");
+        let mut src_fields = vec![
+            format!("\"masker\": \"{}\"", json_escape(&self.masker)),
+            format!("\"profile\": \"{}\"", json_escape(&self.profile)),
+            format!("\"version\": \"{}\"", json_escape(&self.version)),
+        ];
+        if let Some(ouid) = self.observer_uid {
+            src_fields.push(format!("\"observer_uid\": {ouid}"));
+        }
+        write_joined_fields(out, &src_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 3. identity
+        push_indent(out, ind);
+        out.push_str("\"identity\": {\n");
+        let mut id_fields = vec![
+            format!("\"label\": \"{}\"", json_escape(&self.label)),
+            format!("\"comm\": \"{}\"", json_escape(&self.comm)),
+            format!("\"argv\": {}", str_vec_json(&self.argv)),
+        ];
+        if let Some(nuls) = self.cmdline_raw_nuls {
+            id_fields.push(format!("\"cmdline_raw_nuls\": {nuls}"));
+        }
+        id_fields.push(format!("\"pid\": {}", self.pid.max(0)));
+        id_fields.push(format!("\"ppid\": {}", self.ppid.max(0)));
+        id_fields.push(format!("\"pgid\": {}", self.pgid));
+        id_fields.push(format!("\"sid\": {}", self.sid));
+        id_fields.push(format!("\"uid\": {}", self.uid));
+        id_fields.push(format!("\"gid\": {}", self.gid));
+        id_fields.push(format!("\"groups\": {}", u32_vec_json(&self.groups)));
+        id_fields.push(format!("\"starttime\": {}", self.starttime));
+        id_fields.push(format!("\"cwd\": \"{}\"", json_escape(&self.cwd)));
+        id_fields.push(format!("\"root\": \"{}\"", json_escape(&self.root)));
+        id_fields.push(format!("\"exe\": \"{}\"", json_escape(&self.exe)));
+        if let Some(ref em) = self.exe_memfd {
+            id_fields.push(format!("\"exe_memfd\": \"{}\"", json_escape(em)));
+        }
+        let mut ns_parts = Vec::new();
+        if let Some(ref v) = self.ns_pid {
+            ns_parts.push(format!("\"pid\": \"{}\"", json_escape(v)));
+        }
+        if let Some(ref v) = self.ns_mnt {
+            ns_parts.push(format!("\"mnt\": \"{}\"", json_escape(v)));
+        }
+        if let Some(ref v) = self.ns_user {
+            ns_parts.push(format!("\"user\": \"{}\"", json_escape(v)));
+        }
+        if let Some(ref v) = self.ns_net {
+            ns_parts.push(format!("\"net\": \"{}\"", json_escape(v)));
+        }
+        id_fields.push(format!("\"ns\": {{{}}}", ns_parts.join(", ")));
+        write_joined_fields(out, &id_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 4. status
+        push_indent(out, ind);
+        out.push_str("\"status\": {\n");
+        let mut st_fields = vec![
+            format!("\"Name\": \"{}\"", json_escape(&self.st_name)),
+            format!("\"State\": \"{}\"", json_escape(&self.st_state)),
+            format!("\"PPid\": {}", self.st_ppid.max(0)),
+            format!("\"Uid\": \"{}\"", json_escape(&self.st_uid)),
+            format!("\"Gid\": \"{}\"", json_escape(&self.st_gid)),
+            format!("\"Threads\": {}", self.st_threads.max(1)),
+            format!("\"TracerPid\": {}", self.st_tracer_pid),
+            format!("\"NoNewPrivs\": {}", self.st_no_new_privs),
+            format!("\"Seccomp\": {}", self.st_seccomp),
+            format!("\"Seccomp_filters\": {}", self.st_seccomp_filters),
+            format!("\"CapEff\": \"{}\"", json_escape(&self.st_cap_eff)),
+            format!("\"CapPrm\": \"{}\"", json_escape(&self.st_cap_prm)),
+            format!("\"CapBnd\": \"{}\"", json_escape(&self.st_cap_bnd)),
+        ];
+        if let Some(v) = self.st_vm_lck {
+            st_fields.push(format!("\"VmLck\": {v}"));
+        }
+        if let Some(v) = self.st_rss_shmem {
+            st_fields.push(format!("\"RssShmem\": {v}"));
+        }
+        write_joined_fields(out, &st_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 5. stat
+        push_indent(out, ind);
+        out.push_str("\"stat\": {\n");
+        let mut stat_fields = vec![
+            format!("\"ppid\": {}", self.stat_ppid.max(0)),
+            format!("\"num_threads\": {}", self.stat_num_threads.max(1)),
+            format!("\"starttime\": {}", self.stat_starttime),
+            format!("\"vsize\": {}", self.stat_vsize),
+            format!("\"rss\": {}", self.stat_rss),
+        ];
+        if let Some(fl) = self.stat_flags {
+            stat_fields.push(format!("\"flags\": {fl}"));
+        }
+        stat_fields.push(format!("\"arg_start\": {}", self.stat_arg_start));
+        stat_fields.push(format!("\"arg_end\": {}", self.stat_arg_end));
+        stat_fields.push(format!("\"env_start\": {}", self.stat_env_start));
+        stat_fields.push(format!("\"env_end\": {}", self.stat_env_end));
+        stat_fields.push(format!("\"startstack\": {}", self.stat_startstack));
+        write_joined_fields(out, &stat_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 6. memory
+        push_indent(out, ind);
+        out.push_str("\"memory\": {\n");
+        let mut mem_fields = vec![
+            format!("\"maps\": {}", str_vec_json(&self.maps)),
+            format!("\"smaps\": {}", str_vec_json(&self.smaps)),
+            format!("\"token_present\": {}", bool_json(self.token_present)),
+            format!(
+                "\"token_sha256\": {}",
+                opt_str_json(self.token_sha256.as_deref())
+            ),
+        ];
+        if let Some(tlen) = self.token_len {
+            mem_fields.push(format!("\"token_len\": {tlen}"));
+        }
+        if let Some(ref cs) = self.token_charset {
+            mem_fields.push(format!("\"token_charset\": \"{}\"", json_escape(cs)));
+        }
+        mem_fields.push(format!(
+            "\"token_placements\": {}",
+            str_vec_json(&self.token_placements)
+        ));
+        mem_fields.push(format!(
+            "\"readable_by\": {}",
+            str_vec_json(&self.readable_by)
+        ));
+        mem_fields.push(format!("\"denied_by\": {}", str_vec_json(&self.denied_by)));
+        write_joined_fields(out, &mem_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 7. fds
+        push_indent(out, ind);
+        if self.fds.is_empty() {
+            out.push_str("\"fds\": [],\n");
+        } else {
+            out.push_str("\"fds\": [\n");
+            for (i, (fd, target)) in self.fds.iter().enumerate() {
+                push_indent(out, ind2);
+                let comma = if i + 1 < self.fds.len() { "," } else { "" };
+                let _ = writeln!(
+                    out,
+                    "{{\"fd\": {}, \"target\": \"{}\"}}{}",
+                    (*fd).max(0),
+                    json_escape(target),
+                    comma
+                );
+            }
+            push_indent(out, ind);
+            out.push_str("],\n");
+        }
+
+        // 8. auxv
+        push_indent(out, ind);
+        out.push_str("\"auxv\": {\n");
+        let auxv_fields = vec![
+            format!("\"AT_EXECFN\": {}", opt_str_json(self.at_execfn.as_deref())),
+            format!(
+                "\"AT_PLATFORM\": {}",
+                opt_str_json(self.at_platform.as_deref())
+            ),
+            format!("\"AT_BASE\": {}", self.at_base),
+            format!("\"AT_ENTRY\": {}", self.at_entry),
+        ];
+        write_joined_fields(out, &auxv_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 9-11. environ, environ_raw_len, environ_all_nul
+        push_indent(out, ind);
+        let _ = writeln!(out, "\"environ\": {},", str_vec_json(&self.environ));
+        push_indent(out, ind);
+        let _ = writeln!(out, "\"environ_raw_len\": {},", self.environ_raw_len);
+        push_indent(out, ind);
+        let _ = writeln!(
+            out,
+            "\"environ_all_nul\": {},",
+            bool_json(self.environ_all_nul)
+        );
+
+        // 12. task
+        push_indent(out, ind);
+        if self.task.is_empty() {
+            out.push_str("\"task\": [],\n");
+        } else {
+            out.push_str("\"task\": [\n");
+            for (i, (tid, comm, state)) in self.task.iter().enumerate() {
+                push_indent(out, ind2);
+                let comma = if i + 1 < self.task.len() { "," } else { "" };
+                let _ = writeln!(
+                    out,
+                    "{{\"tid\": {}, \"comm\": \"{}\", \"state\": \"{}\"}}{}",
+                    tid,
+                    json_escape(comm),
+                    json_escape(state),
+                    comma
+                );
+            }
+            push_indent(out, ind);
+            out.push_str("],\n");
+        }
+
+        // 13. syscall
+        push_indent(out, ind);
+        out.push_str("\"syscall\": {\n");
+        let sys_fields = vec![
+            format!("\"syscall\": \"{}\"", json_escape(&self.syscall_name)),
+            format!("\"wchan\": \"{}\"", json_escape(&self.wchan)),
+            format!("\"policy\": {}", self.policy),
+            format!("\"priority\": {}", self.priority),
+        ];
+        write_joined_fields(out, &sys_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 14. timing
+        push_indent(out, ind);
+        out.push_str("\"timing\": {\n");
+        let time_fields = vec![
+            format!("\"exec_ms\": {}", f64_json(self.exec_ms)),
+            format!("\"first_conceal_ms\": {}", f64_json(self.first_conceal_ms)),
+        ];
+        write_joined_fields(out, &time_fields, ind2);
+        push_indent(out, ind);
+        out.push_str("},\n");
+
+        // 15. optional dumpable
+        if let Some(d) = self.dumpable {
+            push_indent(out, ind);
+            let _ = writeln!(out, "\"dumpable\": {},", bool_json(d));
+        }
+
+        // 16. children (+ optional 17. parent, 18. tracer)
+        let has_parent = self.parent.is_some();
+        let has_tracer = self.tracer.is_some();
+        let children_comma = if has_parent || has_tracer { "," } else { "" };
+        push_indent(out, ind);
+        if self.children.is_empty() {
+            let _ = writeln!(out, "\"children\": []{children_comma}");
+        } else {
+            out.push_str("\"children\": [\n");
+            for (i, ch) in self.children.iter().enumerate() {
+                push_indent(out, ind2);
+                ch.write_json(out, ind2);
+                if i + 1 < self.children.len() {
+                    out.push_str(",\n");
+                } else {
+                    out.push('\n');
+                }
+            }
+            push_indent(out, ind);
+            let _ = writeln!(out, "]{children_comma}");
+        }
+
+        if let Some(ref p) = self.parent {
+            push_indent(out, ind);
+            out.push_str("\"parent\": ");
+            p.write_json(out, ind);
+            if has_tracer {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        if let Some(ref t) = self.tracer {
+            push_indent(out, ind);
+            out.push_str("\"tracer\": ");
+            t.write_json(out, ind);
+            out.push('\n');
+        }
+
+        push_indent(out, depth);
+        out.push('}');
+    }
+}
+
+fn write_joined_fields(out: &mut String, fields: &[String], indent: usize) {
+    for (i, f) in fields.iter().enumerate() {
+        push_indent(out, indent);
+        out.push_str(f);
+        if i + 1 < fields.len() {
+            out.push_str(",\n");
+        } else {
+            out.push('\n');
+        }
+    }
+}
+
+/// Export the observable profile of a live process in native `psgen` `schema: 2` JSON.
 ///
 /// If `token` is provided, its SHA-256 hex digest is recorded in
-/// `safety.token_sha256` and `safety.token_present` records whether it was
-/// observed, while any raw occurrence of `token` is scrubbed so secret bytes
-/// are never emitted.
+/// `memory.token_sha256` and `memory.token_present` records whether it was
+/// observed, while any raw occurrence of `token`, sensitive environment keys,
+/// and inline secret patterns are scrubbed so secret bytes are never emitted.
 pub fn export_profile_for_pid(
     pid: libc::pid_t,
     profile: Profile,
     label: Option<&str>,
     token: Option<&[u8]>,
 ) -> io::Result<String> {
+    let mut visited = Vec::new();
+    let needles = SecretNeedles::from_opt(token);
+    let p = extract_psgen_profile_for_pid(pid, profile, label, token, &needles, 0, &mut visited)?;
+    Ok(p.to_json())
+}
+
+fn extract_psgen_profile_for_pid(
+    pid: libc::pid_t,
+    profile: Profile,
+    label: Option<&str>,
+    token: Option<&[u8]>,
+    needles: &SecretNeedles,
+    depth: usize,
+    visited: &mut Vec<libc::pid_t>,
+) -> io::Result<PsgenProfile> {
+    if pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "pid must be a positive integer",
+        ));
+    }
+    if !visited.contains(&pid) {
+        visited.push(pid);
+    }
+
     let mut opts = AuditOptions::new(pid, profile);
     opts.label = label.map(ToOwned::to_owned);
     opts.token = token.map(|t| t.to_vec());
     let report = audit_pid(&opts)?;
-    let needles = SecretNeedles::from_opt(token);
-    Ok(format_profile_json_from_snapshot(
-        &report.surfaces,
+    let snap = &report.surfaces;
+    let base = format!("/proc/{pid}");
+
+    let mut prof = psgen_profile_from_snapshot(
+        snap,
         profile,
         label,
         report.token_present,
         report.token_sha256.as_deref(),
-        &needles,
-    ))
+        token,
+        needles,
+    );
+
+    // Enrich with full live /proc/<pid> details needed by psgen schema: 2.
+    if let Ok(stat_text) = read_bounded_string(&format!("{base}/stat"), 16 * 1024) {
+        if let Some(rp) = stat_text.rfind(')') {
+            let fields: Vec<&str> = stat_text[rp + 1..].split_ascii_whitespace().collect();
+            let get_u64 = |idx: usize| -> u64 {
+                fields
+                    .get(idx)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            let get_i32 = |idx: usize| -> i32 {
+                fields
+                    .get(idx)
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(0)
+            };
+            if let Some(&st) = fields.first() {
+                if !st.is_empty() {
+                    prof.st_state = st.to_string();
+                }
+            }
+            prof.pgid = get_i32(2);
+            prof.sid = get_i32(3);
+            prof.stat_flags = Some(get_u64(6));
+            prof.priority = get_i32(15);
+            prof.stat_vsize = get_u64(20);
+            prof.stat_rss = get_u64(21);
+            prof.stat_startstack = get_u64(25);
+            prof.policy = get_i32(38);
+        }
+    }
+
+    if let Ok(status_text) = read_bounded_string(&format!("{base}/status"), 64 * 1024) {
+        for line in status_text.lines() {
+            let Some((k, raw_v)) = line.split_once(':') else {
+                continue;
+            };
+            let v = raw_v.trim();
+            match k {
+                "State" => {
+                    if let Some(code) = v.split_ascii_whitespace().next() {
+                        prof.st_state = code.to_string();
+                    }
+                }
+                "Uid" => {
+                    let cols: Vec<&str> = v.split_ascii_whitespace().collect();
+                    if !cols.is_empty() {
+                        prof.st_uid = cols.join(" ");
+                        if let Some(euid) = cols
+                            .get(1)
+                            .or_else(|| cols.first())
+                            .and_then(|s| s.parse::<u32>().ok())
+                        {
+                            prof.uid = euid;
+                        }
+                    }
+                }
+                "Gid" => {
+                    let cols: Vec<&str> = v.split_ascii_whitespace().collect();
+                    if !cols.is_empty() {
+                        prof.st_gid = cols.join(" ");
+                        if let Some(egid) = cols
+                            .get(1)
+                            .or_else(|| cols.first())
+                            .and_then(|s| s.parse::<u32>().ok())
+                        {
+                            prof.gid = egid;
+                        }
+                    }
+                }
+                "Groups" => {
+                    prof.groups = v
+                        .split_ascii_whitespace()
+                        .filter_map(|t| t.parse::<u32>().ok())
+                        .collect();
+                }
+                "CapEff" => prof.st_cap_eff = v.to_string(),
+                "CapPrm" => prof.st_cap_prm = v.to_string(),
+                "CapBnd" => prof.st_cap_bnd = v.to_string(),
+                "VmLck" => {
+                    prof.st_vm_lck = v
+                        .split_ascii_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok());
+                }
+                "RssShmem" => {
+                    prof.st_rss_shmem = v
+                        .split_ascii_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    prof.ns_net = fs::read_link(format!("{base}/ns/net"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+
+    if let Ok(maps_text) = read_bounded_string(&format!("{base}/maps"), MAX_PROC_READ_BYTES) {
+        prof.maps = normalize_maps_for_profile(&maps_text, needles);
+    }
+    if let Ok(smaps_text) = read_bounded_string(&format!("{base}/smaps"), MAX_PROC_READ_BYTES) {
+        prof.smaps = normalize_smaps_for_profile(&smaps_text, needles);
+    }
+
+    if let Ok(raw_env) = read_bounded_bytes(&format!("{base}/environ"), MAX_PROC_READ_BYTES) {
+        prof.environ_raw_len = raw_env.len() as u64;
+        prof.environ_all_nul = !raw_env.is_empty() && raw_env.iter().all(|&b| b == 0);
+        prof.environ = filter_and_scrub_profile_environ(&raw_env, depth, needles);
+    }
+
+    if let Ok(entries) = fs::read_dir(format!("{base}/fd")) {
+        let mut fds = Vec::new();
+        for entry in entries.flatten() {
+            if let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() {
+                if fd >= 0 {
+                    if let Ok(target) = fs::read_link(entry.path()) {
+                        let t = scrub_profile_str(&target.to_string_lossy(), needles);
+                        fds.push((fd, t));
+                    }
+                }
+            }
+        }
+        fds.sort_by_key(|(fd, _)| *fd);
+        prof.fds = fds;
+    }
+
+    if let Ok(entries) = fs::read_dir(format!("{base}/task")) {
+        let mut tasks = Vec::new();
+        for entry in entries.flatten() {
+            if let Ok(tid) = entry.file_name().to_string_lossy().parse::<i32>() {
+                let tcomm = read_bounded_string(&entry.path().join("comm").to_string_lossy(), 256)
+                    .ok()
+                    .map(|s| s.trim_end_matches(['\n', '\r']).to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| scrub_profile_str(&s, needles))
+                    .unwrap_or_else(|| prof.comm.clone());
+                let tstate =
+                    read_bounded_string(&entry.path().join("stat").to_string_lossy(), 4096)
+                        .ok()
+                        .and_then(|s| {
+                            let rp = s.rfind(')')?;
+                            s[rp + 1..]
+                                .split_ascii_whitespace()
+                                .next()
+                                .map(ToOwned::to_owned)
+                        })
+                        .unwrap_or_else(|| prof.st_state.clone());
+                tasks.push((tid, tcomm, tstate));
+            }
+        }
+        tasks.sort_by_key(|(tid, _, _)| *tid);
+        if !tasks.is_empty() {
+            prof.task = tasks;
+        }
+    }
+
+    // 1-level children, parent, and tracer capture (avoiding cycles).
+    if depth == 0 {
+        for cpid in discover_direct_children(pid) {
+            if !visited.contains(&cpid) {
+                if let Ok(child_prof) = extract_psgen_profile_for_pid(
+                    cpid,
+                    profile,
+                    None,
+                    token,
+                    needles,
+                    depth + 1,
+                    visited,
+                ) {
+                    prof.children.push(child_prof);
+                }
+            }
+        }
+
+        let ppid = prof.ppid;
+        let capture_parent = ppid > 1
+            && !visited.contains(&ppid)
+            && (snap.misc.parent_is_twin
+                || prof.st_tracer_pid > 0
+                || matches!(profile, Profile::Tree | Profile::Tee | Profile::Compat));
+        if capture_parent {
+            let pcomm = read_bounded_string(&format!("/proc/{ppid}/comm"), 256)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if !is_stop_ancestor_comm(&pcomm) {
+                if let Ok(parent_prof) = extract_psgen_profile_for_pid(
+                    ppid,
+                    profile,
+                    None,
+                    token,
+                    needles,
+                    depth + 1,
+                    visited,
+                ) {
+                    prof.parent = Some(Box::new(parent_prof));
+                }
+            }
+        }
+
+        let tpid = prof.st_tracer_pid;
+        if tpid > 0 && !visited.contains(&tpid) {
+            if let Ok(tracer_prof) = extract_psgen_profile_for_pid(
+                tpid,
+                profile,
+                None,
+                token,
+                needles,
+                depth + 1,
+                visited,
+            ) {
+                prof.tracer = Some(Box::new(tracer_prof));
+            }
+        }
+    }
+
+    Ok(prof)
 }
 
-/// Options shaping a static `pmask-profile/1` JSON template emitted by
+/// Options shaping a static `psgen` `schema: 2` JSON template emitted by
 /// [`export_profile_template_with`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TemplateOptions {
@@ -2936,13 +4242,13 @@ pub struct TemplateOptions {
     pub memfd_rexec: bool,
 }
 
-/// Export a static `pmask-profile/1` JSON template without probing a live PID,
+/// Export a static `psgen` `schema: 2` JSON template without probing a live PID,
 /// using default options for `profile`.
 pub fn export_profile_template(profile: Profile, label: &str, cmdline: &[String]) -> String {
     export_profile_template_with(profile, label, cmdline, &TemplateOptions::default())
 }
 
-/// Export a static `pmask-profile/1` JSON template reflecting `opts`
+/// Export a static `psgen` `schema: 2` JSON template reflecting `opts`
 /// (`--reparent`, `--allow-dumpable`, `--cwd`, `--no-rexec`, `--rexec-mode`).
 pub fn export_profile_template_with(
     profile: Profile,
@@ -2950,13 +4256,32 @@ pub fn export_profile_template_with(
     cmdline: &[String],
     opts: &TemplateOptions,
 ) -> String {
-    // SAFETY: getuid(2) is always safe.
-    let uid = unsafe { libc::getuid() };
-    let comm = truncate_utf8_bytes(label, COMM_MAX);
+    // SAFETY: getuid(2) and getgid(2) are always safe.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let empty_needles = SecretNeedles::from_opt(None);
+    let clean_label = {
+        let s = scrub_profile_str(label.trim(), &empty_needles);
+        if s.is_empty() {
+            "pmask".to_string()
+        } else {
+            s
+        }
+    };
+    let clean_comm = {
+        let c = truncate_utf8_bytes(&clean_label, COMM_MAX).trim();
+        if c.is_empty() {
+            "pmask".to_string()
+        } else {
+            c.to_string()
+        }
+    };
     let argv: Vec<String> = if cmdline.is_empty() {
-        vec![label.to_string()]
+        vec![clean_label.clone()]
     } else {
-        cmdline.to_vec()
+        cmdline
+            .iter()
+            .map(|a| scrub_profile_str(a, &empty_needles))
+            .collect()
     };
 
     let effective_dumpable = match profile {
@@ -2964,84 +4289,157 @@ pub fn export_profile_template_with(
         Profile::Compat => !opts.no_dumpable,
     };
 
-    let (ppid, ppid_kind, tracer_pid) = match profile {
+    let (ppid, tracer_pid) = match profile {
         Profile::Single | Profile::Auto => {
             if opts.reparent {
-                (1, "init", 0)
+                (1, 0)
             } else {
-                (0, "normal", 0)
+                (0, 0)
             }
         }
-        Profile::Tree | Profile::Tee | Profile::Compat => (0, "supervisor", 1),
+        Profile::Tree | Profile::Tee | Profile::Compat => (0, 1),
     };
 
-    let (exe_kind, exe_basename) = if !effective_dumpable {
-        ("denied", "")
+    // In `Profile::Tee`, Linux `cap_capable()` grants the user-namespace
+    // creator uid `CAP_SYS_PTRACE` over the child userns, leaving `exe`
+    // (staged path), `maps`/`smaps`, and `cwd` (`/`) readable to a same-uid
+    // host observer even with `PR_SET_DUMPABLE=0`, while `environ`, `mem`,
+    // `auxv`, and `fd` return `EACCES` via root:root VFS DAC.
+    let read_surfaces_visible = effective_dumpable || profile == Profile::Tee;
+    let (exe, exe_memfd) = if !read_surfaces_visible {
+        (String::new(), None)
     } else if opts.no_rexec || profile == Profile::Compat {
-        ("real", comm)
+        (format!("/usr/bin/{clean_comm}"), None)
     } else if opts.memfd_rexec {
-        ("memfd", comm)
+        (
+            format!("/memfd:{clean_comm} (deleted)"),
+            Some(clean_comm.clone()),
+        )
     } else {
-        ("private", comm)
+        (format!("/run/user/{uid}/{clean_comm}"), None)
     };
 
-    let cwd_kind = if !effective_dumpable {
-        "denied"
+    let cwd = if !read_surfaces_visible {
+        String::new()
     } else if opts.cwd_override || profile == Profile::Tee {
-        "normalized"
+        "/".to_string()
     } else {
-        "real"
+        "/srv/work".to_string()
     };
 
-    render_profile_json(ProfileJsonFields {
-        profile,
-        label,
-        observer_uid: uid,
-        target_uid: Some(uid),
-        comm,
-        cmdline: &argv,
-        exe_kind,
-        exe_basename,
+    let mut readable_by = vec![format!("uid:{uid}")];
+    let mut denied_by = Vec::new();
+    if effective_dumpable {
+        for s in [
+            "environ", "mem", "maps", "smaps", "auxv", "exe", "fd", "cwd",
+        ] {
+            readable_by.push(s.to_string());
+        }
+    } else if profile == Profile::Tee {
+        for s in ["exe", "maps", "smaps", "cwd"] {
+            readable_by.push(s.to_string());
+        }
+        for s in ["environ", "mem", "auxv", "fd"] {
+            denied_by.push(s.to_string());
+        }
+    } else {
+        for s in [
+            "environ", "mem", "maps", "smaps", "auxv", "exe", "fd", "cwd",
+        ] {
+            denied_by.push(s.to_string());
+        }
+    }
+
+    let uid_line = format!("{uid} {uid} {uid} {uid}");
+    let gid_line = format!("{gid} {gid} {gid} {gid}");
+    let at_execfn = if effective_dumpable && !exe.is_empty() {
+        Some(exe.clone())
+    } else {
+        None
+    };
+
+    let prof = PsgenProfile {
+        schema: PROFILE_SCHEMA_VERSION,
+        masker: "pmask".to_string(),
+        profile: profile.as_str().to_string(),
+        version: crate::VERSION.to_string(),
+        observer_uid: Some(uid),
+        label: clean_label,
+        comm: clean_comm.clone(),
+        argv,
+        cmdline_raw_nuls: Some(1),
+        pid: 0,
         ppid,
-        ppid_kind,
-        threads: 1,
-        tracer_pid,
-        no_new_privs: 0,
-        seccomp_filters: 0,
-        dumpable: Some(effective_dumpable),
-        rss_kb: 0,
-        vm_data_kb: None,
-        fd_count: None,
-        cwd_kind,
-        children: 0,
+        pgid: 0,
+        sid: 0,
+        uid,
+        gid,
+        groups: Vec::new(),
+        starttime: 0,
+        cwd,
+        root: "/".to_string(),
+        exe,
+        exe_memfd,
+        ns_pid: None,
+        ns_mnt: None,
+        ns_user: None,
+        ns_net: None,
+        st_name: clean_comm.clone(),
+        st_state: "S".to_string(),
+        st_ppid: ppid,
+        st_uid: uid_line,
+        st_gid: gid_line,
+        st_threads: 1,
+        st_tracer_pid: tracer_pid,
+        st_no_new_privs: 0,
+        st_seccomp: 0,
+        st_seccomp_filters: 0,
+        st_cap_eff: "0000000000000000".to_string(),
+        st_cap_prm: "0000000000000000".to_string(),
+        st_cap_bnd: "0000000000000000".to_string(),
+        st_vm_lck: None,
+        st_rss_shmem: None,
+        stat_ppid: ppid,
+        stat_num_threads: 1,
+        stat_starttime: 0,
+        stat_vsize: 0,
+        stat_rss: 0,
+        stat_flags: None,
+        stat_arg_start: 0,
+        stat_arg_end: 0,
+        stat_env_start: 0,
+        stat_env_end: 0,
+        stat_startstack: 0,
+        maps: Vec::new(),
+        smaps: Vec::new(),
         token_present: false,
         token_sha256: None,
-    })
-}
-
-struct ProfileJsonFields<'a> {
-    profile: Profile,
-    label: &'a str,
-    observer_uid: u32,
-    target_uid: Option<u32>,
-    comm: &'a str,
-    cmdline: &'a [String],
-    exe_kind: &'a str,
-    exe_basename: &'a str,
-    ppid: libc::pid_t,
-    ppid_kind: &'a str,
-    threads: u32,
-    tracer_pid: libc::pid_t,
-    no_new_privs: u32,
-    seccomp_filters: u32,
-    dumpable: Option<bool>,
-    rss_kb: u64,
-    vm_data_kb: Option<u64>,
-    fd_count: Option<usize>,
-    cwd_kind: &'a str,
-    children: usize,
-    token_present: bool,
-    token_sha256: Option<&'a str>,
+        token_len: None,
+        token_charset: None,
+        token_placements: Vec::new(),
+        readable_by,
+        denied_by,
+        fds: Vec::new(),
+        at_execfn,
+        at_platform: Some(std::env::consts::ARCH.to_string()),
+        at_base: 0,
+        at_entry: 0,
+        environ: Vec::new(),
+        environ_raw_len: 0,
+        environ_all_nul: false,
+        task: vec![(0, clean_comm, "S".to_string())],
+        syscall_name: "unknown".to_string(),
+        wchan: String::new(),
+        policy: 0,
+        priority: 20,
+        exec_ms: 0.0,
+        first_conceal_ms: 0.0,
+        dumpable: Some(effective_dumpable),
+        children: Vec::new(),
+        parent: None,
+        tracer: None,
+    };
+    prof.to_json()
 }
 
 fn format_profile_json_from_snapshot(
@@ -3050,170 +4448,238 @@ fn format_profile_json_from_snapshot(
     label: Option<&str>,
     token_present: bool,
     token_sha256: Option<&str>,
+    token: Option<&[u8]>,
     needles: &SecretNeedles,
 ) -> String {
-    let comm_owned = snap
+    psgen_profile_from_snapshot(
+        snap,
+        profile,
+        label,
+        token_present,
+        token_sha256,
+        token,
+        needles,
+    )
+    .to_json()
+}
+
+fn psgen_profile_from_snapshot(
+    snap: &ProcSnapshot,
+    profile: Profile,
+    label: Option<&str>,
+    token_present: bool,
+    token_sha256: Option<&str>,
+    token: Option<&[u8]>,
+    needles: &SecretNeedles,
+) -> PsgenProfile {
+    let comm_raw = snap
         .comm
         .value
         .as_deref()
-        .map(|c| needles.scrub_string(c))
-        .unwrap_or_default();
-    let label_str = label.unwrap_or(&comm_owned);
-    let sanitized_cmdline: Vec<String> = snap
+        .or(snap.status.name.as_deref())
+        .or(label)
+        .unwrap_or("pmask");
+    let comm_clean = {
+        let s = scrub_profile_str(comm_raw.trim(), needles);
+        if s.is_empty() {
+            "pmask".to_string()
+        } else {
+            s
+        }
+    };
+    let label_clean = {
+        let raw = label.unwrap_or(&comm_clean);
+        let s = scrub_profile_str(raw.trim(), needles);
+        if s.is_empty() {
+            comm_clean.clone()
+        } else {
+            s
+        }
+    };
+    let argv: Vec<String> = snap
         .cmdline
         .argv
         .iter()
-        .map(|a| needles.scrub_string(a))
+        .map(|a| scrub_profile_str(a, needles))
         .collect();
-
-    let (exe_kind, exe_basename_owned) = match snap.exe.status {
-        AccessStatus::DeniedEacces => ("denied", String::new()),
-        AccessStatus::Error => ("unknown", String::new()),
-        AccessStatus::Readable => {
-            let path = snap.exe.path.as_deref().unwrap_or("");
-            let kind = if snap.exe.is_memfd {
-                "memfd"
-            } else if path.starts_with("/usr/")
-                || path.starts_with("/bin/")
-                || path.starts_with("/sbin/")
-            {
-                "system"
-            } else if !path.is_empty() {
-                "private"
-            } else {
-                "unknown"
-            };
-            let base = Path::new(path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(path);
-            (kind, needles.scrub_string(base))
-        }
-    };
+    let exe = snap
+        .exe
+        .path
+        .as_deref()
+        .map(|p| scrub_profile_str(p, needles))
+        .unwrap_or_default();
+    let exe_memfd = detect_exe_memfd(&exe);
+    let cwd = snap
+        .cwd
+        .path
+        .as_deref()
+        .map(|p| scrub_profile_str(p, needles))
+        .unwrap_or_default();
+    let root = snap
+        .root
+        .path
+        .as_deref()
+        .map(|p| scrub_profile_str(p, needles))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/".to_string());
 
     let ppid = if snap.status.status == AccessStatus::Readable {
-        snap.status.ppid
+        snap.status.ppid.max(0)
     } else {
-        snap.stat.ppid
+        snap.stat.ppid.max(0)
     };
-    let ppid_kind = if snap.misc.parent_is_twin {
-        "supervisor"
-    } else if ppid == 1 {
-        "init"
-    } else if ppid > 1 {
-        "normal"
+    let uid = snap.target_uid.unwrap_or(snap.observer_uid);
+    let euid = snap.status.euid.unwrap_or(uid);
+    let threads = snap.status.threads.max(snap.stat.num_threads).max(1);
+
+    let mut readable_by = vec![format!("uid:{}", snap.observer_uid)];
+    let mut denied_by = Vec::new();
+    for (name, st) in [
+        ("environ", snap.environ.status),
+        ("auxv", snap.auxv.status),
+        ("exe", snap.exe.status),
+        ("maps", snap.maps.status),
+        ("smaps", snap.maps.smaps_status),
+        ("fd", snap.fd.status),
+        ("cwd", snap.cwd.status),
+    ] {
+        match st {
+            AccessStatus::Readable => readable_by.push(name.to_string()),
+            AccessStatus::DeniedEacces => denied_by.push(name.to_string()),
+            AccessStatus::Error => {}
+        }
+    }
+    match snap.mem.status {
+        MemScanStatus::DeniedEacces => denied_by.push("mem".to_string()),
+        MemScanStatus::Clean | MemScanStatus::Leaked => readable_by.push("mem".to_string()),
+        MemScanStatus::SkippedNoToken => {}
+    }
+
+    let mut token_placements = Vec::new();
+    if snap.cmdline.has_token {
+        token_placements.push("argv".to_string());
+    }
+    if snap.environ.has_token {
+        token_placements.push("environ".to_string());
+    }
+    if snap.mem.status == MemScanStatus::Leaked {
+        let pl = match snap.mem.leaked_mapping.as_deref() {
+            Some("[heap]") => "heap",
+            Some(m) if m.starts_with("[stack") => "stack",
+            _ => "anon",
+        };
+        if !token_placements.iter().any(|p| p == pl) {
+            token_placements.push(pl.to_string());
+        }
+    }
+
+    let (token_len, token_charset) = if token_present {
+        if let Some(tok_bytes) = token.filter(|t| !t.is_empty()) {
+            let tlen = u32::try_from(tok_bytes.len()).ok();
+            let cs = std::str::from_utf8(tok_bytes)
+                .ok()
+                .map(classify_token_charset);
+            (tlen, cs)
+        } else {
+            (None, None)
+        }
     } else {
-        "unknown"
+        (None, None)
     };
 
-    let cwd_kind = match snap.cwd.status {
-        AccessStatus::DeniedEacces => "denied",
-        AccessStatus::Error => "unknown",
-        AccessStatus::Readable => match snap.cwd.path.as_deref() {
-            Some("/") => "root",
-            Some(p) if p == "/tmp" || p == "/var/tmp" || p.starts_with("/tmp/") => "tmp",
-            Some(p) if p.starts_with("/home/") || p == "/root" => "home",
-            Some(_) => "other",
-            None => "unknown",
-        },
-    };
+    let at_execfn = snap
+        .auxv
+        .at_execfn_str
+        .as_deref()
+        .map(|s| scrub_profile_str(s, needles));
+    let at_platform = snap
+        .auxv
+        .at_platform
+        .as_deref()
+        .map(|s| scrub_profile_str(s, needles))
+        .or_else(|| Some(std::env::consts::ARCH.to_string()));
 
-    let fd_count = if snap.fd.status == AccessStatus::Readable {
-        Some(snap.fd.count)
-    } else {
-        None
-    };
-
-    let dumpable = snap.dumpable_zero.map(|z| !z);
-
-    render_profile_json(ProfileJsonFields {
-        profile,
-        label: label_str,
-        observer_uid: snap.observer_uid,
-        target_uid: snap.target_uid,
-        comm: &comm_owned,
-        cmdline: &sanitized_cmdline,
-        exe_kind,
-        exe_basename: &exe_basename_owned,
+    PsgenProfile {
+        schema: PROFILE_SCHEMA_VERSION,
+        masker: "pmask".to_string(),
+        profile: profile.as_str().to_string(),
+        version: crate::VERSION.to_string(),
+        observer_uid: Some(snap.observer_uid),
+        label: label_clean,
+        comm: comm_clean.clone(),
+        argv,
+        cmdline_raw_nuls: Some(snap.cmdline.trailing_nuls),
+        pid: snap.pid.max(0),
         ppid,
-        ppid_kind,
-        threads: snap.status.threads.max(snap.stat.num_threads),
-        tracer_pid: snap.status.tracer_pid,
-        no_new_privs: snap.status.no_new_privs,
-        seccomp_filters: snap.status.seccomp_filters,
-        dumpable,
-        rss_kb: snap.statm.rss_kb,
-        vm_data_kb: snap.status.vm_data_kb,
-        fd_count,
-        cwd_kind,
-        children: snap.misc.children_count,
+        pgid: snap.pid.max(0),
+        sid: snap.pid.max(0),
+        uid: euid,
+        gid: euid,
+        groups: Vec::new(),
+        starttime: snap.stat.starttime,
+        cwd,
+        root,
+        exe,
+        exe_memfd,
+        ns_pid: snap.misc.ns_pid.clone(),
+        ns_mnt: snap.misc.ns_mnt.clone(),
+        ns_user: snap.misc.ns_user.clone(),
+        ns_net: None,
+        st_name: comm_clean.clone(),
+        st_state: "S".to_string(),
+        st_ppid: ppid,
+        st_uid: format!("{uid} {euid} {euid} {euid}"),
+        st_gid: format!("{uid} {euid} {euid} {euid}"),
+        st_threads: threads,
+        st_tracer_pid: snap.status.tracer_pid,
+        st_no_new_privs: snap.status.no_new_privs,
+        st_seccomp: snap.status.seccomp,
+        st_seccomp_filters: snap.status.seccomp_filters,
+        st_cap_eff: "0000000000000000".to_string(),
+        st_cap_prm: "0000000000000000".to_string(),
+        st_cap_bnd: "0000000000000000".to_string(),
+        st_vm_lck: None,
+        st_rss_shmem: None,
+        stat_ppid: ppid,
+        stat_num_threads: threads,
+        stat_starttime: snap.stat.starttime,
+        stat_vsize: 0,
+        stat_rss: snap.statm.rss_pages,
+        stat_flags: None,
+        stat_arg_start: snap.stat.arg_start,
+        stat_arg_end: snap.stat.arg_end,
+        stat_env_start: snap.stat.env_start,
+        stat_env_end: snap.stat.env_end,
+        stat_startstack: 0,
+        maps: Vec::new(),
+        smaps: Vec::new(),
         token_present,
-        token_sha256,
-    })
-}
-
-fn render_profile_json(f: ProfileJsonFields<'_>) -> String {
-    let mut out = String::with_capacity(1024);
-    let _ = writeln!(out, "{{");
-    let _ = writeln!(out, "  \"schema\": \"{PROFILE_SCHEMA}\",");
-    let _ = writeln!(out, "  \"profile\": \"{}\",", f.profile.as_str());
-    let _ = writeln!(out, "  \"profile_version\": {PROFILE_VERSION},");
-    let _ = writeln!(out, "  \"label\": \"{}\",", json_escape(f.label));
-    let _ = writeln!(out, "  \"observer_uid\": {},", f.observer_uid);
-    let _ = writeln!(out, "  \"target_uid\": {},", opt_u32_json(f.target_uid));
-    let _ = writeln!(out, "  \"process\": {{");
-    let _ = writeln!(out, "    \"comm\": \"{}\",", json_escape(f.comm));
-    let _ = writeln!(out, "    \"cmdline\": {},", str_vec_json(f.cmdline));
-    let _ = writeln!(out, "    \"exe_kind\": \"{}\",", json_escape(f.exe_kind));
-    let _ = writeln!(
-        out,
-        "    \"exe_basename\": \"{}\",",
-        json_escape(f.exe_basename)
-    );
-    let _ = writeln!(out, "    \"ppid\": {},", f.ppid);
-    let _ = writeln!(out, "    \"ppid_kind\": \"{}\",", json_escape(f.ppid_kind));
-    let _ = writeln!(out, "    \"threads\": {},", f.threads);
-    let _ = writeln!(out, "    \"tracer_pid\": {},", f.tracer_pid);
-    let _ = writeln!(out, "    \"no_new_privs\": {},", f.no_new_privs);
-    let _ = writeln!(out, "    \"seccomp_filters\": {},", f.seccomp_filters);
-    let _ = writeln!(out, "    \"dumpable\": {},", opt_bool_json(f.dumpable));
-    let _ = writeln!(out, "    \"rss_kb\": {},", f.rss_kb);
-    let _ = writeln!(out, "    \"vm_data_kb\": {},", opt_u64_json(f.vm_data_kb));
-    let _ = writeln!(out, "    \"fd_count\": {},", opt_usize_json(f.fd_count));
-    let _ = writeln!(out, "    \"cwd_kind\": \"{}\",", json_escape(f.cwd_kind));
-    let _ = writeln!(out, "    \"children\": {}", f.children);
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"safety\": {{");
-    let _ = writeln!(
-        out,
-        "    \"token_present\": {},",
-        bool_json(f.token_present)
-    );
-    let _ = writeln!(
-        out,
-        "    \"token_sha256\": {}",
-        opt_str_json(f.token_sha256)
-    );
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"psgen_hint\": {{");
-    let _ = writeln!(out, "    \"comm\": \"{}\",", json_escape(f.comm));
-    let _ = writeln!(out, "    \"argv\": {},", str_vec_json(f.cmdline));
-    let _ = writeln!(
-        out,
-        "    \"exe_basename\": \"{}\",",
-        json_escape(f.exe_basename)
-    );
-    let _ = writeln!(out, "    \"threads\": {},", f.threads);
-    let _ = writeln!(out, "    \"ppid_kind\": \"{}\",", json_escape(f.ppid_kind));
-    let _ = writeln!(out, "    \"rss_kb\": {},", f.rss_kb);
-    let _ = writeln!(out, "    \"vm_data_kb\": {},", opt_u64_json(f.vm_data_kb));
-    let _ = writeln!(
-        out,
-        "    \"match_fields\": [\"comm\", \"cmdline\", \"exe_basename\", \"ppid_kind\", \"threads\", \"rss_kb\", \"vm_data_kb\"]"
-    );
-    let _ = writeln!(out, "  }}");
-    let _ = writeln!(out, "}}");
-    out
+        token_sha256: token_sha256.map(ToOwned::to_owned),
+        token_len,
+        token_charset,
+        token_placements,
+        readable_by,
+        denied_by,
+        fds: Vec::new(),
+        at_execfn,
+        at_platform,
+        at_base: snap.auxv.at_base.unwrap_or(0),
+        at_entry: snap.auxv.at_entry.unwrap_or(0),
+        environ: Vec::new(),
+        environ_raw_len: 0,
+        environ_all_nul: false,
+        task: vec![(snap.pid.max(0), comm_clean, "S".to_string())],
+        syscall_name: decode_syscall_name(snap.misc.syscall.as_deref()),
+        wchan: snap.misc.wchan.clone().unwrap_or_default(),
+        policy: 0,
+        priority: 20,
+        exec_ms: 0.0,
+        first_conceal_ms: 0.0,
+        dumpable: snap.dumpable_zero.map(|z| !z),
+        children: Vec::new(),
+        parent: None,
+        tracer: None,
+    }
 }
 
 /// Host subuid / helper-uid availability detected for `--explain`.
@@ -3281,21 +4747,28 @@ pub fn render_explain(profile: Profile, label: &str, json: bool) -> String {
         "generating decoy populations (owned by psgen via --profile-json)",
     ];
 
+    let profile_ranking = [
+        "1. single (#1 for direct native ELFs: zero persistent supervisor, TracerPid: 0)",
+        "2. tree (shells, #! scripts, and multi-process descendants; --stealth is a tree preset)",
+        "3. pmaskd --run-as-uid=UID[:GID] / subuid (cross-UID isolation with zero same-uid EACCES)",
+        "4. tee (fail-closed user/pid/mount namespaces with private /proc, private /tmp, and cwd=/)",
+    ];
+
     let (hidden, denied, residuals): (&[&str], &[&str], &[&str]) = match profile {
         Profile::Single => (
             &[
                 "cmdline (exact label, no trailing NUL padding)",
                 "comm (matches label)",
-                "environ (decoy environment, no secret)",
-                "exe and maps (staged private path when available, no real payload path)",
-                "cwd (normalized working directory)",
+                "environ (minimal decoy environment, no secret)",
+                "exe and maps (staged private path via --rexec-mode=auto/path/tmpfile, no real payload path)",
                 "secrets delivered via --secret-fd rather than argv/environ",
             ],
             &[
-                "same-uid /proc/<pid>/mem, environ, auxv, exe, maps, fd via PR_SET_DUMPABLE=0 (returns EACCES unless isolated by a helper uid or userns)",
+                "same-uid /proc/<pid>/mem, environ, auxv, exe, maps, fd, and cwd via PR_SET_DUMPABLE=0 (returns EACCES unless isolated by a separate host uid via pmaskd --run-as-uid)",
             ],
             &[
-                "EACCES on same-uid /proc reads is an observable denial signal unless a helper uid or subuid namespace is used",
+                "cwd stays real unless --cwd PATH is passed (denied via EACCES while non-dumpable; use --profile tee for automatic cwd=/)",
+                "EACCES on same-uid /proc reads is an observable denial signal unless a separate host uid (pmaskd --run-as-uid) or subuid namespace is used",
                 "kernel zeroes /proc/<pid>/stat fields 48-51 (arg_start..env_end) while dumpable=0",
                 "root, CAP_SYS_PTRACE, and kernel-level observers remain out of scope",
             ],
@@ -3410,6 +4883,11 @@ pub fn render_explain(profile: Profile, label: &str, json: bool) -> String {
             bool_json(subuid.helper_uid_ready)
         );
         let _ = writeln!(out, "  }},");
+        let _ = writeln!(
+            out,
+            "  \"profile_ranking\": {},",
+            slice_str_json(&profile_ranking)
+        );
         let _ = writeln!(out, "  \"hidden_surfaces\": {},", slice_str_json(hidden));
         let _ = writeln!(out, "  \"denied_surfaces\": {},", slice_str_json(denied));
         let _ = writeln!(out, "  \"residuals\": {}", slice_str_json(residuals));
@@ -3430,6 +4908,10 @@ pub fn render_explain(profile: Profile, label: &str, json: bool) -> String {
     }
     let _ = writeln!(out, "\nNamed observer:");
     let _ = writeln!(out, "  {observer}");
+    let _ = writeln!(out, "\nProfile ranking:");
+    for rank in &profile_ranking {
+        let _ = writeln!(out, "  {rank}");
+    }
     let _ = writeln!(out, "\nExplicit non-goals:");
     for ng in &non_goals {
         let _ = writeln!(out, "  - {ng}");
@@ -3610,13 +5092,6 @@ fn opt_u64_json(v: Option<u64>) -> String {
     }
 }
 
-fn opt_usize_json(v: Option<usize>) -> String {
-    match v {
-        Some(n) => n.to_string(),
-        None => "null".to_string(),
-    }
-}
-
 fn opt_str_json(v: Option<&str>) -> String {
     match v {
         Some(s) => format!("\"{}\"", json_escape(s)),
@@ -3691,6 +5166,9 @@ mod tests {
                 status: AccessStatus::DeniedEacces,
                 at_execfn: None,
                 at_execfn_str: None,
+                at_execfn_readable: None,
+                execfn_io_error: false,
+                at_platform: None,
                 at_random: None,
                 at_base: None,
                 at_entry: None,
@@ -3943,7 +5421,7 @@ mod tests {
         assert!(inv8.passed);
 
         let tpl = export_profile_template(Profile::Single, "ci-runner", &["ci-runner".into()]);
-        assert!(tpl.contains("\"schema\": \"pmask-profile/1\""));
+        assert!(tpl.contains("\"schema\": 2,"));
         assert!(!tpl.contains(secret));
     }
 
@@ -4129,7 +5607,7 @@ mod tests {
                 let prof_json =
                     export_profile_for_pid(self_pid, Profile::Compat, None, Some(&pinned))
                         .expect("export self profile");
-                assert!(prof_json.contains("\"schema\": \"pmask-profile/1\""));
+                assert!(prof_json.contains("\"schema\": 2,"));
                 assert!(!prof_json.contains(needle_str));
                 assert!(prof_json.contains("\"token_present\": true"));
 
@@ -4387,6 +5865,29 @@ mod tests {
                 if self.pos == start {
                     return Err(format!("invalid number at {}", self.pos));
                 }
+                if self.peek() == Some(b'.') {
+                    self.pos += 1;
+                    let frac_start = self.pos;
+                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        self.pos += 1;
+                    }
+                    if self.pos == frac_start {
+                        return Err(format!("invalid fraction at {}", self.pos));
+                    }
+                }
+                if matches!(self.peek(), Some(b'e' | b'E')) {
+                    self.pos += 1;
+                    if matches!(self.peek(), Some(b'+' | b'-')) {
+                        self.pos += 1;
+                    }
+                    let exp_start = self.pos;
+                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        self.pos += 1;
+                    }
+                    if self.pos == exp_start {
+                        return Err(format!("invalid exponent at {}", self.pos));
+                    }
+                }
                 Ok(())
             }
             fn parse_array(&mut self) -> Result<(), String> {
@@ -4566,12 +6067,14 @@ mod tests {
     fn static_profile_template_matches_live_profile_defaults() {
         let single = export_profile_template(Profile::Single, "ci-runner", &["ci-runner".into()]);
         assert_valid_json(&single);
-        assert!(single.contains("\"ppid_kind\": \"normal\""));
-        assert!(single.contains("\"exe_kind\": \"denied\""));
-        assert!(single.contains("\"cwd_kind\": \"denied\""));
+        assert!(single.contains("\"schema\": 2,"));
+        assert!(single.contains("\"masker\": \"pmask\""));
+        assert!(single.contains("\"profile\": \"single\""));
+        assert!(single.contains("\"ppid\": 0"));
+        assert!(single.contains("\"exe\": \"\""));
+        assert!(single.contains("\"cwd\": \"\""));
         assert!(single.contains("\"dumpable\": false"));
-        assert!(single.contains("\"vm_data_kb\": null"));
-        assert!(single.contains("\"rss_kb\": 0"));
+        assert!(single.contains("\"denied_by\": [\"environ\", \"mem\", \"maps\""));
 
         let reparented = export_profile_template_with(
             Profile::Single,
@@ -4583,8 +6086,8 @@ mod tests {
             },
         );
         assert_valid_json(&reparented);
-        assert!(reparented.contains("\"ppid_kind\": \"init\""));
         assert!(reparented.contains("\"ppid\": 1"));
+        assert!(reparented.contains("\"PPid\": 1"));
 
         let dumpable_cwd = export_profile_template_with(
             Profile::Single,
@@ -4597,15 +6100,57 @@ mod tests {
             },
         );
         assert_valid_json(&dumpable_cwd);
-        assert!(dumpable_cwd.contains("\"exe_kind\": \"private\""));
-        assert!(dumpable_cwd.contains("\"cwd_kind\": \"normalized\""));
+        assert!(dumpable_cwd.contains("/ci-runner\""));
+        assert!(dumpable_cwd.contains("\"cwd\": \"/\""));
         assert!(dumpable_cwd.contains("\"dumpable\": true"));
 
         let tree = export_profile_template(Profile::Tree, "ci-runner", &["ci-runner".into()]);
         assert_valid_json(&tree);
-        assert!(tree.contains("\"ppid_kind\": \"supervisor\""));
-        assert!(tree.contains("\"exe_kind\": \"denied\""));
-        assert!(tree.contains("\"cwd_kind\": \"denied\""));
+        assert!(tree.contains("\"TracerPid\": 1"));
+        assert!(tree.contains("\"exe\": \"\""));
+        assert!(tree.contains("\"cwd\": \"\""));
+
+        let tee = export_profile_template(Profile::Tee, "ci-runner", &["ci-runner".into()]);
+        assert_valid_json(&tee);
+        assert!(tee.contains("\"dumpable\": false"));
+        assert!(tee.contains("/ci-runner\""));
+        assert!(tee.contains("\"cwd\": \"/\""));
+        assert!(tee.contains("\"denied_by\": [\"environ\", \"mem\", \"auxv\", \"fd\"]"));
+        assert!(tee.contains("\"exe\", \"maps\", \"smaps\", \"cwd\""));
+    }
+
+    #[test]
+    fn psgen_schema_v2_scrubs_secrets_and_audit_reports_score_parity_fields() {
+        let needles = SecretNeedles::from_opt(Some(b"TOK-CUSTOM-123456"));
+        let env_api = scrub_profile_environ_entry("OPENAI_API_KEY=sk-live-secret", &needles);
+        assert_eq!(env_api, "OPENAI_API_KEY=<REDACTED:len=14>");
+        let env_ghp = scrub_profile_environ_entry("FOO=ghp_1234567890abcdef1234", &needles);
+        assert!(env_ghp.starts_with("FOO=<REDACTED:len="));
+        assert!(!env_ghp.contains("ghp_"));
+        let env_aws = scrub_profile_environ_entry("BAR=AKIAIOSFODNN7EXAMPLE", &needles);
+        assert!(env_aws.starts_with("BAR=<REDACTED:len="));
+        assert!(!env_aws.contains("AKIA"));
+        let env_key_tok = scrub_profile_environ_entry("K_TOK-CUSTOM-123456=plain", &needles);
+        assert!(!env_key_tok.contains("TOK-CUSTOM-123456"));
+        assert!(env_key_tok.ends_with("=plain"));
+        let env_key_ghp = scrub_profile_environ_entry("ghp_1234567890abcdef1234=1", &needles);
+        assert!(!env_key_ghp.contains("ghp_"));
+
+        let report = evaluate_snapshot(clean_single_snapshot(), &clean_single_opts());
+        let j = report.to_json();
+        assert_valid_json(&j);
+        assert_eq!(report.denied_surfaces, 4);
+        assert_eq!(report.seccomp_delta, 0);
+        assert_eq!(report.no_new_privs_delta, 0);
+        assert!(j.contains("\"denied_surfaces\": 4,"));
+        assert!(j.contains("\"seccomp_delta\": 0,"));
+        assert!(j.contains("\"no_new_privs_delta\": 0,"));
+        assert!(j.contains("\"auxv_execfn_readable\": null,"));
+        assert!(j.contains("\"execfn_io_error\": false,"));
+
+        let exp = render_explain(Profile::Single, "ci-runner", false);
+        assert!(!exp.contains("cwd (normalized working directory)"));
+        assert!(exp.contains("cwd stays real unless --cwd PATH"));
     }
 
     #[test]
@@ -4619,5 +6164,131 @@ mod tests {
             .residuals
             .iter()
             .any(|r| r.code == "userns_owner_read_bypass"));
+    }
+
+    #[test]
+    fn inv7_detail_formats_clean_yes_no_unknown() {
+        for (dumpable_zero, core_limit_zero, want) in [
+            (
+                Some(true),
+                Some(true),
+                "dumpable_zero=yes, core_limit_zero=yes",
+            ),
+            (
+                Some(true),
+                Some(false),
+                "dumpable_zero=yes, core_limit_zero=no",
+            ),
+            (
+                Some(true),
+                None,
+                "dumpable_zero=yes, core_limit_zero=unknown",
+            ),
+            (
+                Some(false),
+                Some(true),
+                "dumpable_zero=no, core_limit_zero=yes",
+            ),
+        ] {
+            let mut s = clean_single_snapshot();
+            s.dumpable_zero = dumpable_zero;
+            s.limits.core_limit_zero = core_limit_zero;
+            let report = evaluate_snapshot(s, &clean_single_opts());
+            let inv7 = report
+                .invariants
+                .iter()
+                .find(|i| i.id == "INV-7")
+                .expect("INV-7 present");
+            assert!(inv7.passed);
+            assert!(!inv7.detail.contains("Some("), "{}", inv7.detail);
+            assert!(!inv7.detail.contains("None"), "{}", inv7.detail);
+            assert_eq!(inv7.detail, want);
+        }
+    }
+
+    #[test]
+    fn collect_residuals_distinguishes_yama_eacces_and_other_uid_arg_span() {
+        // 1. dumpable_zero=Some(false) + mem EACCES must NOT claim PR_SET_DUMPABLE=0.
+        let mut s_yama = clean_single_snapshot();
+        s_yama.dumpable_zero = Some(false);
+        s_yama.environ.status = AccessStatus::Readable;
+        s_yama.auxv.status = AccessStatus::Readable;
+        s_yama.fd.status = AccessStatus::Readable;
+        s_yama.mem.status = MemScanStatus::DeniedEacces;
+        let res_yama = collect_residuals(&s_yama, ObserverRole::SameUid);
+        let eacces = res_yama
+            .iter()
+            .find(|r| r.code == "eacces_denial")
+            .expect("eacces_denial emitted");
+        assert!(
+            !eacces.detail.contains("PR_SET_DUMPABLE=0"),
+            "{}",
+            eacces.detail
+        );
+        assert!(
+            eacces.detail.contains("yama.ptrace_scope"),
+            "{}",
+            eacces.detail
+        );
+
+        // 2. ObserverRole::OtherUid + arg_span_hidden must NOT claim while dumpable=0.
+        let mut s_other = clean_single_snapshot();
+        s_other.dumpable_zero = None;
+        s_other.stat.arg_span_hidden = true;
+        let res_other = collect_residuals(&s_other, ObserverRole::OtherUid);
+        let arg_span = res_other
+            .iter()
+            .find(|r| r.code == "arg_span_hidden")
+            .expect("arg_span_hidden emitted");
+        assert!(
+            !arg_span.detail.contains("while dumpable=0"),
+            "{}",
+            arg_span.detail
+        );
+        assert!(
+            arg_span
+                .detail
+                .contains("non-owner observers without ptrace access"),
+            "{}",
+            arg_span.detail
+        );
+
+        // 3. SameUid + dumpable_zero=Some(false) + arg_span_hidden notes ptrace denial too.
+        let mut s_same_dumpable = clean_single_snapshot();
+        s_same_dumpable.dumpable_zero = Some(false);
+        s_same_dumpable.stat.arg_span_hidden = true;
+        let res_same = collect_residuals(&s_same_dumpable, ObserverRole::SameUid);
+        let arg_span_same = res_same
+            .iter()
+            .find(|r| r.code == "arg_span_hidden")
+            .expect("arg_span_hidden emitted");
+        assert!(
+            arg_span_same
+                .detail
+                .contains("while dumpable=0 or ptrace access is denied"),
+            "{}",
+            arg_span_same.detail
+        );
+    }
+
+    #[test]
+    fn ancestor_environ_allowlist_strips_custom_and_ci_vars() {
+        let raw = b"PATH=/usr/bin\0HOME=/home/runner\0LANG=C.UTF-8\0TERM=xterm\0USER=runner\0LOGNAME=runner\0SHELL=/bin/sh\0PWD=/work\0SHLVL=2\0LC_ALL=C.UTF-8\0GITHUB_ACTIONS=true\0CI_JOB_TOKEN=ghp_1234567890abcdef1234\0CUSTOM_HOST=internal.corp\0LC_TOKEN=tok123\0";
+        let needles = SecretNeedles::from_opt(Some(b"tok123"));
+
+        let ancestor = filter_and_scrub_profile_environ(raw, 1, &needles);
+        assert!(ancestor.contains(&"PATH=/usr/bin".to_string()));
+        assert!(ancestor.contains(&"LANG=C.UTF-8".to_string()));
+        assert!(ancestor.contains(&"TERM=xterm".to_string()));
+        assert!(ancestor.contains(&"LC_ALL=C.UTF-8".to_string()));
+        assert!(ancestor.contains(&"LC_TOKEN=<REDACTED:len=6>".to_string()));
+        assert!(!ancestor.iter().any(|e| e.starts_with("GITHUB_ACTIONS=")));
+        assert!(!ancestor.iter().any(|e| e.starts_with("CI_JOB_TOKEN=")));
+        assert!(!ancestor.iter().any(|e| e.starts_with("CUSTOM_HOST=")));
+
+        let target = filter_and_scrub_profile_environ(raw, 0, &needles);
+        assert!(target.contains(&"GITHUB_ACTIONS=true".to_string()));
+        assert!(target.contains(&"CUSTOM_HOST=internal.corp".to_string()));
+        assert!(target.contains(&"CI_JOB_TOKEN=<REDACTED:len=24>".to_string()));
     }
 }

@@ -9,7 +9,13 @@ _pmaskd() {
         '--no-inherit-env[jobs get the env-file only]' \
         '--keep-env[leave environ visible]' \
         '--allow-uid[accept this uid]:uid:' \
-        '--run-as-uid[run jobs with the client uid]' \
+        '--run-as-uid[run jobs as client uid (optional =UID\[:GID\])]' \
+        '--run-as-uid=-[run jobs as explicit UID\[:GID\]]:uid_gid:' \
+        '--no-dumpable[force PR_SET_DUMPABLE=0 on jobs]' \
+        '--allow-dumpable[keep jobs dumpable (PR_SET_DUMPABLE=1)]' \
+        '--rexec[stage native ELF jobs from an executable carrier]' \
+        '--no-rexec[disable default --rexec staging for ELF jobs]' \
+        '--rexec-mode[image carrier for --rexec]:mode:(auto path tmpfile memfd)' \
         '--socket-mode[socket permission bits]:octal:' \
         '--io-timeout[drop a stalled client]:seconds:' \
         '--job-timeout[kill a job after this long]:seconds:' \

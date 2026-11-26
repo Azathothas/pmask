@@ -52,10 +52,30 @@ Options:
       --keep-env        Leave /proc/<pid>/environ visible for jobs
       --allow-uid UID   Also accept connections from this uid (repeatable;
                         the daemon's own uid and root are always accepted)
-      --run-as-uid      Root daemon only.  Run each job with the uid and
-                        gid of the client instead of root.  A daemon that
-                        serves other uids also needs a socket mode they
-                        can reach, for example --socket-mode 666.
+      --run-as-uid[=UID[:GID]]
+                        Root daemon only.  Without a value, run each job
+                        with the uid and gid of the client instead of
+                        root.  With =UID or =UID:GID, run every job as
+                        that dedicated helper uid/gid (omitted GID uses
+                        /etc/passwd or defaults to UID).  Cross-UID jobs
+                        stay dumpable=1 by default because kernel Unix
+                        DAC already isolates them from the client.  A
+                        daemon that serves other uids also needs a
+                        socket mode they can reach, for example
+                        --socket-mode 666.
+      --no-dumpable     Force PR_SET_DUMPABLE=0 on every job, even
+                        cross-UID jobs
+      --allow-dumpable  Keep jobs dumpable (PR_SET_DUMPABLE=1), even for
+                        same-UID clients (the daemon itself always stays
+                        non-dumpable)
+      --rexec           Stage ELF job binaries into an unlinked or
+                        private carrier so /proc/<pid>/exe and maps do
+                        not name the on-disk path (default: on for
+                        readable ELF jobs; #! scripts still run directly)
+      --no-rexec        Execute job binaries directly from their on-disk
+                        path without staging
+      --rexec-mode MODE Carrier mode for --rexec: auto, path, tmpfile,
+                        or memfd (default: auto; implies --rexec)
       --socket-mode OCT Socket permission bits, 001 to 777 (default: 600)
       --io-timeout SECONDS
                         Drop a client that stalls while it sends its
@@ -108,7 +128,30 @@ fn main() {
     if let Err(e) = daemon::ensure_stdio_open() {
         die(&format!("cannot open /dev/null: {}", e));
     }
+    // Always disable core dumps on startup (even without `--env-file`) so
+    // neither `pmaskd` nor any job it spawns ever dumps core (`RLIMIT_CORE=0`
+    // survives `execve`).
+    let core_limit_err = {
+        let zero = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `zero` is a valid `rlimit` struct for the calling process.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) } != 0 {
+            Some(std::io::Error::last_os_error())
+        } else {
+            None
+        }
+    };
     let args = parse();
+    if let Some(e) = core_limit_err {
+        if !args.cfg.quiet {
+            eprintln!(
+                "pmaskd: warning: could not disable core dumps (RLIMIT_CORE=0): {}",
+                e
+            );
+        }
+    }
     // `--env-file` can hold secrets, and a large file takes long enough
     // that a same-uid scanner reads the staging copy while it loads.  A
     // daemon that carries job environment values is hardened before the
@@ -197,6 +240,8 @@ fn parse() -> Args {
     let mut cfg = DaemonConfig::new();
     let mut env_files = Vec::new();
     let mut no_inherit_env = false;
+    let mut saw_rexec = false;
+    let mut saw_no_rexec = false;
     let mut i = 1usize;
 
     while i < argv.len() {
@@ -226,7 +271,50 @@ fn parse() -> Args {
                 }
                 "no-inherit-env" => no_inherit_env = true,
                 "keep-env" => cfg.keep_env = true,
-                "run-as-uid" => cfg.run_as_uid = true,
+                "run-as-uid" => match inline {
+                    None => {
+                        cfg.run_as_uid = true;
+                        cfg.run_as_fixed = None;
+                    }
+                    Some(v) => {
+                        let text = lossy(v);
+                        let (u, g) = parse_uid_gid(&text);
+                        cfg.run_as_fixed = Some((u, g));
+                        cfg.run_as_uid = false;
+                    }
+                },
+                "no-dumpable" => {
+                    if inline.is_some() {
+                        die("--no-dumpable takes no value");
+                    }
+                    cfg.force_no_dumpable = true;
+                }
+                "allow-dumpable" => {
+                    if inline.is_some() {
+                        die("--allow-dumpable takes no value");
+                    }
+                    cfg.allow_dumpable = true;
+                }
+                "rexec" => {
+                    if inline.is_some() {
+                        die("--rexec takes no value");
+                    }
+                    cfg.rexec = true;
+                    saw_rexec = true;
+                }
+                "no-rexec" => {
+                    if inline.is_some() {
+                        die("--no-rexec takes no value");
+                    }
+                    cfg.rexec = false;
+                    saw_no_rexec = true;
+                }
+                "rexec-mode" => {
+                    let v = take(&flag, inline, &argv, &mut i);
+                    cfg.rexec_mode = parse_rexec_mode(&v);
+                    cfg.rexec = true;
+                    saw_rexec = true;
+                }
                 "allow-uid" => {
                     let v = lossy(take(&flag, inline, &argv, &mut i));
                     match v.parse::<u32>() {
@@ -336,10 +424,28 @@ fn parse() -> Args {
         i += 1;
     }
 
+    if cfg.force_no_dumpable && cfg.allow_dumpable {
+        die("--no-dumpable and --allow-dumpable contradict each other; pass one");
+    }
+    if saw_rexec && saw_no_rexec {
+        die("--rexec/--rexec-mode and --no-rexec contradict each other; pass one");
+    }
+
     Args {
         cfg,
         env_files,
         no_inherit_env,
+    }
+}
+
+fn parse_rexec_mode(v: &[u8]) -> pmask::RexecMode {
+    let lower = v.to_ascii_lowercase();
+    match lower.as_slice() {
+        b"auto" => pmask::RexecMode::Auto,
+        b"path" => pmask::RexecMode::Path,
+        b"tmpfile" => pmask::RexecMode::Tmpfile,
+        b"memfd" => pmask::RexecMode::Memfd,
+        _ => die("--rexec-mode takes auto, path, tmpfile or memfd"),
     }
 }
 
@@ -360,6 +466,50 @@ fn take(flag: &str, inline: Option<Vec<u8>>, argv: &[OsString], i: &mut usize) -
 
 fn lossy(b: Vec<u8>) -> String {
     String::from_utf8_lossy(&b).into_owned()
+}
+
+fn parse_uid_gid(text: &str) -> (u32, u32) {
+    match text.split_once(':') {
+        Some((us, gs)) => {
+            let u = us
+                .parse::<u32>()
+                .unwrap_or_else(|_| die("--run-as-uid=UID[:GID] needs numeric UID and GID"));
+            let g = gs
+                .parse::<u32>()
+                .unwrap_or_else(|_| die("--run-as-uid=UID[:GID] needs numeric UID and GID"));
+            (u, g)
+        }
+        None => {
+            let u = text
+                .parse::<u32>()
+                .unwrap_or_else(|_| die("--run-as-uid=UID[:GID] needs a numeric UID"));
+            let g = lookup_passwd_gid(u).unwrap_or(u);
+            (u, g)
+        }
+    }
+}
+
+fn lookup_passwd_gid(uid: u32) -> Option<u32> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in content.lines() {
+        let mut fields = line.split(':');
+        let Some(_) = fields.next() else {
+            continue;
+        };
+        let Some(_) = fields.next() else {
+            continue;
+        };
+        let Some(Ok(f_uid)) = fields.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        let Some(Ok(f_gid)) = fields.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        if f_uid == uid {
+            return Some(f_gid);
+        }
+    }
+    None
 }
 
 fn print_help(stdout: bool) {

@@ -188,10 +188,11 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
     }
 
     let caps = Caps::detect();
+    let readiness = probe_readiness(&caps);
     let verdict = verdict_of(&caps, &require);
 
     if json {
-        print!("{}", doctor_json(&caps, &require, verdict));
+        print!("{}", doctor_json(&caps, &readiness, &require, verdict));
         return verdict;
     }
 
@@ -221,6 +222,29 @@ fn cmd_doctor(args: &[OsString]) -> i32 {
         } else {
             "(not running)"
         }
+    );
+
+    println!("container/ci readiness:");
+    println!(
+        "  {:<22} {}",
+        "tee private /proc", readiness.tee_proc_detail
+    );
+    println!(
+        "  {:<22} {}",
+        "O_TMPFILE exec", readiness.tmpfile_exec_detail
+    );
+    println!("  {:<22} {}", "subuid cross-uid", readiness.subuid_detail);
+    println!(
+        "  {:<22} {}",
+        "memlock / secretmem", readiness.memlock_secret_detail
+    );
+    println!(
+        "  {:<22} {}",
+        "vm.memfd_noexec", readiness.memfd_noexec_detail
+    );
+    println!(
+        "  {:<22} {}",
+        "ambient injection env", readiness.ambient_env_detail
     );
 
     println!("\nverdict:");
@@ -353,12 +377,285 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// Container and CI/CD readiness diagnostics reported by `pmask doctor`.
+struct Readiness {
+    tee_proc_ok: bool,
+    tee_proc_detail: String,
+    tmpfile_exec_ok: bool,
+    tmpfile_exec_detail: String,
+    subuid_ok: bool,
+    subuid_detail: String,
+    memlock_secret_ok: bool,
+    memlock_secret_detail: String,
+    memfd_noexec_ok: bool,
+    memfd_noexec_detail: String,
+    ambient_env_ok: bool,
+    ambient_env_vars: Vec<&'static str>,
+    ambient_env_detail: String,
+}
+
+/// Minimum recommended `RLIMIT_MEMLOCK` (64 KiB) for `memfd_secret` + locked secret buffers.
+const MIN_RECOMMENDED_MEMLOCK: u64 = 64 * 1024;
+
+/// Dynamic-linker and interpreter injection environment variables checked by `pmask doctor`.
+const AMBIENT_INJECTION_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "BASH_ENV",
+    "ENV",
+    "PYTHONSTARTUP",
+    "NODE_OPTIONS",
+    "PERL5OPT",
+    "GCONV_PATH",
+];
+
+fn format_memlock_limit(limit: u64) -> String {
+    if limit == libc::RLIM_INFINITY {
+        "unlimited".to_string()
+    } else if limit >= 1024 && (limit & 1023) == 0 {
+        format!("{} KiB", limit / 1024)
+    } else if limit >= 1024 {
+        format!("{} KiB ({} bytes)", limit / 1024, limit)
+    } else {
+        format!("{} bytes", limit)
+    }
+}
+
+fn classify_memlock_secret(limit: u64, memfd_secret: bool) -> (bool, String) {
+    let fmt = format_memlock_limit(limit);
+    if limit < MIN_RECOMMENDED_MEMLOCK {
+        (
+            false,
+            format!(
+                "insufficient (RLIMIT_MEMLOCK={}; raise to >= 64 KiB for memfd_secret/mlock)",
+                fmt
+            ),
+        )
+    } else if memfd_secret {
+        (
+            true,
+            format!("active (RLIMIT_MEMLOCK={}, memfd_secret usable)", fmt),
+        )
+    } else {
+        (
+            true,
+            format!(
+                "sufficient (RLIMIT_MEMLOCK={}; memfd_secret unavailable on this kernel)",
+                fmt
+            ),
+        )
+    }
+}
+
+fn classify_memfd_noexec(raw: Option<&str>) -> (bool, String) {
+    match raw.and_then(|s| s.trim().parse::<u32>().ok()) {
+        Some(0) => (
+            true,
+            "allowed (vm.memfd_noexec=0; memfd execution permitted)".to_string(),
+        ),
+        Some(1) => (
+            false,
+            "blocked (vm.memfd_noexec=1; use --rexec-mode=path or tmpfile)".to_string(),
+        ),
+        Some(2) => (
+            false,
+            "blocked (vm.memfd_noexec=2; use --rexec-mode=path or tmpfile)".to_string(),
+        ),
+        Some(v) => (
+            false,
+            format!(
+                "blocked (vm.memfd_noexec={}; use --rexec-mode=path or tmpfile)",
+                v
+            ),
+        ),
+        None => (
+            true,
+            "allowed (vm.memfd_noexec absent; kernel < 6.3 or unrestricted)".to_string(),
+        ),
+    }
+}
+
+fn collect_ambient_injection_vars<F>(mut is_set: F) -> Vec<&'static str>
+where
+    F: FnMut(&str) -> bool,
+{
+    AMBIENT_INJECTION_VARS
+        .iter()
+        .copied()
+        .filter(|name| is_set(name))
+        .collect()
+}
+
+fn dir_supports_exec_tmpfile(dir: &Path) -> bool {
+    let Ok(c_dir) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_dir` is a valid NUL-terminated path and `st` is valid out storage.
+    if unsafe { libc::statvfs(c_dir.as_ptr(), &mut st) } != 0 {
+        return false;
+    }
+    if (st.f_flag & (libc::ST_NOEXEC | libc::ST_RDONLY)) != 0 {
+        return false;
+    }
+    // SAFETY: `c_dir` is NUL-terminated; O_TMPFILE creates an unlinked inode
+    // and we close the descriptor immediately without linking it.
+    let fd = unsafe {
+        libc::open(
+            c_dir.as_ptr(),
+            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+            0o700 as libc::c_uint,
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: `fd` was just returned by `open`.
+        unsafe { libc::close(fd) };
+        true
+    } else {
+        false
+    }
+}
+
+fn find_newuidmap() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    for dir in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+        let p = Path::new(dir).join("newuidmap");
+        if std::fs::metadata(&p)
+            .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn probe_readiness(caps: &Caps) -> Readiness {
+    let (tee_proc_ok, tee_proc_detail) = if !caps.userns {
+        (
+            false,
+            "unavailable (no unprivileged user namespaces)".to_string(),
+        )
+    } else {
+        match crate::userns::probe(crate::userns::ChildNs {
+            pid: true,
+            net: false,
+            procfs: true,
+            private_tmp: true,
+        }) {
+            Ok(()) => (true, "active (userns + private /proc and /tmp)".to_string()),
+            Err(e) => (false, format!("unavailable ({})", e)),
+        }
+    };
+
+    let mut tmpfile_dir: Option<PathBuf> = None;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
+        if !rt.is_empty() {
+            candidates.push(PathBuf::from(rt));
+        }
+    }
+    candidates.push(PathBuf::from("/dev/shm"));
+    candidates.push(PathBuf::from("/tmp"));
+    for dir in candidates {
+        if dir.is_dir() && dir_supports_exec_tmpfile(&dir) {
+            tmpfile_dir = Some(dir);
+            break;
+        }
+    }
+    let (tmpfile_exec_ok, tmpfile_exec_detail) = match tmpfile_dir {
+        Some(dir) => (true, format!("active ({})", dir.display())),
+        None => (
+            false,
+            "unavailable (no writable exec mount supports O_TMPFILE)".to_string(),
+        ),
+    };
+
+    // SAFETY: getuid(2) cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let uid_str = uid.to_string();
+    let user_env = std::env::var("USER").ok();
+    let has_subuid = std::fs::read_to_string("/etc/subuid")
+        .ok()
+        .is_some_and(|text| {
+            text.lines().any(|line| {
+                let mut parts = line.split(':');
+                let Some(entry_user) = parts.next() else {
+                    return false;
+                };
+                let _start = parts.next();
+                let count = parts
+                    .next()
+                    .and_then(|c| c.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+                let matches_me = entry_user == uid_str || user_env.as_deref() == Some(entry_user);
+                matches_me && count >= 2
+            })
+        });
+    let has_newuidmap = find_newuidmap();
+    let (subuid_ok, subuid_detail) = match (has_subuid, has_newuidmap) {
+        (true, true) => (true, "active (/etc/subuid + newuidmap)".to_string()),
+        (true, false) => (
+            false,
+            "degraded (/etc/subuid configured, newuidmap missing)".to_string(),
+        ),
+        (false, true) => (
+            false,
+            "unavailable (/etc/subuid has no range for this uid)".to_string(),
+        ),
+        (false, false) => (
+            false,
+            "unavailable (no /etc/subuid range and no newuidmap)".to_string(),
+        ),
+    };
+
+    let (memlock_secret_ok, memlock_secret_detail) =
+        classify_memlock_secret(caps.memlock_limit, caps.memfd_secret);
+
+    let memfd_noexec_raw = std::fs::read_to_string("/proc/sys/vm/memfd_noexec").ok();
+    let (memfd_noexec_ok, memfd_noexec_detail) = classify_memfd_noexec(memfd_noexec_raw.as_deref());
+
+    let ambient_env_vars = collect_ambient_injection_vars(|name| {
+        std::env::var_os(name).is_some_and(|v| !v.is_empty())
+    });
+    let (ambient_env_ok, ambient_env_detail) = if ambient_env_vars.is_empty() {
+        (
+            true,
+            "clean (no ambient linker/interpreter injection vars set)".to_string(),
+        )
+    } else {
+        (
+            false,
+            format!(
+                "warning ({} set in environment; scrub before running secrets)",
+                ambient_env_vars.join(", ")
+            ),
+        )
+    };
+
+    Readiness {
+        tee_proc_ok,
+        tee_proc_detail,
+        tmpfile_exec_ok,
+        tmpfile_exec_detail,
+        subuid_ok,
+        subuid_detail,
+        memlock_secret_ok,
+        memlock_secret_detail,
+        memfd_noexec_ok,
+        memfd_noexec_detail,
+        ambient_env_ok,
+        ambient_env_vars,
+        ambient_env_detail,
+    }
+}
+
 /// The machine-readable form of `doctor`: the same rows as `probe
-/// --json`, plus the store and agent lines and the per-request verdict.
+/// --json`, plus the store, agent, readiness lines, and the per-request verdict.
 ///
 /// Every string that came from outside this process is escaped; the
 /// report must parse whatever the environment holds.
-fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
+fn doctor_json(caps: &Caps, readiness: &Readiness, require: &[String], code: i32) -> String {
     let sp = store::default_path();
     let store_path = json_escape(&sp.display().to_string());
     let store_line = match std::fs::metadata(&sp) {
@@ -382,16 +679,35 @@ fn doctor_json(caps: &Caps, require: &[String], code: i32) -> String {
             st.map(|s| s.as_word()).unwrap_or("unknown")
         ));
     }
+    let ambient_vars_json: String = readiness
+        .ambient_env_vars
+        .iter()
+        .map(|v| format!("\"{}\"", json_escape(v)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let base = caps.report_json();
     // splice the extra keys before the closing brace of the capability
     // report, so the two reports share one schema
     let body = base.trim_end().trim_end_matches('}');
     format!(
-        "{},\n  \"store\": {},\n  \"agent\": {{\"socket\": \"{}\", \"answering\": {}}},\n  \"required\": [{}],\n  \"exit\": {}\n}}\n",
+        "{},\n  \"store\": {},\n  \"agent\": {{\"socket\": \"{}\", \"answering\": {}}},\n  \"readiness\": {{\"tee_userns_proc\": {{\"ready\": {}, \"detail\": \"{}\"}}, \"tmpfile_exec\": {{\"ready\": {}, \"detail\": \"{}\"}}, \"subuid_cross_uid\": {{\"ready\": {}, \"detail\": \"{}\"}}, \"memlock_secret\": {{\"ready\": {}, \"detail\": \"{}\"}}, \"memfd_noexec\": {{\"ready\": {}, \"detail\": \"{}\"}}, \"ambient_env\": {{\"ready\": {}, \"vars\": [{}], \"detail\": \"{}\"}}}},\n  \"required\": [{}],\n  \"exit\": {}\n}}\n",
         body,
         store_line,
         json_escape(&sock.display().to_string()),
         agent::ping(None),
+        readiness.tee_proc_ok,
+        json_escape(&readiness.tee_proc_detail),
+        readiness.tmpfile_exec_ok,
+        json_escape(&readiness.tmpfile_exec_detail),
+        readiness.subuid_ok,
+        json_escape(&readiness.subuid_detail),
+        readiness.memlock_secret_ok,
+        json_escape(&readiness.memlock_secret_detail),
+        readiness.memfd_noexec_ok,
+        json_escape(&readiness.memfd_noexec_detail),
+        readiness.ambient_env_ok,
+        ambient_vars_json,
+        json_escape(&readiness.ambient_env_detail),
         wanted,
         code
     )
@@ -1159,7 +1475,10 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
         "separate presentation label for supervisor in tree mode",
     ),
     ("--cwd PATH", "normalize child cwd after resolving COMMAND"),
-    ("--rexec-mode MODE", "image carrier: auto, path, or memfd"),
+    (
+        "--rexec-mode MODE",
+        "image carrier: auto, path, tmpfile, or memfd",
+    ),
     ("--no-rexec", "opt out of profile-default --rexec"),
     (
         "--allow-impersonation",
@@ -1276,10 +1595,7 @@ pub const SHORT_HELP: &[(&str, &str)] = &[
         "--explain",
         "show observer, host capabilities, and honest residuals",
     ),
-    (
-        "--profile-json",
-        "emit pmask-profile/1 JSON for decoy generators",
-    ),
+    ("--profile-json", "emit native psgen schema: 2 profile JSON"),
     (
         "--audit",
         "self-audit, audit --pid PID, or tracee residue rows",
@@ -1354,10 +1670,10 @@ pub fn short_help(mask_help: &str) -> String {
             "      --secret-fd [K=]N  Keep open fd N across exec (PMASK_SECRET_FD/_<K>)\n",
             "      --secret K=SRC     Deliver secret on sealed fd (file:|env:|agent:|stdin)\n",
             "      --cwd PATH         Normalize child cwd after resolving COMMAND\n",
-            "      --rexec-mode MODE  Image carrier: auto (default), path, or memfd\n",
+            "      --rexec-mode MODE  Image carrier: auto, path, tmpfile, or memfd\n",
             "      --explain          Show observer, capabilities, and honest residuals\n",
             "      --audit            Self-audit or audit --pid PID (exit 0 pass / 1 fail)\n",
-            "      --profile-json     Emit pmask-profile/1 JSON for decoy generators\n",
+            "      --profile-json     Emit native psgen schema: 2 profile JSON\n",
             "  -q, --quiet            Suppress diagnostics\n",
             "  -v, --verbose          Trace every redaction event to stderr\n",
             "  -V, --version          Print version\n",
@@ -1714,5 +2030,40 @@ mod short_help_tests {
         push_required("", &mut none);
         push_required(" , ", &mut none);
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn doctor_readiness_helpers_classify_memlock_memfd_and_ambient_env() {
+        let (ok, detail) = classify_memlock_secret(0, false);
+        assert!(!ok);
+        assert!(detail.contains("insufficient"), "{detail}");
+
+        let (ok, detail) = classify_memlock_secret(64 * 1024, true);
+        assert!(ok);
+        assert!(detail.contains("64 KiB"), "{detail}");
+
+        let (ok, detail) = classify_memlock_secret(libc::RLIM_INFINITY, false);
+        assert!(ok);
+        assert!(detail.contains("unlimited"), "{detail}");
+
+        let (ok, detail) = classify_memfd_noexec(Some("0\n"));
+        assert!(ok);
+        assert!(detail.contains("allowed"), "{detail}");
+
+        let (ok, detail) = classify_memfd_noexec(Some("1\n"));
+        assert!(!ok);
+        assert!(detail.contains("--rexec-mode=path or tmpfile"), "{detail}");
+
+        let (ok, detail) = classify_memfd_noexec(Some("2\n"));
+        assert!(!ok);
+        assert!(detail.contains("--rexec-mode=path or tmpfile"), "{detail}");
+
+        let (ok, detail) = classify_memfd_noexec(None);
+        assert!(ok);
+        assert!(detail.contains("allowed"), "{detail}");
+
+        let found = collect_ambient_injection_vars(|k| matches!(k, "LD_PRELOAD" | "NODE_OPTIONS"));
+        assert_eq!(found, vec!["LD_PRELOAD", "NODE_OPTIONS"]);
+        assert!(collect_ambient_injection_vars(|_| false).is_empty());
     }
 }

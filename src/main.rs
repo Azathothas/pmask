@@ -419,23 +419,78 @@ fn reexec_in_scope(name: &str, reexec_argv: &[OsString], quiet: bool) {
     }
 }
 
-/// Check whether `program` resolves to a regular file beginning with `\x7fELF`.
-/// Fast zero-fork check used only to decide whether profile-default `--rexec`
-/// should be enabled (scripts and non-existent paths skip profile-default
-/// rexec while explicit `--rexec` keeps its strict error behavior).
-fn is_elf_program(program: &OsStr, env_overrides: &[(OsString, OsString)]) -> bool {
-    if program.is_empty() {
+/// Single-pass header inspection of `cli.program` (resolves `PATH` once and
+/// reads up to 4 bytes once), shared by `Profile::Auto` selection and
+/// profile-default `--rexec`.
+#[derive(Debug, Clone, Copy, Default)]
+struct ResolvedTarget {
+    is_elf: bool,
+    is_shebang: bool,
+}
+
+/// Shells and launchers that routinely fork or exec subcommands and therefore
+/// select `Profile::Tree` under `--profile auto`.
+const TREE_LAUNCHERS: &[&str] = &[
+    "sh",
+    "bash",
+    "dash",
+    "ash",
+    "zsh",
+    "ksh",
+    "mksh",
+    "fish",
+    "csh",
+    "tcsh",
+    "env",
+    "make",
+    "xargs",
+    "timeout",
+    "nice",
+    "nohup",
+    "sudo",
+    "su",
+    "busybox",
+    "run-parts",
+    "setsid",
+    "stdbuf",
+    "ionice",
+    "chrt",
+    "taskset",
+];
+
+fn is_tree_launcher(program: &OsStr) -> bool {
+    let Some(base) = Path::new(program).file_name().and_then(|n| n.to_str()) else {
         return false;
+    };
+    let lower = base.to_ascii_lowercase();
+    TREE_LAUNCHERS.contains(&lower.as_str())
+}
+
+fn resolve_target(program: &OsStr, env_overrides: &[(OsString, OsString)]) -> ResolvedTarget {
+    if program.is_empty() {
+        return ResolvedTarget::default();
     }
-    let check_path = |p: &Path| -> bool {
+    let inspect = |p: &Path| -> ResolvedTarget {
         let Ok(mut f) = File::open(p) else {
-            return false;
+            return ResolvedTarget::default();
         };
         let mut magic = [0u8; 4];
-        f.read_exact(&mut magic).is_ok() && magic == [0x7f, b'E', b'L', b'F']
+        let mut got = 0usize;
+        while got < magic.len() {
+            match f.read(&mut magic[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        ResolvedTarget {
+            is_elf: got >= 4 && magic == [0x7f, b'E', b'L', b'F'],
+            is_shebang: got >= 2 && magic[0] == b'#' && magic[1] == b'!',
+        }
     };
     if program.as_bytes().contains(&b'/') {
-        return check_path(Path::new(program));
+        return inspect(Path::new(program));
     }
     let path_override = env_overrides
         .iter()
@@ -444,15 +499,18 @@ fn is_elf_program(program: &OsStr, env_overrides: &[(OsString, OsString)]) -> bo
         .map(|(_, v)| v.clone());
     let path_var = path_override.or_else(|| std::env::var_os("PATH"));
     let Some(path_var) = path_var else {
-        return false;
+        return ResolvedTarget::default();
     };
+    use std::os::unix::fs::PermissionsExt;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(program);
-        if candidate.is_file() {
-            return check_path(&candidate);
+        if let Ok(md) = std::fs::metadata(&candidate) {
+            if md.is_file() && (md.permissions().mode() & 0o111) != 0 {
+                return inspect(&candidate);
+            }
         }
     }
-    false
+    ResolvedTarget::default()
 }
 
 /// Read an optional audit/profile token from `--token-env` or `--token-fd`.
@@ -757,6 +815,7 @@ fn run_self_audit(cli: &cli::Cli) -> i32 {
         let mode_word = match mode {
             RexecMode::Auto => "auto",
             RexecMode::Path => "path",
+            RexecMode::Tmpfile => "tmpfile",
             RexecMode::Memfd => "memfd",
         };
         cmd.arg("--rexec-mode").arg(mode_word);
@@ -1008,10 +1067,16 @@ fn run_with_secrets(mut cli: cli::Cli) -> i32 {
     if cli.no_dumpable || cli.hide_pid || cli.encrypt_memory {
         r = r.no_dumpable(true);
     }
+    if cli.allow_dumpable {
+        r = r.allow_dumpable(true);
+    }
+    if cli.profile == Profile::Tee {
+        r = r.require_isolate();
+    }
     if cli.hide_pid {
         r = r.hide_pid(true);
     }
-    if cli.encrypt_memory {
+    if cli.encrypt_memory || cli.profile_encrypt_memory {
         r = r.encrypt_memory(true);
     }
     if cli.audit {
@@ -1295,6 +1360,27 @@ fn ptrace_refusal() -> Option<String> {
 
 /// Validate and wire `--secret-fd [NAME=]N` onto `cli.mask` and `cli.env_overrides`.
 fn apply_secret_fds(cli: &mut cli::Cli) {
+    if !cli.secrets.is_empty() {
+        let first = pmask::secret::FIRST_FD;
+        let count = i32::try_from(cli.secrets.len()).unwrap_or(i32::MAX);
+        let end = first.saturating_add(count);
+        for &(_, fd) in &cli.secret_fds {
+            if fd >= first && fd < end {
+                eprintln!(
+                    "pmask: --secret-fd {} overlaps the --secret descriptor range {}..{} \
+                     ({} --secret value{}); pass a higher file descriptor number (>= {}) \
+                     so --secret delivery does not clobber it",
+                    fd,
+                    first,
+                    end,
+                    cli.secrets.len(),
+                    if cli.secrets.len() == 1 { "" } else { "s" },
+                    end
+                );
+                std::process::exit(2);
+            }
+        }
+    }
     let mut unnamed_exported = false;
     for (opt_name, fd) in cli.secret_fds.clone() {
         // SAFETY: validating that caller-passed fd is open.
@@ -1403,7 +1489,7 @@ fn safe_profile_carrier_name(label: &str) -> String {
 /// Apply profile-default `--rexec` and `--rexec-mode` when the operator did
 /// not opt out via `--no-rexec` and the target is a native ELF (or `--rexec`
 /// was explicitly requested).
-fn apply_profile_rexec(cli: &mut cli::Cli, default_mode: RexecMode) {
+fn apply_profile_rexec(cli: &mut cli::Cli, default_mode: RexecMode, is_elf: bool) {
     if cli.no_rexec {
         return;
     }
@@ -1417,10 +1503,7 @@ fn apply_profile_rexec(cli: &mut cli::Cli, default_mode: RexecMode) {
     };
     if let Some(mode) = cli.rexec_mode {
         cli.mask = cli.mask.clone().rexec_mode(mode);
-        if !cli.rexec_explicit
-            && !cli.mask.has_image()
-            && is_elf_program(&cli.program, &cli.env_overrides)
-        {
+        if !cli.rexec_explicit && !cli.mask.has_image() && is_elf {
             cli.mask = cli.mask.clone().rexec();
             if let Some(name) = long_label_carrier {
                 cli.mask = cli.mask.clone().memfd_name(name);
@@ -1428,15 +1511,18 @@ fn apply_profile_rexec(cli: &mut cli::Cli, default_mode: RexecMode) {
         }
         return;
     }
-    if cli.rexec_explicit || cli.mask.has_image() {
+    if cli.rexec_explicit || cli.mask.has_image() || cli.prefers_memfd {
         // Preserve explicit `--rexec`, `--hugetlb`, `--memfd-name`, `--image*`,
         // `--exec-once` memfd carrier unless `--rexec-mode` was explicitly set.
         if cli.prefers_memfd {
             cli.mask = cli.mask.clone().rexec_mode(RexecMode::Memfd);
+            if !cli.rexec_explicit && !cli.mask.has_image() && is_elf {
+                cli.mask = cli.mask.clone().rexec();
+            }
         }
         return;
     }
-    if is_elf_program(&cli.program, &cli.env_overrides) {
+    if is_elf {
         cli.mask = cli.mask.clone().rexec().rexec_mode(default_mode);
         if let Some(name) = long_label_carrier {
             cli.mask = cli.mask.clone().memfd_name(name);
@@ -1711,12 +1797,20 @@ fn main() {
         || cli.detach
         || cli.no_redact;
 
+    let target = if cli.daemon.is_some() || cli.no_redact {
+        ResolvedTarget::default()
+    } else {
+        resolve_target(&cli.program, &cli.env_overrides)
+    };
+
     let effective_profile = match cli.profile {
         Profile::Auto => {
             if cli.no_redact {
                 Profile::Compat
+            } else if needs_tree || target.is_shebang || is_tree_launcher(&cli.program) {
+                Profile::Tree
             } else {
-                pmask::audit::select_auto_profile(&cli.program, needs_tree)
+                Profile::Single
             }
         }
         explicit => explicit,
@@ -1730,8 +1824,10 @@ fn main() {
         && !cli.hide_pid;
 
     // Zero-fork fast ptrace check only when not taking the `single` fast path
-    // (where `G` probes `PTRACE_SEIZE` directly without any `PTRACE_TRACEME` fork).
-    let ptrace_ok = if single_fast_path {
+    // (where `G` probes `PTRACE_SEIZE` directly without any `PTRACE_TRACEME` fork)
+    // and not forced off by `--no-redact` (so a strict container `SIGSYS` /
+    // `SECCOMP_RET_KILL` filter on `ptrace` never kills `--no-redact --secret-fd`).
+    let ptrace_ok = if single_fast_path || cli.no_redact {
         true
     } else {
         pmask::caps::Caps::ptrace_usable_fast()
@@ -1783,17 +1879,28 @@ fn main() {
             eprintln!("pmask: --profile tee cannot be combined with --isolate=none");
             std::process::exit(255);
         }
-        // `tee` is not on the hot path; probe userns explicitly and fail closed.
+        // `tee` is not on the hot path; probe userns and mounts explicitly and fail closed.
         if !pmask::caps::Caps::detect().userns {
             eprintln!(
                 "pmask: --profile tee requires unprivileged user namespaces, and this host \
-                 refuses them; run where userns is permitted, or use --profile single / tree"
+                 refuses them; run where userns is permitted, or use --profile single or \
+                 --profile tree"
             );
             std::process::exit(255);
         }
         cli.redact = true;
-        if cli.isolate.is_none() {
-            cli.isolate = Some(Isolate::new(true, false, true));
+        let iso = cli
+            .isolate
+            .unwrap_or_else(|| Isolate::new(true, false, true));
+        cli.isolate = Some(iso);
+        if let Err(e) = pmask::run::probe_namespaces(iso) {
+            eprintln!(
+                "pmask: --profile tee requires private namespaces and mounts, and the kernel \
+                 refused them ({}); run where userns + private /proc and /tmp mounts are \
+                 permitted, or use --profile single or --profile tree",
+                e
+            );
+            std::process::exit(255);
         }
     }
 
@@ -1813,7 +1920,7 @@ fn main() {
             // (`memfd_secret` + `mlock` + AEAD) unless `--encrypt-memory` was
             // explicitly passed; the redaction block still receives
             // `MADV_DONTDUMP` via `no_dumpable`.
-            apply_profile_rexec(&mut cli, RexecMode::Auto);
+            apply_profile_rexec(&mut cli, RexecMode::Auto, target.is_elf);
         }
         Profile::Tree => {
             let hidepid_blocks =
@@ -1822,16 +1929,24 @@ fn main() {
                 cli.mask = cli.mask.no_dumpable().supervisor_non_dumpable(true);
             }
             cli.mask = cli.mask.encrypt_memory(true);
+            let isolate_without_redact = cli.isolate.is_some_and(|i| !i.none)
+                && !cli.redact
+                && pmask::caps::Caps::cached().userns;
+            if !plain_mode && !isolate_without_redact {
+                cli.profile_encrypt_memory = true;
+            }
             if !cli.no_follow {
                 cli.mask = cli.mask.follow_tree(true);
             }
-            apply_profile_rexec(&mut cli, RexecMode::Auto);
+            apply_profile_rexec(&mut cli, RexecMode::Auto, target.is_elf);
         }
         Profile::Tee => {
             if !cli.allow_dumpable && !cli.mask.exec_once_enabled() {
                 cli.mask = cli.mask.no_dumpable().supervisor_non_dumpable(true);
                 cli.no_dumpable = true;
             }
+            // Fail closed if namespaces cannot be entered at fork/exec time.
+            cli.mask = cli.mask.require_namespaces(true);
             // Linux `cap_capable()` grants the userns creator uid `CAP_SYS_PTRACE`
             // over the child userns, leaving `/proc/<pid>/cwd` readable to same-uid
             // host observers even with `PR_SET_DUMPABLE=0`.  Normalize `cwd` to `/`
@@ -1843,13 +1958,20 @@ fn main() {
                 cli.cwd = Some(norm);
             }
             cli.mask = cli.mask.encrypt_memory(true);
-            apply_profile_rexec(&mut cli, RexecMode::Auto);
+            if !plain_mode {
+                cli.profile_encrypt_memory = true;
+            }
+            apply_profile_rexec(&mut cli, RexecMode::Auto, target.is_elf);
         }
         Profile::Compat | Profile::Auto => {
             // Preserve exact v0.1.0 defaults (`follow_tree=true`, `dumpable=1`,
             // no forced `rexec`, no forced `encrypt_memory`).
-            if let Some(mode) = cli.rexec_mode {
+            if cli.stealth && target.is_elf && !cli.no_rexec {
+                apply_profile_rexec(&mut cli, RexecMode::Auto, target.is_elf);
+            } else if let Some(mode) = cli.rexec_mode {
                 cli.mask = cli.mask.rexec_mode(mode);
+            } else if cli.prefers_memfd {
+                cli.mask = cli.mask.rexec_mode(RexecMode::Memfd);
             }
         }
     }
@@ -1893,7 +2015,7 @@ fn main() {
             }
         } else {
             cli.mask = cli.mask.session_end(pmask::SessionEnd::WaitTree);
-            if !cli.quiet {
+            if cli.verbose {
                 eprintln!(
                     "pmask: --watch-rename: waiting for the tree so the filter keeps a tracer; \
                      pass --on-exit detach to be refused, or wait/kill to choose"

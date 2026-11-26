@@ -69,6 +69,25 @@ struct Selection {
     reason: &'static str,
 }
 
+/// Probe whether the kernel grants the full namespace and mount set requested
+/// by `iso` (userns + PID/net namespaces + private `/proc` and `/tmp` mounts).
+///
+/// Used by fail-closed `--profile tee` before spawning the payload so a host
+/// that refuses user namespaces or private `/proc` / `/tmp` mounts aborts with
+/// the exact kernel refusal instead of degrading open.
+pub fn probe_namespaces(iso: Isolate) -> io::Result<()> {
+    if iso.none {
+        return Ok(());
+    }
+    let ns = crate::userns::ChildNs {
+        pid: iso.pid,
+        net: iso.net,
+        procfs: iso.pid,
+        private_tmp: iso.private_tmp,
+    };
+    crate::userns::probe(ns)
+}
+
 /// The axis that refused `ptrace`, from the probe that explains it.
 fn ptrace_reason(caps: &Caps) -> &'static str {
     if caps.seccomp_filter {
@@ -535,6 +554,9 @@ pub struct Runner {
     /// requested namespaces.  Distinct from [`Runner::isolate`], which is
     /// the namespace-only mode.
     compose: Option<Isolate>,
+    /// Fail closed (return `Err`) instead of degrading when the composed
+    /// namespace set (`--profile tee`) cannot be mounted.
+    require_compose: bool,
     secrets: Vec<(String, Source)>,
     env_overrides: Vec<(OsString, OsString)>,
     socket: Option<PathBuf>,
@@ -543,6 +565,9 @@ pub struct Runner {
     close_on_exec: bool,
     allow_argv_secret: bool,
     no_dumpable: bool,
+    /// Caller explicitly passed `--allow-dumpable`.
+    #[allow(dead_code)]
+    allow_dumpable: bool,
     hide_pid: bool,
     encrypt_memory: bool,
     /// Mask options the caller passed, for the modes that cannot apply
@@ -582,6 +607,7 @@ impl Runner {
             force_mode: None,
             isolate: None,
             compose: None,
+            require_compose: false,
             secrets: Vec::new(),
             env_overrides: Vec::new(),
             socket: None,
@@ -590,6 +616,7 @@ impl Runner {
             close_on_exec: false,
             allow_argv_secret: false,
             no_dumpable: false,
+            allow_dumpable: false,
             hide_pid: false,
             encrypt_memory: false,
             requested: Vec::new(),
@@ -669,6 +696,20 @@ impl Runner {
     /// user+pid+mount set.
     pub fn redact_with_isolate(mut self, iso: Isolate) -> Runner {
         self.compose = Some(iso);
+        self
+    }
+
+    /// Require the composed namespace set (`--profile tee`) to succeed: fail
+    /// closed with an error instead of degrading to unisolated redaction when
+    /// user namespaces or private `/proc` / `/tmp` mounts are refused.
+    pub fn require_isolate(mut self) -> Runner {
+        self.require_compose = true;
+        self
+    }
+
+    /// Record that the caller explicitly passed `--allow-dumpable`.
+    pub fn allow_dumpable(mut self, on: bool) -> Runner {
+        self.allow_dumpable = on;
         self
     }
 
@@ -804,6 +845,19 @@ impl Runner {
     }
 
     fn select(&self) -> Selection {
+        // Fast zero-fork path when `--no-redact` forces plain mode without
+        // isolation: skip `Caps::detect()` and `ptrace`, so a strict container
+        // seccomp filter (`SIGSYS` / `SECCOMP_RET_KILL`) on `ptrace` cannot
+        // terminate `pmask --no-redact --secret-fd`.
+        if self.force_mode == Some(Mode::Plain)
+            && self.compose.is_none()
+            && (self.isolate.is_none() || self.is_none_isolation())
+        {
+            return Selection {
+                mode: Mode::Plain,
+                reason: "forced",
+            };
+        }
         // Fast zero-fork path when no namespace isolation was requested and
         // ptrace is available: avoids running the full 8-probe `Caps::detect`
         // suite on ordinary redacted runs (`--stealth`, `--encrypt-memory`,
@@ -1067,6 +1121,8 @@ impl Runner {
         let mode = selection.mode;
         let ptrace = if mode == Mode::Redact {
             true
+        } else if self.force_mode == Some(Mode::Plain) {
+            false
         } else {
             Caps::ptrace_usable_fast()
         };
@@ -1122,6 +1178,18 @@ impl Runner {
                      or drop --encrypt-memory",
                     mode.as_str()
                 ),
+            ));
+        }
+        if self.require_compose
+            && (mode != Mode::Redact
+                || self.compose.is_none()
+                || self.is_none_isolation()
+                || self.isolate_unavailable())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "--profile tee requires both ptrace redaction and unprivileged user namespaces; \
+                 run where both are permitted, or use --profile single or --profile tree",
             ));
         }
         if self.isolate_unavailable() {
@@ -1443,6 +1511,17 @@ impl Runner {
                         // report: the run still redacts, but the operator
                         // must not believe the namespaces were applied.
                         if let Err(e) = crate::userns::probe(ns) {
+                            if self.require_compose {
+                                return Err(io::Error::new(
+                                    e.kind(),
+                                    format!(
+                                        "--profile tee refused: {} (use --profile single or \
+                                         --profile tree when private /proc or /tmp mounts are \
+                                         unavailable)",
+                                        e
+                                    ),
+                                ));
+                            }
                             notes.push(format!(
                                 "--isolate={} was not applied: this host refused the \
                                  namespace set ({}); the tree is still redacted",
@@ -1451,6 +1530,9 @@ impl Runner {
                             ));
                         } else {
                             mask = mask.namespaces(ns);
+                            if self.require_compose {
+                                mask = mask.require_namespaces(true);
+                            }
                         }
                     }
                 }
@@ -1613,11 +1695,11 @@ impl Runner {
                 for (k, v) in self.environment(&extra_env) {
                     cmd.env(k, v);
                 }
-                // SAFETY: the closure calls only the shared checked install
-                // routine between fork and exec, and install_fds allocates
-                // nothing.
+                // SAFETY: the closure calls only async-signal-safe routines
+                // between fork and exec, and allocates nothing.
                 let child_fds = fds.clone();
                 let child_preserved = self.preserved_fds.clone();
+                let plain_secret_harden = !child_fds.is_empty() || !child_preserved.is_empty();
                 unsafe {
                     use std::os::unix::process::CommandExt;
                     cmd.pre_exec(move || {
@@ -1627,6 +1709,17 @@ impl Runner {
                             if flags >= 0 && (flags & libc::FD_CLOEXEC) != 0 {
                                 libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
                             }
+                        }
+                        if plain_secret_harden {
+                            // `RLIMIT_CORE=0` survives `execve`, preventing core dumps of
+                            // delivered secrets.  `PR_SET_DUMPABLE` and `PR_SET_NAME` are
+                            // reset by Linux on `execve`, so plain mode (no tracer) does
+                            // not pretend to set them here.
+                            let zero = libc::rlimit {
+                                rlim_cur: 0,
+                                rlim_max: 0,
+                            };
+                            libc::setrlimit(libc::RLIMIT_CORE, &zero);
                         }
                         Ok(())
                     });
@@ -2085,5 +2178,22 @@ mod tests {
         );
         assert_eq!(program_basename(std::ffi::OsStr::new("env")), "env");
         assert_eq!(program_basename(std::ffi::OsStr::new("/")), "");
+    }
+
+    #[test]
+    fn require_isolate_refuses_missing_or_none_compose() {
+        let mut r_missing = Runner::new().require_isolate();
+        let err = r_missing
+            .run("/bin/true", &[] as &[&str])
+            .expect_err("require_isolate without compose must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+
+        let mut r_none = Runner::new()
+            .redact_with_isolate(Isolate::none())
+            .require_isolate();
+        let err = r_none
+            .run("/bin/true", &[] as &[&str])
+            .expect_err("require_isolate with Isolate::none() must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 }

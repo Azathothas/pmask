@@ -121,6 +121,7 @@ mod imp {
     pub const SYS_EXECVEAT: u64 = 322;
     pub const SYS_PRCTL: u64 = 157;
     pub const SYS_MMAP: u64 = 9;
+    pub const SYS_MPROTECT: u64 = 10;
     pub const SYS_BRK: u64 = 12;
     pub const SYS_CLOSE: u64 = 3;
     pub const SYS_MADVISE: u64 = 28;
@@ -230,6 +231,9 @@ mod imp {
             self.raw.orig_rax = u64::MAX;
             self.raw.rax = (-(errno as i64)) as u64;
         }
+        pub fn ip(&self) -> u64 {
+            self.raw.rip
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.rip = ip;
         }
@@ -254,6 +258,7 @@ mod imp {
     pub const SYS_EXECVEAT: u64 = 358;
     pub const SYS_PRCTL: u64 = 172;
     pub const SYS_MMAP: u64 = 90;
+    pub const SYS_MPROTECT: u64 = 125;
     pub const SYS_BRK: u64 = 45;
     pub const SYS_CLOSE: u64 = 6;
     pub const SYS_MADVISE: u64 = 219;
@@ -345,6 +350,9 @@ mod imp {
             self.raw.orig_eax = u32::MAX;
             self.raw.eax = (-errno) as u32;
         }
+        pub fn ip(&self) -> u64 {
+            self.raw.eip as u64
+        }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.eip = ip as u32;
         }
@@ -364,6 +372,7 @@ mod imp {
     pub const SYS_EXECVEAT: u64 = 281;
     pub const SYS_PRCTL: u64 = 167;
     pub const SYS_MMAP: u64 = 222;
+    pub const SYS_MPROTECT: u64 = 226;
     pub const SYS_BRK: u64 = 214;
     pub const SYS_CLOSE: u64 = 57;
     pub const SYS_MADVISE: u64 = 233;
@@ -447,6 +456,9 @@ mod imp {
             self.denied = true;
             self.raw.x[8] = u64::MAX;
             self.raw.x[0] = (-(errno as i64)) as u64;
+        }
+        pub fn ip(&self) -> u64 {
+            self.raw.pc
         }
         pub fn set_ip(&mut self, ip: u64) {
             self.raw.pc = ip;

@@ -1,4 +1,4 @@
-.TH PMASKD 8 "2026" "pmaskd 0.2.0" "System Manager's Manual"
+.TH PMASKD 8 "2026" "pmaskd 0.3.0" "System Manager's Manual"
 .SH NAME
 pmaskd \- run masked jobs for local clients that do not hold the secrets
 .SH SYNOPSIS
@@ -19,7 +19,11 @@ Grant
 only to uids already trusted with that access.
 On a root daemon, pass
 .B \-\-run\-as\-uid
-to run each job under the client's uid and gid.
+to run each job under the connecting client's uid and gid, or
+.BI \-\-run\-as\-uid= UID[:GID]
+to run every job under a dedicated service uid and gid (providing cross-uid isolation without same-uid
+.B EACCES
+signals).
 .PP
 .B pmaskd
 does not open the encrypted secret store.
@@ -92,12 +96,89 @@ visible for jobs.
 Accept connections from UID in addition to the daemon's own uid and root.
 Repeat this option to allow multiple uids.
 .TP
-.B \-\-run\-as\-uid
-Run each job with the connecting client's uid and gid.
+.BI \-\-run\-as\-uid "[=UID[:GID]]"
 Requires a root daemon.
+With no value, runs each job with the connecting client's uid and gid.
+With an explicit
+.I UID
+or
+.IR UID:GID ,
+runs every job under that dedicated service uid and gid (defaulting GID to UID when omitted).
 Combine with a reachable socket mode such as
 .B "\-\-socket\-mode 666"
 when serving other uids.
+When a job runs under a different uid from the client, jobs default to
+.B PR_SET_DUMPABLE=1
+because standard Linux cross-uid DAC already blocks other unprivileged uids from reading
+.BR environ ,
+.BR maps ,
+.BR auxv ,
+.BR exe ,
+.BR fd ,
+.BR cwd ,
+and
+.B mem
+without creating a same-uid
+.B EACCES
+anomaly.
+.TP
+.B \-\-no\-dumpable
+Force
+.B PR_SET_DUMPABLE=0
+on every job, even across a uid boundary.
+Mutually exclusive with
+.BR \-\-allow\-dumpable .
+.TP
+.B \-\-allow\-dumpable
+Explicitly keep jobs dumpable
+.RB ( PR_SET_DUMPABLE=1 ),
+even when the job runs as the same uid as the client.
+Mutually exclusive with
+.BR \-\-no\-dumpable .
+.TP
+.B \-\-rexec
+Stage native ELF jobs into an executable carrier so
+.B /proc/\fIpid\fB/exe
+and
+.B maps
+do not expose the real executable path.
+Enabled by default for native ELF jobs (pass
+.B \-\-no\-rexec
+to opt out).
+For cross-UID
+.B \-\-run\-as\-uid
+jobs,
+.B pmaskd
+verifies access under thread-local
+.B setfsuid
+and
+.B setfsgid
+privilege boundaries and stages an
+.B O_TMPFILE
+executable carrier owned by the target uid via
+.BR fchown .
+.TP
+.B \-\-no\-rexec
+Disable default
+.B \-\-rexec
+image staging for native ELF jobs.
+Mutually exclusive with explicit
+.B \-\-rexec
+and
+.BR \-\-rexec\-mode .
+.TP
+.BI \-\-rexec\-mode " MODE"
+Choose the
+.B \-\-rexec
+image carrier:
+.B auto
+(default),
+.BR path ,
+.BR tmpfile ,
+or
+.BR memfd .
+Implies
+.BR \-\-rexec .
 .TP
 .BI \-\-socket\-mode " OCT"
 Set socket permission bits in octal.

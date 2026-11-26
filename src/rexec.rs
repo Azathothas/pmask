@@ -34,7 +34,7 @@
 //! at the exec.  The `Image` type closes the fd on drop.
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CStr, CString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -73,6 +73,11 @@ pub enum RexecMode {
     /// private `0700` staging directory (`$XDG_RUNTIME_DIR`, `/dev/shm`,
     /// or `/tmp`), leaving zero `/memfd:` fingerprint in `exe` and `maps`.
     Path,
+    /// Unnamed `O_TMPFILE` executable on an executable mount executed via
+    /// `execveat(fd, "", AT_EMPTY_PATH)`: zero directory entry is ever
+    /// linked on disk (immune to `SIGKILL` at any microsecond) and zero
+    /// `/memfd:` fingerprint.
+    Tmpfile,
     /// Prefer [`RexecMode::Path`] when a writable executable staging
     /// directory is available; otherwise fall back to [`RexecMode::Memfd`].
     Auto,
@@ -104,6 +109,33 @@ pub struct Image {
     /// double-forked reaper.  Closing it on drop signals the reaper to
     /// unlink the carrier (if still present) and exit cleanly.
     pub(crate) reaper_fd: Option<RawFd>,
+}
+
+impl Image {
+    /// Spawn and attach a double-forked reaper for a named carrier path (and
+    /// optional private staging directory) if one is not already attached.
+    pub fn attach_reaper(&mut self) -> io::Result<()> {
+        if self.reaper_fd.is_some() {
+            return Ok(());
+        }
+        let Some(ref p) = self.path else {
+            return Ok(());
+        };
+        let wr = spawn_carrier_reaper(p, self.private_dir.as_deref())?;
+        self.reaper_fd = Some(wr);
+        Ok(())
+    }
+
+    /// Return the attached reaper pipe write descriptor, if any.
+    pub fn reaper_fd(&self) -> Option<RawFd> {
+        self.reaper_fd
+    }
+
+    /// Take ownership of the reaper pipe write descriptor, disarming
+    /// `Image::drop` from closing it.
+    pub fn take_reaper_fd(&mut self) -> Option<RawFd> {
+        self.reaper_fd.take()
+    }
 }
 
 impl Drop for Image {
@@ -198,6 +230,11 @@ pub struct Options {
     /// child mounts a fresh private `tmpfs` over `/tmp` before `execve`, such
     /// as `--profile tee` or `--redact --isolate=tmp`).
     pub avoid_tmp: bool,
+    /// Target `(uid, gid)` when dropping privileges (`Mask::run_as`).  When
+    /// `geteuid() == 0` and `uid != 0`, `Source::Path` is opened under
+    /// thread-local `setfsuid`/`setfsgid` and validated as a non-setuid,
+    /// executable regular file so root never stages a root-only binary.
+    pub run_as: Option<(u32, u32)>,
 }
 
 impl Options {
@@ -324,6 +361,41 @@ fn check_elf_magic(fd: RawFd) -> io::Result<()> {
 }
 
 fn copy_into(src: RawFd, dst: RawFd) -> io::Result<()> {
+    // Fast path: in-kernel `copy_file_range(2)` avoids userspace copies and
+    // enables CoW reflinks on supported filesystems.  Fall back cleanly to a
+    // 64 KiB read/write loop on pipes, cross-fs `EXDEV`, or older kernels.
+    loop {
+        // SAFETY: copying between two open descriptors we own with NULL offsets.
+        let n = unsafe {
+            libc::copy_file_range(
+                src,
+                std::ptr::null_mut(),
+                dst,
+                std::ptr::null_mut(),
+                1 << 24,
+                0,
+            )
+        };
+        if n > 0 {
+            continue;
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(
+                libc::EXDEV
+                | libc::EINVAL
+                | libc::ENOSYS
+                | libc::EOPNOTSUPP
+                | libc::EPERM
+                | libc::EBADF,
+            ) => break,
+            _ => return Err(with_context(e, "copying the image failed")),
+        }
+    }
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = read_some(src, &mut buf)?;
@@ -421,16 +493,168 @@ pub fn prepare(program: &CStr, label: &str) -> io::Result<Image> {
     prepare_path(program, label, Options::default())
 }
 
+/// RAII guard that switches thread-local `fsuid`/`fsgid` to `(uid, gid)` when
+/// `geteuid() == 0` and `uid != 0`, restoring the previous IDs on drop.
+pub(crate) struct FsCredGuard {
+    prev_uid: libc::uid_t,
+    prev_gid: libc::gid_t,
+    active: bool,
+}
+
+impl FsCredGuard {
+    /// Temporarily drop thread-local filesystem credentials to `(uid, gid)`
+    /// when running as root (`geteuid() == 0`) on behalf of a non-root user.
+    pub(crate) fn enter(uid: u32, gid: u32) -> io::Result<Self> {
+        // SAFETY: geteuid(2) is always safe and cannot fail.
+        if unsafe { libc::geteuid() } != 0 || uid == 0 {
+            return Ok(Self {
+                prev_uid: 0,
+                prev_gid: 0,
+                active: false,
+            });
+        }
+        let target_uid = uid as libc::uid_t;
+        let target_gid = gid as libc::gid_t;
+        // Set `fsgid` before `fsuid` because changing `fsuid` away from 0
+        // clears `CAP_DAC_OVERRIDE` from the effective capability set.
+        // SAFETY: setfsgid(2) returns the previous fsgid.
+        let prev_gid = unsafe { libc::setfsgid(target_gid) } as libc::gid_t;
+        // SAFETY: second call confirms the active fsgid.
+        let cur_gid = unsafe { libc::setfsgid(target_gid) } as libc::gid_t;
+        if cur_gid != target_gid {
+            // SAFETY: restore previous fsgid.
+            unsafe { libc::setfsgid(prev_gid) };
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("setfsgid({}) did not take effect", gid),
+            ));
+        }
+        // SAFETY: setfsuid(2) returns the previous fsuid.
+        let prev_uid = unsafe { libc::setfsuid(target_uid) } as libc::uid_t;
+        // SAFETY: second call confirms the active fsuid.
+        let cur_uid = unsafe { libc::setfsuid(target_uid) } as libc::uid_t;
+        if cur_uid != target_uid {
+            // SAFETY: restore previous fsuid and fsgid.
+            unsafe {
+                libc::setfsuid(prev_uid);
+                libc::setfsgid(prev_gid);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("setfsuid({}) did not take effect", uid),
+            ));
+        }
+        Ok(Self {
+            prev_uid,
+            prev_gid,
+            active: true,
+        })
+    }
+}
+
+impl Drop for FsCredGuard {
+    fn drop(&mut self) {
+        if self.active {
+            // Restore `fsuid` (0) first so root filesystem capabilities return
+            // before restoring `fsgid`.
+            // SAFETY: restoring previously saved fsuid/fsgid values.
+            unsafe {
+                libc::setfsuid(self.prev_uid);
+                libc::setfsgid(self.prev_gid);
+            }
+            self.active = false;
+        }
+    }
+}
+
+/// Check Unix DAC execute permission bits for `(job_uid, job_gid)` against a
+/// file owned by `(file_uid, file_gid)` with `mode` (assuming no supplementary
+/// groups, matching `setgroups([])` in `child_exec`).
+pub(crate) fn mode_allows_exec(
+    mode: u32,
+    file_uid: u32,
+    file_gid: u32,
+    job_uid: u32,
+    job_gid: u32,
+) -> bool {
+    if job_uid == 0 {
+        (mode & 0o111) != 0
+    } else if job_uid == file_uid {
+        (mode & 0o100) != 0
+    } else if job_gid == file_gid {
+        (mode & 0o010) != 0
+    } else {
+        (mode & 0o001) != 0
+    }
+}
+
+/// Open `program` for `--rexec`, enforcing `run_as` filesystem credentials
+/// (`FsCredGuard`) and rejecting non-regular, setuid/setgid, or non-executable
+/// files when dropping privileges.
+fn open_source_path(program: &CStr, run_as: Option<(u32, u32)>) -> io::Result<RawFd> {
+    let src = {
+        let _guard = match run_as {
+            Some((uid, gid)) => Some(FsCredGuard::enter(uid, gid)?),
+            None => None,
+        };
+        // SAFETY: `program` is a valid NUL-terminated string; `O_NONBLOCK`
+        // prevents blocking if the path names a FIFO.
+        let fd = unsafe {
+            libc::open(
+                program.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(with_context(
+                io::Error::last_os_error(),
+                "open program for rexec",
+            ));
+        }
+        fd
+    };
+    if let Some((uid, gid)) = run_as {
+        // SAFETY: `libc::stat` is plain old data; `fstat` initializes it.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `src` is an open descriptor owned here.
+        if unsafe { libc::fstat(src, &mut st) } != 0 {
+            let e = io::Error::last_os_error();
+            // SAFETY: `src` is owned here.
+            unsafe { libc::close(src) };
+            return Err(with_context(e, "stat program for rexec"));
+        }
+        let mode = st.st_mode as u32;
+        if (mode & libc::S_IFMT) != libc::S_IFREG {
+            // SAFETY: `src` is owned here.
+            unsafe { libc::close(src) };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rexec target is not a regular file",
+            ));
+        }
+        if (mode & (libc::S_ISUID | libc::S_ISGID)) != 0 {
+            // SAFETY: `src` is owned here.
+            unsafe { libc::close(src) };
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "setuid/setgid binary is not staged under --rexec",
+            ));
+        }
+        if (mode & 0o111) == 0 || !mode_allows_exec(mode, st.st_uid, st.st_gid, uid, gid) {
+            // SAFETY: `src` is owned here.
+            unsafe { libc::close(src) };
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "program is not executable for target uid/gid",
+            ));
+        }
+    }
+    Ok(src)
+}
+
 /// Copy the file at `program` into a sealed image.
 pub fn prepare_path(program: &CStr, label: &str, opts: Options) -> io::Result<Image> {
-    // SAFETY: `program` is a valid NUL-terminated string.
-    let src = unsafe { libc::open(program.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-    if src < 0 {
-        return Err(with_context(
-            io::Error::last_os_error(),
-            "open program for rexec",
-        ));
-    }
+    let src = open_source_path(program, opts.run_as)?;
     if let Err(err) = check_elf_magic(src) {
         // SAFETY: the descriptor is ours.
         unsafe { libc::close(src) };
@@ -683,6 +907,8 @@ pub fn prepare_source(source: &Source, label: &str, opts: Options) -> io::Result
 /// - [`RexecMode::Memfd`]: sealed `memfd_create` carrier.
 /// - [`RexecMode::Path`]: private `0500` executable inside a `0700` staging
 ///   directory (no `/memfd:` fingerprint in `exe` or `maps`).
+/// - [`RexecMode::Tmpfile`]: unnamed `O_TMPFILE` executable on an executable
+///   mount (zero directory entry ever created on disk, zero `/memfd:` prefix).
 /// - [`RexecMode::Auto`]: prefers [`RexecMode::Path`] when an executable
 ///   staging directory is available, falling back to [`RexecMode::Memfd`]
 ///   when staging mounts are `noexec` or unavailable.
@@ -695,12 +921,110 @@ pub fn prepare_for_mode(
     match mode {
         RexecMode::Memfd => prepare_source(source, label, opts),
         RexecMode::Path => prepare_private_path(source, label, &opts),
+        RexecMode::Tmpfile => prepare_tmpfile(source, &opts),
         RexecMode::Auto => match prepare_private_path(source, label, &opts) {
             Ok(img) => Ok(img),
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => Err(e),
             Err(_) => prepare_source(source, label, opts),
         },
     }
+}
+
+/// Stage `source` into an unnamed `O_TMPFILE` inode on the first writable
+/// executable mount and reopen it `O_RDONLY | O_CLOEXEC` (closing the write fd
+/// so `execveat(AT_EMPTY_PATH)` never hits `ETXTBSY`).  No directory entry is
+/// ever linked on disk, so `SIGKILL` at any microsecond leaves zero files.
+pub fn prepare_tmpfile(source: &Source, opts: &Options) -> io::Result<Image> {
+    let mut last_err: Option<io::Error> = None;
+    let tmp_canon = if opts.avoid_tmp {
+        Some(std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp")))
+    } else {
+        None
+    };
+    let mut opened: Option<(PathBuf, RawFd)> = None;
+    for base in private_stage_bases() {
+        let dir = if let Some(ref tmp) = tmp_canon {
+            let Ok(canon) = std::fs::canonicalize(&base) else {
+                continue;
+            };
+            if canon == *tmp || canon.starts_with(tmp) {
+                continue;
+            }
+            canon
+        } else {
+            base
+        };
+        if !mount_allows_exec(&dir) {
+            continue;
+        }
+        let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
+            continue;
+        };
+        // SAFETY: `c` is a valid NUL-terminated directory path.
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+                0o700 as libc::mode_t,
+            )
+        };
+        if fd >= 0 {
+            opened = Some((dir, fd));
+            break;
+        }
+        last_err = Some(io::Error::last_os_error());
+    }
+    let (dir, dst) = opened.ok_or_else(|| {
+        last_err.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no writable executable directory supports O_TMPFILE",
+            )
+        })
+    })?;
+
+    let copy_res = match source {
+        Source::Path(p) => {
+            let src_c = CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in image path"))?;
+            match open_source_path(&src_c, opts.run_as) {
+                Ok(src) => {
+                    let r = check_elf_magic(src).and_then(|()| copy_into(src, dst));
+                    // SAFETY: `src` is owned here.
+                    unsafe { libc::close(src) };
+                    r
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Source::Fd(fd) => copy_elf_stream(*fd, dst),
+        Source::Stdin => copy_elf_stream(0, dst),
+    };
+    if let Err(e) = copy_res {
+        // SAFETY: `dst` is owned here.
+        unsafe { libc::close(dst) };
+        return Err(e);
+    }
+    // SAFETY: `dst` is owned here.
+    let chmod_rc = unsafe { libc::fchmod(dst, 0o500) };
+    if chmod_rc != 0 {
+        let e = io::Error::last_os_error();
+        unsafe { libc::close(dst) };
+        return Err(with_context(e, "chmod 0500 O_TMPFILE rexec image"));
+    }
+    let ro = reopen_readonly(dst, &None);
+    // SAFETY: close the writable descriptor so `execveat` never sees ETXTBSY.
+    unsafe { libc::close(dst) };
+    let ro = ro?;
+    Ok(Image {
+        fd: ro,
+        backing: Backing::TempFile { dir, named: false },
+        note: None,
+        path: None,
+        private_dir: None,
+        stamp: None,
+        reaper_fd: None,
+    })
 }
 
 /// Return `true` when `vm.memfd_noexec` is set (`>= 1`), meaning `execveat`
@@ -759,13 +1083,18 @@ fn private_stage_bases() -> Vec<PathBuf> {
 }
 
 /// Create a private `0700` staging directory under the first writable
-/// executable base directory.
+/// executable base directory, arming the carrier reaper **before** `mkdir` so
+/// `SIGKILL` at any nanosecond — even right after `mkdir` or mid-copy — cleans
+/// up both the staged file and its `.rt-*` directory.
 ///
 /// When `avoid_tmp` is set (the child will overmount `/tmp` with a private
 /// `tmpfs` before `execve`), candidate directories inside `/tmp` are skipped
 /// so the staged executable does not vanish with `ENOENT` in the child's mount
 /// namespace.
-fn create_private_stage_dir(avoid_tmp: bool) -> io::Result<PathBuf> {
+fn create_private_stage_dir_with_reaper(
+    avoid_tmp: bool,
+    file_name: &str,
+) -> io::Result<(PathBuf, PathBuf, Option<RawFd>, Option<String>)> {
     let mut last_err: Option<io::Error> = None;
     let tmp_canon = if avoid_tmp {
         Some(std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp")))
@@ -773,35 +1102,57 @@ fn create_private_stage_dir(avoid_tmp: bool) -> io::Result<PathBuf> {
         None
     };
     for base in private_stage_bases() {
-        let Ok(canon) = std::fs::canonicalize(&base) else {
-            continue;
-        };
-        if let Some(ref tmp) = tmp_canon {
+        let dir_base = if let Some(ref tmp) = tmp_canon {
+            let Ok(canon) = std::fs::canonicalize(&base) else {
+                continue;
+            };
             if canon == *tmp || canon.starts_with(tmp) {
                 continue;
             }
-        }
-        if !mount_allows_exec(&canon) {
-            continue;
-        }
-        let Ok(md) = std::fs::metadata(&canon) else {
-            continue;
+            canon
+        } else {
+            base
         };
-        if !md.is_dir() {
+        if !mount_allows_exec(&dir_base) {
             continue;
         }
         for _ in 0..16 {
-            let dir = canon.join(format!(".rt-{}", random_tag()));
+            let dir = dir_base.join(format!(".rt-{}", random_tag()));
+            let file_path = dir.join(file_name);
             let c = CString::new(dir.as_os_str().as_bytes())
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in staging path"))?;
+            // Validate file_path contains no NUL before spawning the reaper.
+            if file_path.as_os_str().as_bytes().contains(&0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "NUL in staging path",
+                ));
+            }
+            // Arm the carrier reaper BEFORE `mkdir` so even a `SIGKILL` right
+            // after `mkdir` or mid-`copy_into` never leaves `.rt-*` on disk.
+            let (reaper_fd, note) = match spawn_carrier_reaper(&file_path, Some(&dir)) {
+                Ok(wr) => (Some(wr), None),
+                Err(e) => (
+                    None,
+                    Some(format!(
+                        "private-path carrier reaper could not be started ({}); {} may remain after SIGKILL",
+                        e,
+                        dir.display()
+                    )),
+                ),
+            };
             // SAFETY: `c` is a valid NUL-terminated path.
             if unsafe { libc::mkdir(c.as_ptr(), 0o700) } == 0 {
                 // Override process umask so the directory is strictly 0700.
                 // SAFETY: `c` is the directory we just created.
                 unsafe { libc::chmod(c.as_ptr(), 0o700) };
-                return Ok(dir);
+                return Ok((dir, file_path, reaper_fd, note));
             }
             let e = io::Error::last_os_error();
+            if let Some(wr) = reaper_fd {
+                // SAFETY: `wr` is our owned pipe write-end; closing it exits the unused reaper.
+                unsafe { libc::close(wr) };
+            }
             if e.raw_os_error() == Some(libc::EEXIST) {
                 continue;
             }
@@ -823,13 +1174,21 @@ pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io:
     let image_name = opts.image_name(label);
     crate::mem::validate_memfd_name(&image_name)?;
     let file_name = sanitize_path_filename(&image_name);
-    // Create the staging dir BEFORE consuming any non-seekable source so
-    // `RexecMode::Auto` can fall back cleanly to `Memfd` if mounts are noexec
-    // or if `avoid_tmp` skips `/tmp` and no other executable mount exists.
-    let dir = create_private_stage_dir(opts.avoid_tmp)?;
-    let file_path = dir.join(&file_name);
+    // Create the staging dir (with carrier reaper armed before `mkdir`) BEFORE
+    // consuming any non-seekable source so `RexecMode::Auto` can fall back
+    // cleanly to `Memfd` if mounts are noexec or if `avoid_tmp` skips `/tmp`
+    // and no other executable mount exists.
+    let (dir, file_path, reaper_fd, note) =
+        create_private_stage_dir_with_reaper(opts.avoid_tmp, &file_name)?;
+    let close_reaper = |fd: Option<RawFd>| {
+        if let Some(wr) = fd {
+            // SAFETY: `wr` is owned here until moved into `Image`.
+            unsafe { libc::close(wr) };
+        }
+    };
     let file_c = CString::new(file_path.as_os_str().as_bytes()).map_err(|_| {
         let _ = std::fs::remove_dir(&dir);
+        close_reaper(reaper_fd);
         io::Error::new(io::ErrorKind::InvalidInput, "NUL in staging path")
     })?;
 
@@ -845,6 +1204,7 @@ pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io:
     if dst < 0 {
         let e = io::Error::last_os_error();
         let _ = std::fs::remove_dir(&dir);
+        close_reaper(reaper_fd);
         return Err(with_context(e, "create private rexec image"));
     }
 
@@ -852,18 +1212,14 @@ pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io:
         Source::Path(p) => {
             let src_c = CString::new(p.as_os_str().as_bytes())
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in image path"))?;
-            // SAFETY: `src_c` is a valid NUL-terminated path.
-            let src = unsafe { libc::open(src_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-            if src < 0 {
-                Err(with_context(
-                    io::Error::last_os_error(),
-                    "open program for rexec",
-                ))
-            } else {
-                let r = check_elf_magic(src).and_then(|()| copy_into(src, dst));
-                // SAFETY: `src` is owned here.
-                unsafe { libc::close(src) };
-                r
+            match open_source_path(&src_c, opts.run_as) {
+                Ok(src) => {
+                    let r = check_elf_magic(src).and_then(|()| copy_into(src, dst));
+                    // SAFETY: `src` is owned here.
+                    unsafe { libc::close(src) };
+                    r
+                }
+                Err(e) => Err(e),
             }
         }
         Source::Fd(fd) => copy_elf_stream(*fd, dst),
@@ -875,6 +1231,7 @@ pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io:
         unsafe { libc::close(dst) };
         let _ = std::fs::remove_file(&file_path);
         let _ = std::fs::remove_dir(&dir);
+        close_reaper(reaper_fd);
         return Err(e);
     }
 
@@ -888,17 +1245,18 @@ pub fn prepare_private_path(source: &Source, label: &str, opts: &Options) -> io:
         let e = io::Error::last_os_error();
         let _ = std::fs::remove_file(&file_path);
         let _ = std::fs::remove_dir(&dir);
+        close_reaper(reaper_fd);
         return Err(with_context(e, "chmod 0500 private rexec image"));
     }
 
     Ok(Image {
         fd: -1,
         backing: Backing::PrivatePath { dir: dir.clone() },
-        note: None,
+        note,
         path: Some(file_path),
         private_dir: Some(dir),
         stamp: None,
-        reaper_fd: None,
+        reaper_fd,
     })
 }
 
@@ -1464,7 +1822,7 @@ fn fill_temp(
         // be mistaken for the payload by the session's `waitpid(-1)`.
         // `img.reaper_fd` owns the write end so dropping `img` closes it
         // and terminates the reaper cleanly.
-        match spawn_carrier_reaper(p) {
+        match spawn_carrier_reaper(p, None) {
             Ok(wr) => img.reaper_fd = Some(wr),
             Err(e) => {
                 let msg = format!(
@@ -1483,15 +1841,17 @@ fn fill_temp(
     Ok(img)
 }
 
-/// Unlink `path` when the supervisor's pipe closes.
+/// Unlink `path` (and remove optional `dir` via `rmdir`) when the supervisor's
+/// pipe closes.
 ///
 /// The intermediate child exits immediately; the grandchild is
 /// reparented to init and holds the read end.  The caller stores the
-/// returned write end (close-on-exec) on `Image`, so dropping `Image`,
-/// `SIGKILL`, or an abort closes it and the reaper removes the carrier
-/// and exits.  A clean session removes the file first and the reaper's
-/// `unlink` is a harmless `ENOENT`.
-fn spawn_carrier_reaper(path: &Path) -> io::Result<RawFd> {
+/// returned write end (close-on-exec) on `Image` (or transfers it to `Tracer`),
+/// so dropping `Image`, `SIGKILL`, or an abort closes it and the reaper removes
+/// the carrier (and its private staging directory, if any) and exits.  A clean
+/// session removes the file first and the reaper's `unlink`/`rmdir` are
+/// harmless `ENOENT`s.
+fn spawn_carrier_reaper(path: &Path, dir: Option<&Path>) -> io::Result<RawFd> {
     // Unified Linux syscall number for `close_range` (Linux >= 5.9) across
     // x86_64, aarch64 and i386.
     const SYS_CLOSE_RANGE: libc::c_long = 436;
@@ -1504,6 +1864,14 @@ fn spawn_carrier_reaper(path: &Path) -> io::Result<RawFd> {
     let (rd, wr) = (fds[0], fds[1]);
     let mut bytes = path.as_os_str().as_bytes().to_vec();
     bytes.push(0);
+    let dir_bytes: Option<Vec<u8>> = dir.map(|d| {
+        let mut v = d.as_os_str().as_bytes().to_vec();
+        v.push(0);
+        v
+    });
+    let dir_ptr: *const libc::c_char = dir_bytes
+        .as_ref()
+        .map_or(std::ptr::null(), |v| v.as_ptr().cast());
     // SAFETY: the child only calls async-signal-safe syscalls.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -1588,9 +1956,13 @@ fn spawn_carrier_reaper(path: &Path) -> io::Result<RawFd> {
                 }
             }
             libc::unlink(bytes.as_ptr().cast());
+            if !dir_ptr.is_null() {
+                libc::rmdir(dir_ptr);
+            }
             libc::_exit(0);
         }
     }
+    drop(dir_bytes);
     unsafe { libc::close(rd) };
     let mut status = 0i32;
     loop {
@@ -1649,51 +2021,20 @@ fn temp_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// True when the mount that holds `dir` allows execution and is writable.
+/// True when `dir` exists and the mount holding it allows execution and writes.
+///
+/// Uses a single `statvfs(2)` syscall (checking `ST_NOEXEC | ST_RDONLY`)
+/// instead of reading and parsing `/proc/self/mounts`.
 fn mount_allows_exec(dir: &Path) -> bool {
-    let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
-        return true;
+    let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
     };
-    let mut best: Option<(usize, bool)> = None;
-    for line in mounts.lines() {
-        let mut f = line.split_whitespace();
-        let _source = f.next();
-        let Some(mp) = f.next() else { continue };
-        let Some(opts) = f.nth(1) else { continue }; // fstype is next
-        let mp = unescape_mount(mp);
-        if !dir.starts_with(&mp) {
-            continue;
-        }
-        let noexec = opts.split(',').any(|o| o == "noexec");
-        let ro = opts.split(',').any(|o| o == "ro");
-        let bad = noexec || ro;
-        match best {
-            Some((len, _)) if len >= mp.as_os_str().len() => {}
-            _ => best = Some((mp.as_os_str().len(), bad)),
-        }
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a NUL-terminated path and `st` is owned output storage.
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return false;
     }
-    !best.map(|(_, bad)| bad).unwrap_or(false)
-}
-
-/// Decode the octal escapes `/proc/self/mounts` uses for spaces and tabs.
-fn unescape_mount(s: &str) -> PathBuf {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'\\' && i + 3 < b.len() {
-            let oct = &b[i + 1..i + 4];
-            if oct.iter().all(|c| (b'0'..=b'7').contains(c)) {
-                let v = (oct[0] - b'0') * 64 + (oct[1] - b'0') * 8 + (oct[2] - b'0');
-                out.push(v);
-                i += 4;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    PathBuf::from(OsStr::from_bytes(&out))
+    (st.f_flag & (libc::ST_NOEXEC | libc::ST_RDONLY)) == 0
 }
 
 /// Pick the first candidate directory whose mount allows execution.
@@ -1723,17 +2064,19 @@ fn choose_temp_dir() -> io::Result<PathBuf> {
 /// A per-carrier 32-bit tag, used to make the temporary-file name unique
 /// across runs of the same pid and label.
 ///
-/// `/dev/urandom` when it can be read; otherwise the clock and the pid,
-/// which is weaker but still distinguishes two carriers of one session
-/// (`O_EXCL` remains the authority on the name).
+/// Uses `getrandom(2)` (1 syscall, no `/dev/urandom` open); falls back to
+/// the clock and pid if `getrandom` is unavailable (`O_EXCL` remains the
+/// authority on the name).
 fn random_tag() -> String {
     let mut bytes = [0u8; 4];
-    let got = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| {
-            use std::io::Read;
-            f.read_exact(&mut bytes)
-        })
-        .is_ok();
+    // SAFETY: `bytes` is a valid writable 4-byte buffer.
+    let got = unsafe {
+        libc::getrandom(
+            bytes.as_mut_ptr() as *mut libc::c_void,
+            bytes.len(),
+            libc::GRND_NONBLOCK,
+        )
+    } == 4;
     let v = if got {
         u32::from_le_bytes(bytes)
     } else {
@@ -1934,6 +2277,7 @@ mod tests {
             hugetlb: false,
             memfd_name: Some("image-1a2b3c4d".to_string()),
             avoid_tmp: false,
+            run_as: None,
         };
         let image = match prepare_path(&path, "the label", opts) {
             Ok(i) => i,
@@ -1977,6 +2321,7 @@ mod tests {
             hugetlb: false,
             memfd_name: Some("a/b".to_string()),
             avoid_tmp: false,
+            run_as: None,
         };
         let err =
             prepare_path(&path, "label", opts).expect_err("a slash in the memfd name was accepted");
@@ -2147,7 +2492,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         let target = dir.join("carrier");
         std::fs::write(&target, b"carrier-bytes").expect("write");
-        let wr = spawn_carrier_reaper(&target).expect("spawn reaper");
+        let wr = spawn_carrier_reaper(&target, None).expect("spawn reaper");
         // Keep `path: None` on the synthetic Image so `Image::drop` does NOT
         // unlink `target` itself; only closing `reaper_fd` can cause the
         // reaper to wake up, unlink `target`, and exit.
@@ -2380,5 +2725,54 @@ mod tests {
             }
             Err(e) => panic!("unexpected prepare_private_path(avoid_tmp) error: {}", e),
         }
+    }
+
+    #[test]
+    fn private_path_reaper_cleans_file_and_dir_on_fd_close() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let src = Source::Path(exe.as_os_str().to_os_string());
+        let mut img = match prepare_private_path(&src, "reaper-worker", &Options::default()) {
+            Ok(i) => i,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                eprintln!("skip: no executable staging mount: {}", e);
+                return;
+            }
+            Err(e) => panic!("prepare_private_path failed: {}", e),
+        };
+        img.attach_reaper().expect("attach_reaper");
+        let path = img.path.take().expect("path set");
+        let dir = img.private_dir.take().expect("private_dir set");
+        let reaper_fd = img.take_reaper_fd().expect("reaper_fd set");
+        // Drop `img` with `path`, `private_dir`, and `reaper_fd` cleared so
+        // `Image::drop` cannot clean anything up itself; only closing
+        // `reaper_fd` triggers the reaper.
+        drop(img);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            path.exists(),
+            "reaper unlinked staged file while reaper_fd was open"
+        );
+        assert!(
+            dir.exists(),
+            "reaper removed staging dir while reaper_fd was open"
+        );
+        // SAFETY: `reaper_fd` is owned here.
+        unsafe { libc::close(reaper_fd) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (path.exists() || dir.exists()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let file_left = path.exists();
+        let dir_left = dir.exists();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        assert!(
+            !file_left,
+            "reaper did not unlink staged file after reaper_fd close"
+        );
+        assert!(
+            !dir_left,
+            "reaper did not remove .rt-* dir after reaper_fd close"
+        );
     }
 }

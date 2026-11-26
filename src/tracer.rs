@@ -117,6 +117,25 @@ pub struct Config {
     /// Pids of every live tracee, kept current by the tracer so the
     /// owner of the session can kill the whole tree from outside.
     pub tree: TreeRegistry,
+    /// Staged `RexecMode::Path` `(file, dir)` to unlink immediately after the
+    /// master's first `PTRACE_EVENT_EXEC` so `SIGKILL` leaves zero `.rt-*`
+    /// directories on disk.
+    pub staged_private_path: Option<(std::ffi::CString, std::ffi::CString)>,
+    /// Write end of the `RexecMode::Path` carrier reaper pipe; closed as soon as
+    /// `unlink_staged_private_path` removes the staged file and directory so
+    /// the reaper exits without lingering while the payload runs.
+    pub staged_reaper_fd: Option<RawFd>,
+    /// Effective uid of the supervised payload (`run_as` uid when configured,
+    /// otherwise the supervisor's euid), used to select root vs non-root
+    /// decoy environment entries (`HOME=/root` vs `HOME=/tmp`).
+    pub target_uid: libc::uid_t,
+    /// True when the staged `RexecMode::Path` basename already equals
+    /// `label_comm` so kernel `execve` sets `comm` without an injected
+    /// `PR_SET_NAME` syscall.
+    pub skip_comm_prctl: bool,
+    /// True when the launcher already set `RLIMIT_CORE = 0` before `execve`
+    /// (`--profile single`), avoiding a redundant `prlimit(2)` call.
+    pub core_limit_applied: bool,
 }
 
 /// Shared set of live tracee pids.
@@ -305,6 +324,13 @@ pub struct Tracee {
     /// tracer, which turned the natural flag pair into a silent leak
     /// (issue 60).
     pub rename_addr: u64,
+    /// True when `rename_addr` points to a dedicated `PROT_READ` page written
+    /// by the tracer before `PR_SET_DUMPABLE=0`.
+    pub rename_addr_ro: bool,
+    /// True when `on_exec_entry` temporarily set `PR_SET_DUMPABLE=1` at an
+    /// `execve`/`execveat` entry stop so an unprivileged tracer can perform
+    /// zero-exposure entry swapping for a non-dumpable descendant.
+    pub temp_dumpable: bool,
     /// Cached address of a `syscall` / `svc #0` instruction in this tracee's
     /// current address space, captured at exec completion while the tracee
     /// is still dumpable and inherited across fork/vfork/clone.  Allows
@@ -337,6 +363,8 @@ impl Tracee {
             vfork_child: false,
             rexec_image: None,
             rename_addr: 0,
+            rename_addr_ro: false,
+            temp_dumpable: false,
             syscall_site: None,
         }
     }
@@ -445,6 +473,7 @@ pub struct Tracer {
 
 impl Drop for Tracer {
     fn drop(&mut self) {
+        self.unlink_staged_private_path();
         if self.rexec_report_fd >= 0 {
             // SAFETY: the descriptor is owned by this session.
             unsafe { libc::close(self.rexec_report_fd) };
@@ -699,31 +728,74 @@ impl Tracer {
         }
     }
 
-    /// Register the single target process for `--profile single` supervision.
-    pub(crate) fn register_single(&mut self, pid: libc::pid_t) {
+    /// Register the single target process in `State::Swapped` with real
+    /// `argv`/`envp` preloaded directly from `Prepared` (zero entry-stop path).
+    pub(crate) fn register_single_swapped(
+        &mut self,
+        pid: libc::pid_t,
+        argv: Vec<Vec<u8>>,
+        envp: Vec<Vec<u8>>,
+        env_swapped: bool,
+    ) {
         self.master = pid;
-        self.register(pid, Tracee::new(State::Slow));
+        let mut t = Tracee::new(State::Swapped);
+        t.argv = Some(argv);
+        t.envp = Some(envp);
+        t.env_swapped = env_swapped;
+        self.register(pid, t);
     }
 
-    /// Current exec-lifecycle state of `pid`, when registered.
-    pub(crate) fn tracee_state(&self, pid: libc::pid_t) -> Option<State> {
-        self.table.get(&pid).map(|t| t.state)
+    /// Register the single target process in `State::Script` (for `#!` scripts
+    /// or non-ELF targets whose real argv must be read after exec).
+    pub(crate) fn register_single_script(&mut self, pid: libc::pid_t) {
+        self.master = pid;
+        self.register(pid, Tracee::new(State::Script));
     }
 
-    /// Clear state after a failed exec in `--profile single`.
-    pub(crate) fn clear_failed_exec_single(&mut self, pid: libc::pid_t) {
-        self.restore_orig_arrays(pid);
-        let sealed = self
-            .table
-            .get(&pid)
-            .map(|t| t.sealed_argv.is_some() as u32 + t.sealed_envp.is_some() as u32)
-            .unwrap_or(0);
-        if let Some(t) = self.table.get_mut(&pid) {
-            t.clear_exec_state();
+    /// Register the single target process in `State::Foreign` (for 32-bit
+    /// binaries allowed via `--allow-foreign`).
+    pub(crate) fn register_single_foreign(&mut self, pid: libc::pid_t) {
+        self.master = pid;
+        self.register(pid, Tracee::new(State::Foreign));
+    }
+
+    /// Unlink any staged `RexecMode::Path` binary and remove its private
+    /// `0700` staging directory immediately once the kernel has mapped it.
+    pub(crate) fn unlink_staged_private_path(&mut self) {
+        if let Some((file_c, dir_c)) = self.cfg.staged_private_path.take() {
+            // SAFETY: valid NUL-terminated paths owned by this session.
+            unsafe {
+                libc::unlink(file_c.as_ptr());
+                libc::rmdir(dir_c.as_ptr());
+            }
         }
-        self.stats.sealed = self.stats.sealed.saturating_sub(sealed);
-        self.set_pending(pid, false);
-        self.set_state(pid, State::Slow);
+        if let Some(wr) = self.cfg.staged_reaper_fd.take() {
+            if wr >= 0 {
+                // SAFETY: closing our owned reaper pipe write end signals the
+                // reaper to exit immediately without lingering.
+                unsafe {
+                    libc::close(wr);
+                }
+            }
+        }
+    }
+
+    /// Terminate a tracee whose exec was refused (`SIGKILL`) and release it
+    /// from its ptrace stop without emitting a spurious `ESRCH` warning if the
+    /// kernel already tore down the task before `PTRACE_CONT` ran.
+    pub(super) fn kill_refused_tracee(&mut self, pid: libc::pid_t) {
+        // SAFETY: plain kill(2) of a tracee owned by this session.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        if let Err(e) = inject::ptrace_cont(pid, 0) {
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                self.warn(format_args!(
+                    "pid {}: resume after SIGKILL failed: {}",
+                    pid, e
+                ));
+            }
+        }
     }
 
     fn unregister(&mut self, pid: libc::pid_t) {
@@ -2055,10 +2127,8 @@ impl Tracer {
                                      are unreadable; the payload is killed and the run stops",
                                     pid
                                 ));
-                                // SAFETY: plain kill(2) of a stopped tracee.
-                                unsafe { libc::kill(pid, libc::SIGKILL) };
                                 self.set_state(pid, State::Script);
-                                self.resume(pid, 0, false);
+                                self.kill_refused_tracee(pid);
                             } else {
                                 self.set_state(pid, State::Script);
                                 self.resume(pid, 0, true);
@@ -2098,13 +2168,27 @@ impl Tracer {
     fn redirect_rename(&mut self, pid: libc::pid_t, si: &SyscallInfo) {
         let Ok(mut regs) = Regs::get(pid) else { return };
         let n = self.cfg.label_comm.len().min(15);
-        let block_addr = self
+        let (block_addr, block_ro) = self
             .table
             .get(&pid)
-            .map(|t| t.rename_addr)
-            .filter(|a| *a != 0);
+            .map(|t| {
+                let addr = if t.rename_addr != 0 {
+                    Some(t.rename_addr)
+                } else {
+                    None
+                };
+                (addr, t.rename_addr_ro)
+            })
+            .unwrap_or((None, false));
         let target = match block_addr {
             Some(a) if self.block_holds_label(pid, a, n) => a,
+            // Under `--no-dumpable`, an unprivileged tracer cannot read tracee
+            // memory (`PTRACE_PEEKDATA` returns `EIO`), so `block_holds_label`
+            // cannot re-read the label.  When we placed the label on a
+            // dedicated `PROT_READ` page before `PR_SET_DUMPABLE=0`, redirect
+            // directly to `a` (if the payload unmapped it, the kernel returns
+            // `EFAULT` and `comm` still stays pinned to the label).
+            Some(a) if self.cfg.no_dumpable && block_ro => a,
             _ => {
                 let mut buf = [0u8; 16];
                 buf[..n].copy_from_slice(&self.cfg.label_comm[..n]);
@@ -2194,11 +2278,7 @@ impl Tracer {
                     "pid {}: a later exec of a tracee that already ran a 32-bit image is refused; the 64-bit tracer cannot redact it; the exec is killed",
                     pid
                 ));
-                // SAFETY: plain kill(2) of a stopped tracee.
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
-                self.resume(pid, 0, false);
+                self.kill_refused_tracee(pid);
                 return;
             }
             if class != ExecClass::NotExec && no_redact {
@@ -2234,10 +2314,8 @@ impl Tracer {
                          the payload is killed and the run stops",
                         pid
                     ));
-                    // SAFETY: plain kill(2) of a stopped tracee.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
                     self.set_state(pid, State::Foreign);
-                    self.resume(pid, 0, false);
+                    self.kill_refused_tracee(pid);
                     return;
                 }
                 self.set_state(pid, State::Script);
@@ -2254,10 +2332,8 @@ impl Tracer {
                                  are unreadable; the payload is killed and the run stops",
                                 pid
                             ));
-                            // SAFETY: plain kill(2) of a stopped tracee.
-                            unsafe { libc::kill(pid, libc::SIGKILL) };
                             self.set_state(pid, State::Script);
-                            self.resume(pid, 0, false);
+                            self.kill_refused_tracee(pid);
                         } else {
                             self.set_state(pid, State::Script);
                             self.resume(pid, 0, true);
@@ -2279,6 +2355,40 @@ impl Tracer {
                     // any sealed count and pending_plaintext marker, and keep
                     // the process syscall-supervised until an exec settles.
                     self.restore_orig_arrays(pid);
+                    let was_temp_dumpable = self
+                        .table
+                        .get_mut(&pid)
+                        .map(|t| std::mem::take(&mut t.temp_dumpable))
+                        .unwrap_or(false);
+                    if was_temp_dumpable && self.cfg.no_dumpable {
+                        // The exec failed after we temporarily set
+                        // `PR_SET_DUMPABLE=1` for the entry swap: re-apply
+                        // `PR_SET_DUMPABLE=0` before resuming userspace so the
+                        // tracee never executes user code while dumpable.
+                        if let Ok(exit_regs) = Regs::get(pid) {
+                            let site = self
+                                .table
+                                .get(&pid)
+                                .and_then(|t| t.syscall_site)
+                                .unwrap_or(0);
+                            if site != 0 {
+                                let mut pending_stop = None;
+                                let _ = inject::run_remote_syscall_fast(
+                                    pid,
+                                    &exit_regs,
+                                    arch::SYS_PRCTL,
+                                    [libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+                                    site,
+                                    &mut pending_stop,
+                                );
+                                let _ = exit_regs.put(pid);
+                                if let Some(psig) = pending_stop {
+                                    // SAFETY: re-raise group-stop signal.
+                                    unsafe { libc::kill(pid, psig) };
+                                }
+                            }
+                        }
+                    }
                     let sealed = self
                         .table
                         .get(&pid)

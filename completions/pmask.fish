@@ -4,14 +4,14 @@ complete -c pmask -l profile -d 'Select execution and stealth profile' -x -a 'au
 complete -c pmask -l auto -d 'Alias for --profile auto (the default)'
 complete -c pmask -l follow -d 'Follow and redact all descendants (tree mode)'
 complete -c pmask -l no-rexec -d 'Opt out of profile-default --rexec image staging'
-complete -c pmask -l rexec-mode -d 'Image carrier for --rexec' -x -a 'auto path memfd'
+complete -c pmask -l rexec-mode -d 'Image carrier for --rexec' -x -a 'auto path tmpfile memfd'
 complete -c pmask -l cwd -d 'Change child working directory after resolving COMMAND' -r
 complete -c pmask -l parent-label -d 'Separate presentation label for tree-mode supervisor' -x
 complete -c pmask -l reparent -d 'Double-fork masked payload to PID 1 in single profile'
 complete -c pmask -l allow-impersonation -d 'Allow kernel-thread [...] or critical-service labels'
 complete -c pmask -l secret-fd -d 'Keep caller fd open across exec and export PMASK_SECRET_*' -x
 complete -c pmask -l explain -d 'Print observer, capabilities, tradeoffs, and residuals'
-complete -c pmask -l profile-json -d 'Emit versioned pmask-profile/1 JSON contract'
+complete -c pmask -l profile-json -d 'Emit native psgen schema: 2 profile JSON'
 complete -c pmask -l pid -d 'Target PID for standalone --audit or --profile-json' -x
 complete -c pmask -l observer -d 'Observer perspective for --audit' -x -a 'same-uid other-uid'
 complete -c pmask -l json -d 'Emit JSON output for --audit, --explain, or --profile-json'
@@ -70,6 +70,7 @@ complete -c pmask -s q -l quiet -d 'Suppress diagnostics'
 complete -c pmask -s v -l verbose -d 'Trace every event'
 complete -c pmask -s V -l version -d 'Print version'
 complete -c pmask -s h -l help -d 'Print help (--help=all for full reference)'
+complete -c pmask -l help-all -d 'Print complete flag reference'
 complete -c pmask -s a -d 'Alias for --label' -x
 complete -c pmask -s E -d 'Alias for --keep-env'
 complete -c pmask -s F -d 'Alias for --no-follow'

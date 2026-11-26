@@ -23,7 +23,7 @@ ALPINE_BASE="https://dl-cdn.alpinelinux.org/alpine"
 BB_REPO="v3.22/main"
 BB_APK_VERSION="busybox-static-1.37.0-r20.apk"
 KERNEL_REPO="v3.22/main"
-KERNEL_APK_VERSION="linux-virt-6.12.118-r0.apk"
+KERNEL_APK_VERSION="linux-virt-6.12.119-r0.apk"
 
 # Old-kernel boot (x86_64 only): Alpine v3.17 ships linux-virt 5.15.x.
 OLD_KERNEL_REPO="v3.17/main"
@@ -37,7 +37,7 @@ case "$ARCH" in
         CONSOLE=ttyS0
         ALPINE_ARCH=x86_64
         MUSL_TARGET=x86_64-unknown-linux-musl
-        KERNEL_SHA256="69e52c96189223c8f6c3e8409fd90ec918101055adcc491b069a7861f34c1a49"
+        KERNEL_SHA256="e38b6ba4c80d4c99f1130418154d8d4dd02d9adc1fbb9eaeae330e8430de8875"
         BB_SHA256="488ad6efd04b5a722719e79f8e0dcc2c24afd6758867af3ce41b04839e60c74b"
         VM_TIMEOUT="${VM_TIMEOUT:-2400}"
         ;;
@@ -51,7 +51,7 @@ case "$ARCH" in
         CONSOLE=ttyAMA0
         ALPINE_ARCH=aarch64
         MUSL_TARGET=aarch64-unknown-linux-musl
-        KERNEL_SHA256="a78f4198dbdfa84a342f0146d9b8509ec89b76b760b6830a4374b98aead53949"
+        KERNEL_SHA256="fd99135b2f9a75edfa1947a3eb51c41f1b3d5674d98404a764fdafdd7796dcab"
         BB_SHA256="ee469aee2958feffd7f64dd96655704025ff60af614f77a1d7323dc237c34da2"
         VM_TIMEOUT="${VM_TIMEOUT:-7200}"
         ;;

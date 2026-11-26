@@ -82,9 +82,8 @@ fn scan_region(pid: libc::pid_t, base: u64, len: u64) -> Option<u64> {
     None
 }
 
-/// vDSO base from `/proc/<pid>/auxv` (`AT_SYSINFO_EHDR`).
-fn vdso_base_from_auxv(pid: libc::pid_t) -> Option<u64> {
-    let data = std::fs::read(format!("/proc/{}/auxv", pid)).ok()?;
+/// vDSO base from raw `/proc/<pid>/auxv` bytes (`AT_SYSINFO_EHDR`).
+fn vdso_base_from_auxv_bytes(data: &[u8]) -> Option<u64> {
     for pair in data.chunks_exact(16) {
         let mut k = [0u8; 8];
         let mut v = [0u8; 8];
@@ -102,6 +101,75 @@ fn vdso_base_from_auxv(pid: libc::pid_t) -> Option<u64> {
     None
 }
 
+/// vDSO base from `/proc/<pid>/auxv` (`AT_SYSINFO_EHDR`).
+fn vdso_base_from_auxv(pid: libc::pid_t) -> Option<u64> {
+    let data = std::fs::read(format!("/proc/{}/auxv", pid)).ok()?;
+    vdso_base_from_auxv_bytes(&data)
+}
+
+/// Cached byte offset of a native `syscall`/`svc #0` instruction inside this
+/// kernel's vDSO, computed once in-process from `/proc/self/auxv` and
+/// `/proc/self/maps` without `process_vm_readv`.
+fn self_vdso_syscall_offset() -> Option<u64> {
+    static OFFSET: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            None
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            let auxv = std::fs::read("/proc/self/auxv").ok()?;
+            let vdso = vdso_base_from_auxv_bytes(&auxv)?;
+            if vdso == 0 {
+                return None;
+            }
+            // Confirm the exact mapped length of our own `r-x` vDSO VMA from
+            // `/proc/self/maps` so the in-process scan never reads past its end.
+            let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+            let mut vdso_len = 0usize;
+            for line in maps.lines() {
+                let mut it = line.split_whitespace();
+                let Some(range) = it.next() else {
+                    continue;
+                };
+                let Some(perms) = it.next() else {
+                    continue;
+                };
+                if !perms.starts_with("r-x") {
+                    continue;
+                }
+                let Some((lo, hi)) = range.split_once('-') else {
+                    continue;
+                };
+                let Ok(lo) = u64::from_str_radix(lo, 16) else {
+                    continue;
+                };
+                let Ok(hi) = u64::from_str_radix(hi, 16) else {
+                    continue;
+                };
+                if lo == vdso && hi > lo {
+                    vdso_len = ((hi - lo).min(64 * 1024)) as usize;
+                    break;
+                }
+            }
+            if vdso_len < PAT.len() {
+                return None;
+            }
+            // SAFETY: `[vdso, vdso + vdso_len)` is our own immutable `r-x` vDSO
+            // mapping confirmed present in `/proc/self/maps`.
+            let bytes = unsafe { std::slice::from_raw_parts(vdso as *const u8, vdso_len) };
+            for i in 0..=(bytes.len() - PAT.len()) {
+                let addr = vdso + i as u64;
+                if aligned(addr) && bytes[i..i + PAT.len()] == PAT {
+                    return Some(i as u64);
+                }
+            }
+            None
+        }
+    })
+}
+
 /// Find the address of a `syscall` (x86-64) / `svc #0` (aarch64)
 /// instruction in the tracee.
 ///
@@ -115,8 +183,21 @@ fn vdso_base_from_auxv(pid: libc::pid_t) -> Option<u64> {
 /// fallback, so the caller's "no syscall instruction" failure path is
 /// reachable.  Production never sets it.
 pub fn find_syscall_site(pid: libc::pid_t, auxv_addr: Option<u64>, skip_vdso: bool) -> Option<u64> {
+    find_syscall_site_with_auxv(pid, None, auxv_addr, skip_vdso)
+}
+
+/// Like [`find_syscall_site`], reusing already-read `/proc/<pid>/auxv` bytes
+/// when provided so exec completion only reads `/proc/<pid>/auxv` once.
+pub fn find_syscall_site_with_auxv(
+    pid: libc::pid_t,
+    auxv_bytes: Option<&[u8]>,
+    auxv_addr: Option<u64>,
+    skip_vdso: bool,
+) -> Option<u64> {
     let mut vdso = if skip_vdso {
         0
+    } else if let Some(raw) = auxv_bytes {
+        vdso_base_from_auxv_bytes(raw).unwrap_or(0)
     } else {
         vdso_base_from_auxv(pid).unwrap_or(0)
     };
@@ -136,6 +217,17 @@ pub fn find_syscall_site(pid: libc::pid_t, auxv_addr: Option<u64>, skip_vdso: bo
         }
     }
     if vdso != 0 {
+        if let Some(off) = self_vdso_syscall_offset() {
+            let cand = vdso.wrapping_add(off);
+            if aligned(cand) {
+                let mut probe = [0u8; PAT.len()];
+                if crate::remote::read_mem(pid, cand, &mut probe) == PAT.len() as isize
+                    && probe == PAT
+                {
+                    return Some(cand);
+                }
+            }
+        }
         if let Some(a) = scan_region(pid, vdso, 64 * 1024) {
             return Some(a);
         }
@@ -260,6 +352,120 @@ pub fn run_remote_syscall(
     }
 }
 
+/// Run one system call in the tracee via a single-stop `PTRACE_SINGLESTEP`
+/// over the verified `syscall` instruction on x86-64, cutting ptrace stops
+/// and `waitpid` round-trips in half with zero W^X or extra mappings.
+///
+/// Falls back cleanly to [`run_remote_syscall`] (`PTRACE_SYSCALL`) if
+/// `PTRACE_SINGLESTEP` is unavailable, on non-x86-64 architectures, or if
+/// an unexpected stop occurs.
+pub fn run_remote_syscall_fast(
+    pid: libc::pid_t,
+    orig: &Regs,
+    nr: u64,
+    args: [u64; 6],
+    site: u64,
+    pending_stop: &mut Option<i32>,
+) -> Result<i64, InjectError> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut r = *orig;
+        r.set_syscall(nr, args);
+        r.set_ip(site);
+        r.put(pid)?;
+        if ptrace_singlestep(pid, 0).is_err() {
+            return run_remote_syscall(pid, orig, nr, args, site, pending_stop);
+        }
+        loop {
+            let (pid_w, status) = wait_stop(pid)?;
+            debug_assert_eq!(pid_w, pid);
+            if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                return Err(InjectError::TraceeDied);
+            }
+            if !libc::WIFSTOPPED(status) {
+                continue;
+            }
+            let sig = libc::WSTOPSIG(status);
+            let event = (status as u32) >> 16;
+            if sig == libc::SIGTRAP && event == 0 {
+                let t = Regs::get(pid)?;
+                if t.ip() == site.wrapping_add(PAT.len() as u64) {
+                    return Ok(t.retval());
+                }
+                if t.ip() == site {
+                    // Pending exec exit stop before executing `site`: safe to
+                    // fall back because the syscall has not executed yet.
+                    return run_remote_syscall(pid, orig, nr, args, site, pending_stop);
+                }
+                // Do not blindly re-execute a potentially non-idempotent
+                // syscall when singlestep landed at an unexpected RIP.
+                let _ = orig.put(pid);
+                return Err(InjectError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unexpected rip after singlestep",
+                )));
+            }
+            if event == arch::PTRACE_EVENT_STOP {
+                if sig != libc::SIGTRAP {
+                    *pending_stop = Some(sig);
+                }
+                ptrace_singlestep(pid, 0)?;
+                continue;
+            }
+            if event != 0 {
+                // Other ptrace event (e.g. a seccomp RET_TRACE stop for our
+                // own injected `prctl`): continue the single-step.
+                ptrace_singlestep(pid, 0)?;
+                continue;
+            }
+            if sig == libc::SIGTRAP | 0x80 {
+                // Pending syscall stop from exec: re-apply registers and step.
+                r.put(pid)?;
+                ptrace_singlestep(pid, 0)?;
+                continue;
+            }
+            if matches!(sig, libc::SIGILL | libc::SIGSEGV | libc::SIGBUS) {
+                if let Ok(t) = Regs::get(pid) {
+                    if t.ip() == site {
+                        let _ = orig.put(pid);
+                        return Err(InjectError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("fault signal {} at injected syscall site", sig),
+                        )));
+                    }
+                }
+            }
+            let deliver = if sig != 0 && sig != libc::SIGTRAP {
+                sig
+            } else {
+                0
+            };
+            ptrace_singlestep(pid, deliver)?;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        run_remote_syscall(pid, orig, nr, args, site, pending_stop)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ptrace_singlestep(pid: libc::pid_t, sig: libc::c_int) -> io::Result<()> {
+    // SAFETY: pid is an attached, stopped tracee.
+    let rc = unsafe {
+        libc::ptrace(
+            libc::PTRACE_SINGLESTEP,
+            pid,
+            std::ptr::null_mut::<libc::c_void>(),
+            sig as *mut libc::c_void,
+        )
+    };
+    if rc == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub fn get_syscall_info(pid: libc::pid_t, si: &mut SyscallInfo) -> io::Result<()> {
     // SAFETY: si is valid for writing; size is passed via the addr slot
     // as the kernel API requires.
@@ -324,4 +530,24 @@ pub fn ptrace_cont(pid: libc::pid_t, sig: libc::c_int) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn self_vdso_syscall_offset_points_to_native_pattern() {
+        #[cfg(target_pointer_width = "64")]
+        if let Some(off) = self_vdso_syscall_offset() {
+            let auxv = std::fs::read("/proc/self/auxv").expect("read /proc/self/auxv");
+            let vdso = vdso_base_from_auxv_bytes(&auxv).expect("AT_SYSINFO_EHDR");
+            let addr = vdso.wrapping_add(off);
+            assert!(aligned(addr));
+            // SAFETY: `self_vdso_syscall_offset` verified `vdso + off` lies
+            // within our own `r-x` vDSO mapping.
+            let got = unsafe { std::slice::from_raw_parts(addr as *const u8, PAT.len()) };
+            assert_eq!(got, &PAT);
+        }
+    }
 }

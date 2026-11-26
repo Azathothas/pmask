@@ -37,9 +37,11 @@ Profiles:
       --profile NAME   Select an execution and stealth profile:
                          auto   (default) single for native ELFs, tree for
                                 shells, launchers, #! scripts, and tree flags.
-                         single In-place masked exec with a transient helper:
-                                zero persistent supervisor, TracerPid: 0,
-                                Threads: 1, rexec, no-dumpable, and encrypted
+                         single (#1 strongest single-process shape) In-place
+                                masked exec with a transient helper: zero
+                                persistent supervisor, TracerPid: 0,
+                                Threads: 1, zero added seccomp/NoNewPrivs,
+                                rexec, no-dumpable, and MADV_DONTDUMP
                                 scratchpad by default.
                          tree   Single-threaded supervisor covering forks,
                                 shells, scripts, and descendants, with rexec,
@@ -62,11 +64,14 @@ Profiles:
                        resolving COMMAND, normalizing /proc/<pid>/cwd.
       --rexec-mode MODE
                        Choose the --rexec image carrier:
-                         auto  (default) prefer private 0500 staged path,
-                               falling back to sealed memfd on noexec mounts.
-                         path  private 0500 executable inside a 0700 staging
-                               dir (zero /memfd: fingerprint in exe/maps).
-                         memfd sealed anonymous memfd_create carrier.
+                         auto    (default) prefer private 0500 staged path,
+                                 falling back to sealed memfd on noexec mounts.
+                         path    private 0500 executable inside a 0700 staging
+                                 dir (zero /memfd: fingerprint in exe/maps).
+                         tmpfile unnamed O_TMPFILE executable via
+                                 execveat(AT_EMPTY_PATH): zero directory entry
+                                 on disk and zero /memfd: fingerprint.
+                         memfd   sealed anonymous memfd_create carrier.
       --no-rexec       Opt out of profile-default --rexec image staging.
       --allow-impersonation
                        Allow labels or comm names that match kernel-thread
@@ -129,13 +134,16 @@ Options:
       --allow-foreign  Run a 32-bit (foreign-ABI) image unredacted.  The
                        default refuses it: a 32-bit payload keeps its real
                        command line, environment and comm.
-      --stealth        Compose the strongest tree shape: --rexec (hide exe),
-                       --watch-rename (comm stays the label), and
-                       --no-dumpable (same-uid /proc reads return EACCES)
-                       unless /proc uses hidepid=invisible or ptraceable,
-                       where a non-dumpable process is a hidden pid.  Prints
-                       the trade it chose.  The network identity is not part
-                       of the mask; add --isolate=net for that.
+      --stealth        Compose a rename-watched tree shape (for tree mode;
+                       not stronger than --profile single on a single native
+                       ELF): --rexec (private staged path via auto by default,
+                       zero /memfd: fingerprint unless --rexec-mode=memfd,
+                       --hugetlb or --memfd-name is passed), --watch-rename
+                       (comm stays the label), and --no-dumpable (same-uid
+                       /proc reads return EACCES) unless /proc uses
+                       hidepid=invisible or ptraceable, where a non-dumpable
+                       process is a hidden pid.  The network identity is not
+                       part of the mask; add --isolate=net for that.
                        It is not the write-time variant: a symlink alias or
                        an fd received over SCM_RIGHTS still reaches comm, and
                        the filter shows in /proc/<pid>/status as Seccomp: 2.
@@ -155,8 +163,11 @@ Options:
                        with XChaCha20-Poly1305 under a key in
                        memfd_secret when the kernel offers it, and keep
                        the payload's block anonymous and MADV_DONTDUMP.
-                       Enabled by default in single, tree, and tee profiles.
-                       The payload's heap and stack are not encrypted.
+                       Enabled by default in tree and tee profiles (in
+                       single, the transient helper exits before main()
+                       runs; pass --encrypt-memory to seal even that
+                       brief window).  The payload's heap and stack are
+                       not encrypted.
       --no-new-privs   Set no_new_privs before exec.  Set-uid and file
                        capabilities give nothing, for the whole tree.
       --no-exact       Leave the kernel's argv window where it is: the
@@ -193,7 +204,7 @@ Options:
                        and no flag can.
       --rexec          Exec the program from a staged image so /proc/<pid>/exe
                        does not name the real file.  Use --rexec-mode to
-                       choose auto, path, or memfd.  In memfd mode the child
+                       choose auto, path, tmpfile or memfd.  In memfd mode the child
                        tries execveat(AT_EMPTY_PATH), then /proc/self/fd/N,
                        then a temporary file on an executable mount.  Each
                        failed step is reported and counted.  Without
@@ -241,8 +252,9 @@ Options:
   -q, --quiet          Suppress diagnostics.
   -v, --verbose        Trace every redaction event to stderr.
   -V, --version        Print version.
-  -h, --help           Concise one-screen overview (--help=all for this full
-                       reference; --help=<topic> for one section).
+  -h, --help           Concise one-screen overview (--help=all or --help-all
+                       for this full reference; --help=<topic> for one
+                       section).
 
 Compatibility aliases: -a NAME (= --label), -a- (= -l-), -E (= --keep-env),
 -F (= --no-follow), -K (= --no-exit-kill), -f/-c (accepted, no effect).
@@ -270,7 +282,9 @@ Secret side (works even where ptrace is refused):
                        at its existing number and export PMASK_SECRET_FD=N
                        (unnamed) or PMASK_SECRET_<NAME>=N (named) in the
                        payload's real environment.  Repeatable.  Enables
-                       --no-dumpable unless --allow-dumpable is passed.
+                       --no-dumpable in redaction mode unless
+                       --allow-dumpable is passed (plain --no-redact mode
+                       runs without a tracer and sets RLIMIT_CORE=0).
       --secret NAME=SRC
                        Deliver a secret on descriptor 3, 4, ...  SRC is
                        file:PATH | env:VAR | agent:NAME | stdin | literal:VAL.
@@ -334,9 +348,9 @@ Audit, explain, and reporting:
       --explain        Print the named observer, host capabilities, hidden
                        surfaces, EACCES denial tradeoff, and honest residuals
                        for the selected --profile, then exit 0.
-      --profile-json   Emit a versioned pmask-profile/1 JSON contract for
-                       --pid PID or a static template for --profile/--label
-                       (never emitting raw secret bytes), then exit 0.
+      --profile-json   Emit native psgen schema: 2 JSON for --pid PID or a
+                       static template for --profile/--label (never emitting
+                       raw secret bytes), then exit 0.
       --audit          In standalone mode (`pmask --audit [--json]` with no
                        COMMAND, or `pmask --audit --pid PID [--json]`), probe
                        every /proc surface plus a full-VMA /proc/<pid>/mem
@@ -413,7 +427,7 @@ pub struct Cli {
     pub rexec_explicit: bool,
     /// `--no-rexec` opted out of profile-default `--rexec`.
     pub no_rexec: bool,
-    /// `--rexec-mode <memfd|path|auto>`, if explicitly set.
+    /// `--rexec-mode <memfd|path|tmpfile|auto>`, if explicitly set.
     pub rexec_mode: Option<RexecMode>,
     /// `--cwd PATH`.
     pub cwd: Option<PathBuf>,
@@ -431,7 +445,7 @@ pub struct Cli {
     pub secret_fds: Vec<(Option<String>, libc::c_int)>,
     /// `--explain`: render profile explanation and exit 0.
     pub explain: bool,
-    /// `--profile-json`: emit `pmask-profile/1` JSON and exit 0.
+    /// `--profile-json`: emit native `psgen` `schema: 2` JSON and exit 0.
     pub profile_json: bool,
     /// `--pid PID`: target PID for standalone `--audit` / `--profile-json`.
     pub pid: Option<libc::pid_t>,
@@ -502,6 +516,9 @@ pub struct Cli {
     pub hide_pid: bool,
     /// `--encrypt-memory`: explicitly requested by user.
     pub encrypt_memory: bool,
+    /// Profile-default at-rest encryption (`tree`/`tee`), kept separate from
+    /// `encrypt_memory` so plain profile runs do not enter `Runner`.
+    pub profile_encrypt_memory: bool,
     /// `--stealth`: composed tree mode.
     pub stealth: bool,
     /// `--unshare`: explicit unshare flag.
@@ -637,8 +654,9 @@ fn parse_rexec_mode(v: &[u8]) -> RexecMode {
     match lower.as_slice() {
         b"memfd" => RexecMode::Memfd,
         b"path" => RexecMode::Path,
+        b"tmpfile" => RexecMode::Tmpfile,
         b"auto" => RexecMode::Auto,
-        _ => die("--rexec-mode takes auto, path or memfd"),
+        _ => die("--rexec-mode takes auto, path, tmpfile or memfd"),
     }
 }
 
@@ -1138,8 +1156,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     note_opt(&mut mask_opts, "--encrypt-memory");
                 }
                 "stealth" => {
-                    mask = mask.rexec().watch_rename();
-                    rexec_explicit = true;
+                    mask = mask.watch_rename();
                     let hidepid = pmask::caps::Caps::proc_hidepid_fast();
                     if hidepid.hides_non_dumpable() {
                         stealth_hidepid_warn = true;
@@ -1386,6 +1403,9 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
                     }
                     exit(0);
                 }
+                "help-all" => {
+                    print_topic(b"all");
+                }
                 _ => {
                     eprintln!("pmask: unknown option --{}", name);
                     exit(255);
@@ -1501,7 +1521,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
             pmask::caps::Caps::proc_hidepid_fast().as_word()
         );
     }
-    if !quiet && stealth_nodumpable && !hide_pid {
+    if verbose && stealth_nodumpable && !hide_pid {
         eprintln!(
             "pmask: --stealth: /proc uses hidepid={}; --no-dumpable is applied, so a same-uid \
              reader loses environ, maps, auxv, exe, fd, cwd and /proc/<pid>/mem.  Those EACCES \
@@ -1589,6 +1609,7 @@ pub fn parse_from(mut argv: Vec<OsString>) -> Cli {
         allow_dumpable,
         hide_pid,
         encrypt_memory,
+        profile_encrypt_memory: false,
         stealth,
         unshare,
         detach,

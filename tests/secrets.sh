@@ -550,8 +550,9 @@ if [ -s "$T/e2.json" ] && command -v python3 >/dev/null 2>&1; then
     if python3 - "$T/e2.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert d["hardening"] in ("heap", "secret_mem"), d["hardening"]
-assert d["secrets"][0]["locked"] is (False if d["hardening"] == "heap" else True), d
+base = d["hardening"].split("+")[0]
+assert base in ("heap", "secret_mem"), d["hardening"]
+assert d["secrets"][0]["locked"] is (False if base == "heap" else True), d
 PY
     then
         pass "e2-squeezed-memlock-is-reported ($(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["hardening"])' "$T/e2.json"))"

@@ -122,8 +122,15 @@ if [ -n "$PAY" ]; then
         || fail "qa62-stealth-cmdline-is-the-label (cmdline=[$cl])"
     if [ "$have_root" = yes ]; then
         exe=$(sudo -n readlink "/proc/$PAY/exe" 2>/dev/null)
+        exe_raw="${exe% (deleted)}"
         case "$exe" in
-            /memfd:*) pass "qa62-stealth-uses-a-memfd (exe=$exe)" ;;
+            *.rt-*/qa62st*|/memfd:*)
+                if [ "$exe_raw" != "$CASES" ] && [ ! -e "$exe_raw" ]; then
+                    pass "qa62-stealth-uses-a-memfd (exe=$exe)"
+                else
+                    fail "qa62-stealth-uses-a-memfd (carrier leaked or real exe visible: exe=[$exe])"
+                fi
+                ;;
             *) fail "qa62-stealth-uses-a-memfd (exe=[$exe])" ;;
         esac
     else

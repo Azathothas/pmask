@@ -6,8 +6,9 @@ _pmaskd() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     opts="-S --socket -l --label -e --env-file --no-inherit-env --keep-env \
---allow-uid --run-as-uid --socket-mode --io-timeout --job-timeout --jobs \
---max-job-bytes -q --quiet -v --verbose -V --version -h --help"
+--allow-uid --run-as-uid --no-dumpable --allow-dumpable --rexec --no-rexec \
+--rexec-mode --socket-mode --io-timeout --job-timeout --jobs --max-job-bytes \
+-q --quiet -v --verbose -V --version -h --help"
 
     case "$prev" in
         -S|--socket|-e|--env-file)
@@ -16,6 +17,10 @@ _pmaskd() {
             ;;
         -l|--label)
             COMPREPLY=( $(compgen -W "pmask-job ci-runner" -- "$cur") )
+            return 0
+            ;;
+        --rexec-mode)
+            COMPREPLY=( $(compgen -W "auto path tmpfile memfd" -- "$cur") )
             return 0
             ;;
         --allow-uid|--socket-mode|--io-timeout|--job-timeout|--jobs|--max-job-bytes)

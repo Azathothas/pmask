@@ -24,6 +24,9 @@
 //! do not allocate and do not take locks.
 
 use std::io;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const CLONE_NEWNS: libc::c_ulong = 0x0002_0000;
 const CLONE_NEWUSER: libc::c_ulong = 0x1000_0000;
@@ -117,16 +120,178 @@ fn write_proc_file(path: &str, content: &str) -> io::Result<()> {
         .map_err(|e| io::Error::new(e.kind(), format!("write {}: {}", path, e)))
 }
 
+fn lookup_passwd_username(uid: libc::uid_t) -> Option<String> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in content.lines() {
+        let mut fields = line.split(':');
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        let Some(_) = fields.next() else {
+            continue;
+        };
+        let Some(Ok(f_uid)) = fields.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        if f_uid == uid && !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn parse_subid_entry(content: &str, uid: u32, names: &[&str]) -> Option<(u32, u32)> {
+    let uid_str = uid.to_string();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split(':');
+        let Some(owner) = parts.next() else {
+            continue;
+        };
+        let Some(Ok(start)) = parts.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        let Some(Ok(count)) = parts.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        if count == 0 || start.checked_add(count).is_none() {
+            continue;
+        }
+        if owner == uid_str || names.iter().any(|&n| !n.is_empty() && owner == n) {
+            return Some((start, count));
+        }
+    }
+    None
+}
+
+fn find_idmap_bin(name: &str) -> Option<PathBuf> {
+    let is_exec = |p: &Path| -> bool {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && (m.mode() & 0o111) != 0)
+            .unwrap_or(false)
+    };
+    // Restrict helper lookup strictly to trusted system directories; never
+    // execute arbitrary binaries from user-controlled PATH entries.
+    for fixed in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+        let cand = Path::new(fixed).join(name);
+        if is_exec(&cand) {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Build `newuidmap`/`newgidmap` arguments that keep `id -> id` (count 1) so
+/// `id -u`/`id -g` inside the namespace stay unchanged, plus non-overlapping
+/// subordinate IDs from `[sub_start, sub_start + sub_count)`.
+fn build_idmap_args(child: libc::pid_t, id: u32, sub_start: u32, sub_count: u32) -> Vec<String> {
+    let mut args = vec![
+        child.to_string(),
+        id.to_string(),
+        id.to_string(),
+        "1".to_string(),
+    ];
+    let Some(sub_end) = sub_start.checked_add(sub_count) else {
+        return args;
+    };
+    if id < sub_start || id >= sub_end {
+        args.push(sub_start.to_string());
+        args.push(sub_start.to_string());
+        args.push(sub_count.to_string());
+    } else {
+        if id > sub_start {
+            let left_len = id - sub_start;
+            args.push(sub_start.to_string());
+            args.push(sub_start.to_string());
+            args.push(left_len.to_string());
+        }
+        if let Some(right_start) = id.checked_add(1) {
+            if right_start < sub_end {
+                let right_len = sub_end - right_start;
+                args.push(right_start.to_string());
+                args.push(right_start.to_string());
+                args.push(right_len.to_string());
+            }
+        }
+    }
+    args
+}
+
+fn run_idmap_helper(bin: &Path, args: &[String]) -> bool {
+    Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Try subordinate-ID mapping via `newuidmap` and `newgidmap`.
+/// Returns `(uid_mapped, gid_mapped)`.
+fn try_subid_maps(child: libc::pid_t, uid: libc::uid_t, gid: libc::gid_t) -> (bool, bool) {
+    let (Some(uidmap_bin), Some(gidmap_bin)) =
+        (find_idmap_bin("newuidmap"), find_idmap_bin("newgidmap"))
+    else {
+        return (false, false);
+    };
+    let (Ok(subuid_txt), Ok(subgid_txt)) = (
+        std::fs::read_to_string("/etc/subuid"),
+        std::fs::read_to_string("/etc/subgid"),
+    ) else {
+        return (false, false);
+    };
+    let passwd_user = lookup_passwd_username(uid);
+    let env_user = std::env::var("USER").ok();
+    let mut names: Vec<&str> = Vec::new();
+    if let Some(ref u) = passwd_user {
+        names.push(u.as_str());
+    }
+    if let Some(ref u) = env_user {
+        if !names.contains(&u.as_str()) {
+            names.push(u.as_str());
+        }
+    }
+    let (Some((u_start, u_count)), Some((g_start, g_count))) = (
+        parse_subid_entry(&subuid_txt, uid, &names),
+        parse_subid_entry(&subgid_txt, gid, &names),
+    ) else {
+        return (false, false);
+    };
+
+    let uid_args = build_idmap_args(child, uid, u_start, u_count);
+    if !run_idmap_helper(&uidmap_bin, &uid_args) {
+        return (false, false);
+    }
+    let gid_args = build_idmap_args(child, gid, g_start, g_count);
+    let gid_ok = run_idmap_helper(&gidmap_bin, &gid_args);
+    (true, gid_ok)
+}
+
 fn write_maps(child: libc::pid_t, uid: libc::uid_t, gid: libc::gid_t) -> io::Result<()> {
-    write_proc_file(&format!("/proc/{}/setgroups", child), "deny")?;
-    write_proc_file(
-        &format!("/proc/{}/uid_map", child),
-        &format!("{} {} 1\n", uid, uid),
-    )?;
-    write_proc_file(
-        &format!("/proc/{}/gid_map", child),
-        &format!("{} {} 1\n", gid, gid),
-    )?;
+    let (uid_mapped, gid_mapped) = try_subid_maps(child, uid, gid);
+    if uid_mapped && gid_mapped {
+        return Ok(());
+    }
+    if !gid_mapped {
+        write_proc_file(&format!("/proc/{}/setgroups", child), "deny")?;
+    }
+    if !uid_mapped {
+        write_proc_file(
+            &format!("/proc/{}/uid_map", child),
+            &format!("{} {} 1\n", uid, uid),
+        )?;
+    }
+    if !gid_mapped {
+        write_proc_file(
+            &format!("/proc/{}/gid_map", child),
+            &format!("{} {} 1\n", gid, gid),
+        )?;
+    }
     Ok(())
 }
 
@@ -583,5 +748,36 @@ mod tests {
         let status = wait_for(pid).expect("waitpid");
         assert!(libc::WIFEXITED(status), "status {:#x}", status);
         assert_eq!(libc::WEXITSTATUS(status), 7);
+    }
+
+    #[test]
+    fn parse_subid_entry_matches_uid_and_username() {
+        let content = "# comment\n\nalice:100000:65536\n1001:200000:65536\nbad:300000:0\n";
+        assert_eq!(
+            parse_subid_entry(content, 1000, &["alice"]),
+            Some((100000, 65536))
+        );
+        assert_eq!(
+            parse_subid_entry(content, 1001, &["bob"]),
+            Some((200000, 65536))
+        );
+        assert_eq!(parse_subid_entry(content, 1002, &["bad"]), None);
+        assert_eq!(parse_subid_entry(content, 1003, &["nobody"]), None);
+    }
+
+    #[test]
+    fn build_idmap_args_preserves_id_and_splits_overlap() {
+        assert_eq!(
+            build_idmap_args(42, 1000, 100000, 65536),
+            vec!["42", "1000", "1000", "1", "100000", "100000", "65536"]
+        );
+        assert_eq!(
+            build_idmap_args(42, 1000, 1000, 10),
+            vec!["42", "1000", "1000", "1", "1001", "1001", "9"]
+        );
+        assert_eq!(
+            build_idmap_args(42, 1005, 1000, 10),
+            vec!["42", "1005", "1005", "1", "1000", "1000", "5", "1006", "1006", "4"]
+        );
     }
 }
